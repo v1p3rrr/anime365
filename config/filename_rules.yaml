@@ -1,0 +1,137 @@
+# Правила разбора имён файлов и папок.
+#
+# Правится без пересборки образа: положите файл в примонтированный ./config,
+# приложение перечитает его при следующем сканировании.
+#
+# Как это работает:
+#   * правила сортируются по priority (больше — раньше), применяется ПЕРВОЕ совпавшее;
+#   * в результат пишется id сработавшего правила, он виден в UI и в отчёте, —
+#     всегда понятно, почему имя разобралось именно так;
+#   * контракт — только именованные группы. Неизвестные группы игнорируются,
+#     поэтому новое правило добавляется без правки кода.
+#
+# Поддерживаемые группы:
+#   season         номер сезона
+#   episode        номер серии
+#   episode_end    последняя серия склейки (S01E01-E11)
+#   title          название
+#   year           год
+#   translation_id id перевода Anime365 из наших же файлов
+#
+# scope: series | movie | any — где правило применимо.
+
+version: 1
+
+episode_rules:
+  - id: jellyfin_sxxexx
+    scope: series
+    priority: 100
+    enabled: true
+    # Основной формат Jellyfin и Sonarr, включая склейки нескольких серий в файле.
+    # Пример: "Wotakoi S01E01-E11 - Narumi and Hirotaka ... [Sonarr] Bluray-1080p.mkv"
+    pattern: '(?i)\bS(?P<season>\d{1,2})E(?P<episode>\d{1,4})(?:\s*-\s*E(?P<episode_end>\d{1,4}))?\b'
+
+  - id: anime365_own
+    scope: any
+    priority: 95
+    enabled: true
+    # Файлы, скачанные штатным загрузчиком сайта или нами. Наличие translation_id
+    # позволяет понять, что этот перевод уже скачан, и не качать его повторно.
+    # Пример: "[Anime365] Sousou no Frieren - 06 (t4505262).mp4"
+    pattern: '(?i)\[Anime365\].*?-\s*(?P<episode>\d{1,4})\s*\(t(?P<translation_id>\d+)\)'
+
+  - id: dash_number_before_paren
+    scope: series
+    priority: 90
+    enabled: true
+    # Ohys-Raws и подобные релизы без .nfo. Хвост END/FIN/Final после номера
+    # встречается у последних серий: "Toradora - 25 END (BD ...)".
+    # Пример: "Yuru Camp Season 2 - 13 (BD 1280x720 x264 AAC).mkv"
+    pattern: '(?i)\s-\s(?P<episode>\d{1,4})(?:\s+(?:END|FIN|FINAL))?\s*\('
+
+  - id: dash_number_tail
+    scope: series
+    priority: 85
+    enabled: true
+    # "Show Name - 07.mkv" — номер в конце имени, возможно с пометкой END.
+    pattern: '(?i)\s-\s(?P<episode>\d{1,4})(?:\s+(?:END|FIN|FINAL))?\s*$'
+
+  - id: movie_year_bare
+    scope: series
+    priority: 75
+    enabled: true
+    # Фильм, лежащий в папке сериала, с годом без скобок.
+    # Пример: "Violet Evergarden the Movie 2020 1080p.mkv"
+    pattern: '(?i)^(?P<title>.+?)\s+(?P<year>(?:19|20)\d{2})\b'
+
+  - id: bracketed_number
+    scope: series
+    priority: 70
+    enabled: true
+    # "Show Name [12].mkv"
+    pattern: '\[(?P<episode>\d{2,4})\]'
+
+  - id: ep_prefix
+    scope: series
+    priority: 65
+    enabled: true
+    # "Show EP07", "Show E07", "Show ep 7"
+    pattern: '(?i)\bEP?\s*(?P<episode>\d{1,4})\b'
+
+  - id: movie_with_year
+    scope: movie
+    priority: 60
+    enabled: true
+    # Схема Radarr. Пример: "Your Name. (2016) - [Bluray-1080p] [AV1] [Opus 2.0] [JA].mkv"
+    pattern: '^(?P<title>.+?)\s*\((?P<year>(?:19|20)\d{2})\)'
+
+# Файлы и папки, которые не считаем сериями вовсе.
+# Спешлы отсекаются не этим списком, а по <season>0</season> в .nfo и по папке Specials.
+exclude_patterns:
+  # \b после NCOP не сработает, если сразу идёт цифра (NCOP1): между "P" и "1"
+  # границы слова нет. Поэтому номер описан явно, а не через \b.
+  # Подчёркивание — тоже словесный символ, поэтому "_NCOP_" через \b не ловится;
+  # разделители нормализуются в пробелы до применения правил.
+  # Хвост версии (NCOP01v4) тоже словесный, поэтому описан явно.
+  - '(?i)\bNC(OP|ED)\s*\d{0,2}(?:v\d{1,2})?\b'
+  # OP и ED встречаются и без номера, а дальше идёт либо круглая скобка с
+  # параметрами релиза, либо квадратная с хешем: "Tsukimonogatari OP [10bit BD ...]".
+  - '(?i)\b(OP|ED)\s*\d{0,2}\s*(?:[\(\[]|v\d|$)'
+  # Спешлы, помеченные "SP" вместо номера: "Yuru Camp Season 2 - SP (BD ...)".
+  # Это контент, но не серия основного сезона — в маппинг эпизодов он не идёт.
+  - '(?i)\s-\s*SP\d{0,2}\s*(?:\(|$)'
+  - '(?i)\b(opening|ending|creditless)\b'
+  - '(?i)\b(PV|CM|Trailer|Teaser|Promo|Preview)\b'
+  - '(?i)\b(menu|scan|booklet|bonus)\b'
+  # Бонусные материалы с дисков: "Tokuten Video - [ Ami's Mimicry ]".
+  - '(?i)\b(tokuten|omake|extra|interview|making|drama\s*cd)\b'
+  # Клипы и караоке: в библиотеке рядом лежат .mp3 и музыкальные видео.
+  - '(?i)\b(karaoke|character\s*song|image\s*song)\b'
+
+# Суффиксы языка у сайдкар-субтитров. Ключ — что пишем мы, значения — что встречается.
+# Пример реального разнобоя: рядом лежат ".jpn.srt", ".ja.srt", ".3.ja.srt".
+language_suffixes:
+  ru: [ru, rus, russian]
+  en: [en, eng, english]
+  ja: [ja, jpn, jp, japanese]
+
+# Технический хвост, который вычищается перед сопоставлением названий.
+technical_noise:
+  - '(?i)\b(Bluray|BluRay|BD|BDRip|WEBRip|WEB-?DL|HDTV|DVDRip|TVRip|Remux)(-\d{3,4}p)?\b'
+  - '(?i)\b\d{3,4}p\b'
+  - '(?i)\b(x264|x265|h\.?264|h\.?265|HEVC|AVC|AV1|XviD)\b'
+  - '(?i)\b(AAC|AC3|EAC3|FLAC|Opus|DTS|DDP?\d?(\.\d)?)\b'
+  - '(?i)\b\d{3,4}x\d{3,4}\b'
+  - '(?i)\b(10bit|8bit|HDR|SDR|Dual[- ]?Audio|Multi[- ]?Sub)\b'
+  - '(?i)\bv\d\b'
+
+# Как выглядит имя релиз-группы: её вырезаем из названия и заменяем при скачивании.
+release_group_patterns:
+  - '\[(?P<group>[^\]]{1,40})\]'
+  - '^\((?P<group>[^)]{1,40})\)'
+
+# Расширения, которые сканер вообще рассматривает.
+extensions:
+  video: [.mkv, .mp4, .avi, .m4v, .webm, .ts, .mov, .ogm, .wmv]
+  subtitle: [.ass, .ssa, .srt, .sub, .vtt, .idx, .sup]
+  metadata: [.nfo, .jpg, .png, .jpeg, .webp, .txt, .xml]

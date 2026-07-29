@@ -1,0 +1,118 @@
+# Корпус регрессионных тестов парсера имён.
+#
+# Все случаи взяты из реальной библиотеки пользователя (выгрузка `tree`).
+# Здесь представительная выборка, а не весь дамп: цель — чтобы новое правило
+# не сломало уже разобранное.
+#
+# Пополнять при добавлении правил: сначала случай сюда, потом правило в
+# config/filename_rules.yaml.
+#
+# expect: null означает «не должно разобраться как серия»
+#         (исключено как OP/ED/бонус либо не распознано вовсе).
+
+- name: Jellyfin, основной формат
+  scope: series
+  file: "Zombie Land Saga S02E05 - Little Bodda Bope SAGA [neoHEVC] Bluray-1080p.mkv"
+  expect: { rule: jellyfin_sxxexx, season: 2, episode: 5, group: neoHEVC }
+
+- name: Сайдкар с русским языком
+  scope: series
+  file: "Zombie Land Saga S02E05 - Little Bodda Bope SAGA [neoHEVC] Bluray-1080p.ru.srt"
+  expect: { rule: jellyfin_sxxexx, season: 2, episode: 5, language: ru }
+
+- name: Сайдкар с японским языком
+  scope: series
+  file: "Yuru Camp S02E01 - Curry Noodles [Ohys-Raws] Bluray-720p.ja.srt"
+  expect: { rule: jellyfin_sxxexx, season: 2, episode: 1, language: ja }
+
+- name: Числовая вставка перед языком
+  scope: movie
+  file: "Neon Genesis Evangelion - Death and Rebirth (1997) - [WEBDL-720p] [h265].3.ja.srt"
+  expect: { rule: movie_with_year, year: 1997, language: ja }
+
+- name: Субтитры без языкового суффикса
+  scope: series
+  file: "This Monster Wants to Eat Me S01E13 - Warmth [NanakoRaws] HDTV-1080p.srt"
+  expect: { rule: jellyfin_sxxexx, season: 1, episode: 13, language: null }
+
+- name: Склейка нескольких серий в одном файле
+  scope: series
+  file: "Wotakoi Love Is Hard for Otaku S01E01-E11 - Narumi and Hirotaka [Sonarr] Bluray-1080p.mkv"
+  expect: { rule: jellyfin_sxxexx, season: 1, episode: 1, episode_end: 11 }
+
+- name: Спешл как нулевой сезон
+  scope: series
+  file: "YuruYuri Happy Go Lily S00E01 - Love Paradox Eternal [Doki] Bluray-1080p.mkv"
+  expect: { rule: jellyfin_sxxexx, season: 0, episode: 1 }
+
+- name: Ohys-Raws, номер перед скобкой
+  scope: series
+  file: "Yuru Camp Season 2 - 13 (BD 1280x720 x264 AAC).mkv"
+  expect: { rule: dash_number_before_paren, episode: 13 }
+
+- name: Пометка END после номера серии
+  scope: series
+  file: "[Shiniori-Raws] Toradora - 25 END (BD 1280x720 x264 10bit AAC).mkv"
+  expect: { rule: dash_number_before_paren, episode: 25 }
+
+- name: Наш собственный файл с id перевода
+  scope: any
+  file: "[Anime365] Uma Musume Pretty Derby - Shin Jidai no Tobira - 01 (t5282068).mp4"
+  expect: { rule: anime365_own, episode: 1, translation_id: 5282068 }
+
+- name: Наши субтитры с id перевода
+  scope: any
+  file: "[Anime365] Natsu e no Tunnel Sayonara no Deguchi - 01 (t5190458) (1).ass"
+  expect: { rule: anime365_own, episode: 1, translation_id: 5190458 }
+
+- name: Фильм по схеме Radarr
+  scope: movie
+  file: "Your Name. (2016) - [Bluray-1080p] [AV1] [Opus 2.0] [JA].mkv"
+  expect: { rule: movie_with_year, year: 2016 }
+
+- name: Фильм в папке сериала, год без скобок
+  scope: series
+  file: "Violet Evergarden the Movie 2020 1080p.mkv"
+  expect: { rule: movie_year_bare, year: 2020 }
+
+# --- Что не должно попасть в маппинг серий ---
+
+- name: Безкредитный опенинг с номером
+  scope: series
+  file: "Show Name - NCOP1 [Group].mkv"
+  expect: null
+
+- name: NCOP с версией и подчёркиваниями вместо пробелов
+  scope: series
+  file: "[DB]Yahari Ore no Seishun Love Comedy wa Machigatteiru. Kan_-_NCOP01v4_(10bit_BD1080p_x265).mkv"
+  expect: null
+
+- name: Опенинг без номера, дальше круглая скобка
+  scope: series
+  file: "Majo to Yajuu TV-1 OP (BDRip 1920x1080 x264 FLAC).mkv"
+  expect: null
+
+- name: Опенинг без номера, дальше квадратная скобка с хешем
+  scope: series
+  file: "[project-gxs] Tsukimonogatari OP [10bit BD 1080p] [8D2BEF86].mkv"
+  expect: null
+
+- name: Эндинг с дефисом перед маркером
+  scope: series
+  file: "[project-gxs] Otorimonogatari - OP [10bit BD 1080p] [BDB0A55C].mkv"
+  expect: null
+
+- name: Трейлер
+  scope: series
+  file: "Show Name - Trailer PV [Group].mkv"
+  expect: null
+
+- name: Бонусные материалы с диска
+  scope: series
+  file: "[Shiniori-Raws] Tokuten Video - [ Ami's Mimicry ] (BD 1280x720 x264 10bit AAC).mkv"
+  expect: null
+
+- name: Спешл, помеченный SP вместо номера
+  scope: series
+  file: "Yuru Camp Season 2 - SP (BD 1280x720 x264 AAC).mkv"
+  expect: null
