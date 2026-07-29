@@ -1,0 +1,62 @@
+"""Точка входа FastAPI.
+
+Фронтенд собирается в статику и раздаётся отсюда же — отдельного контейнера с Nginx нет.
+"""
+
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from app.api import health
+from app.core.db import check_connection
+from app.core.logging_setup import setup_logging
+
+log = logging.getLogger(__name__)
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    setup_logging()
+    log.info("Anime365 Downloader запускается")
+
+    if not check_connection():
+        log.error("БД недоступна — сервис поднимется, но работать не сможет")
+
+    # Здесь будут стартовать фоновые задачи (этап 1+):
+    # планировщик синка каталога, воркеры загрузок, слежение за файловой системой.
+
+    yield
+
+    log.info("Anime365 Downloader останавливается")
+
+
+app = FastAPI(
+    title="Anime365 Downloader",
+    version="0.1.0",
+    lifespan=lifespan,
+    # Документацию API оставляем — она сильно упрощает отладку руками.
+    docs_url="/api/docs",
+    openapi_url="/api/openapi.json",
+)
+
+app.include_router(health.router, prefix="/api")
+
+
+if STATIC_DIR.is_dir():
+    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str) -> FileResponse:
+        """Отдаёт index.html на все не-API маршруты — это SPA с клиентским роутингом."""
+        candidate = STATIC_DIR / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(STATIC_DIR / "index.html")

@@ -1,0 +1,53 @@
+services:
+  anime365-downloader:
+    build: .
+    image: anime365-downloader:0.1.0
+    container_name: anime365-downloader
+    restart: unless-stopped
+
+    ports:
+      # Слушаем только localhost: наружу выставлять напрямую нельзя — через UI доступен
+      # премиум-токен и запись в файловую систему. Наружу — только через Nginx с
+      # авторизацией либо через VPN. Для доступа из локалки замените на 0.0.0.0:8080:8080.
+      - "127.0.0.1:8080:8080"
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./config:/config
+      - ./data:/data
+      # Медиа с другого диска. Пути должны совпадать с A365_SERIES_ROOT / A365_MOVIES_ROOT.
+      # rw нужен, потому что мы кладём сюда скачанные файлы.
+      - /mnt/media/anime/library:/media/anime
+      - /mnt/media/anime_movies/library:/media/anime_movies
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # Ограничения памяти: приложение рассчитано на ~200 МБ, запас на пики загрузок.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Раскомментируйте, если контейнер нужно положить в одну сеть с Jellyfin.
+# networks:
+#   default:
+#     name: media
+#     external: true

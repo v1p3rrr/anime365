@@ -1,0 +1,49 @@
+[project]
+name = "anime365-downloader"
+version = "0.1.0"
+description = "Каталог Anime365, загрузка видео и субтитров в Jellyfin-библиотеку"
+requires-python = ">=3.12"
+
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.34.0",
+    "sqlalchemy==2.0.36",
+    "httpx[http2]==0.28.1",
+    "apscheduler==3.11.0",
+    "pyyaml==6.0.2",
+    "rapidfuzz==3.11.0",          # fuzzy-матчинг названий папок с каталогом
+    "watchdog==6.0.0",            # слежение за файловой системой вместо опроса по расписанию
+    "argon2-cffi==23.1.0",        # хеш пароля на вход в UI
+    "python-multipart==0.0.20",   # формы логина
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.25.2",
+    "ruff==0.9.2",
+    "mypy==1.14.1",
+    "pip-audit==2.7.3",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "S"]
+ignore = [
+    "S101",  # assert в тестах
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
