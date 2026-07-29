@@ -124,6 +124,7 @@ async def ensure_translations(series_id: int, force: bool = False) -> list[dict[
                 "duration": _to_float(item.get("duration")),
                 "is_active": bool(item.get("isActive", 1)),
                 "priority": item.get("priority"),
+                "url": item.get("url"),
                 "added_at": item.get("addedDateTime"),
                 "updated_at": item.get("updatedDateTime"),
                 "synced_at": now,
@@ -144,7 +145,7 @@ async def ensure_translations(series_id: int, force: bool = False) -> list[dict[
 # 999 в старых). У популярного тайтла около 2000 переводов по 19 колонок — это
 # 38 тысяч переменных, поэтому вставка обязана идти пачками.
 _MAX_SQL_VARIABLES = 900
-_TRANSLATION_COLUMNS = 19
+_TRANSLATION_COLUMNS = 20
 _UPSERT_CHUNK = max(1, _MAX_SQL_VARIABLES // _TRANSLATION_COLUMNS)
 
 
@@ -182,6 +183,7 @@ def _translation_dict(row: Translation) -> dict[str, Any]:
         "width": row.width,
         "height": row.height,
         "duration": row.duration,
+        "url": row.url,
         "is_active": row.is_active,
         "_episode_num": None,
         "_episode_type": "",

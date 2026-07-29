@@ -17,6 +17,9 @@ export interface AuthorGroup {
   coverage: string
   is_complete: boolean
   max_height_estimate: number | null
+  /** Страница самой ранней серии этого перевода на сайте — туда ведёт «Смотреть». */
+  first_url: string | null
+  first_episode: number | null
 }
 
 export interface SummarySection {

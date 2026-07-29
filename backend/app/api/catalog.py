@@ -67,9 +67,16 @@ def catalog_ids(
     type: Annotated[str | None, Query()] = None,
     year_from: Annotated[int | None, Query()] = None,
     year_to: Annotated[int | None, Query()] = None,
+    season: Annotated[
+        str | None, Query(description="Зима | Весна | Лето | Осень, независимо от года")
+    ] = None,
     is_airing: Annotated[bool | None, Query()] = None,
+    score_from: Annotated[
+        float | None, Query(ge=0, le=10, description="Минимальная оценка MAL")
+    ] = None,
     include_hentai: Annotated[bool, Query()] = False,
     sort: Annotated[str, Query(pattern="^(id|year|score|title)$")] = "id",
+    sort_dir: Annotated[str, Query(pattern="^(asc|desc)$")] = "desc",
 ) -> dict[str, Any]:
     """Идентификаторы выборки целиком — фронт строит по ним виртуальный список."""
     stmt = select(Series.id)
@@ -82,8 +89,14 @@ def catalog_ids(
         stmt = stmt.where(Series.year >= year_from)
     if year_to is not None:
         stmt = stmt.where(Series.year <= year_to)
+    if season:
+        stmt = stmt.where(Series.season_name == season)
     if is_airing is not None:
         stmt = stmt.where(Series.is_airing.is_(is_airing))
+    if score_from is not None:
+        # Тайтлы без оценки при фильтре по минимальному баллу не показываем:
+        # «оценка от 7» не должно означать «и ещё десять тысяч неоценённых».
+        stmt = stmt.where(Series.mal_score.is_not(None), Series.mal_score >= score_from)
 
     if genres:
         if genres_and:
@@ -104,14 +117,18 @@ def catalog_ids(
             return {"ids": [], "total": 0}
         stmt = stmt.where(Series.id.in_(matched))
 
-    if sort == "year":
-        stmt = stmt.order_by(Series.year.desc().nullslast(), Series.id.desc())
-    elif sort == "score":
-        stmt = stmt.order_by(Series.mal_score.desc().nullslast(), Series.id.desc())
-    elif sort == "title":
-        stmt = stmt.order_by(Series.title)
+    # Пустые значения всегда в конце, независимо от направления: тайтлы без года
+    # или без оценки не должны занимать первый экран ни при какой сортировке.
+    descending = sort_dir == "desc"
+    columns = {"year": Series.year, "score": Series.mal_score, "title": Series.title}
+    column = columns.get(sort)
+
+    if column is None:
+        stmt = stmt.order_by(Series.id.desc() if descending else Series.id.asc())
     else:
-        stmt = stmt.order_by(Series.id.desc())
+        order = column.desc() if descending else column.asc()
+        # id вторым ключом даёт стабильный порядок при равных значениях.
+        stmt = stmt.order_by(order.nullslast(), Series.id.desc())
 
     with session_scope() as session:
         ids = [row[0] for row in session.execute(stmt).all()]

@@ -36,17 +36,69 @@ def _to_float(value: Any) -> float | None:
     return None if result < 0 else result
 
 
+# Сезон приходит одной строкой вида "Осень 2015". Раскладываем на составляющие,
+# чтобы можно было фильтровать «все зимние» независимо от года.
+_SEASON_NAMES = ("Зима", "Весна", "Лето", "Осень")
+
+
+def _split_season(value: str | None) -> str | None:
+    if not value:
+        return None
+    first = value.split()[0]
+    return first if first in _SEASON_NAMES else None
+
+
+def is_junk(item: dict[str, Any]) -> bool:
+    """Пустые записи каталога.
+
+    В выдаче есть несколько десятков тайтлов вообще без названий: titles пустой,
+    allTitles пустой, года нет, эпизодов нет. В UI они всплывали при сортировке по
+    названию как «#879». Смысла хранить их нет — отсекаем до записи в БД.
+    """
+    titles = item.get("titles") or {}
+    all_titles = item.get("allTitles") or []
+    has_name = any((v or "").strip() for v in titles.values()) or any(
+        (t or "").strip() for t in all_titles
+    )
+    return not has_name
+
+
+def _display_title(item: dict[str, Any], titles: dict[str, Any], all_titles: list[Any]) -> str:
+    """Название для показа и сортировки.
+
+    У части тайтлов поле `title` приходит пустым, хотя названия есть — например у
+    id 29237 заполнен только `titles.ja`. Без подстановки такие записи всплывали
+    в начале сортировки по названию как «#29237».
+    """
+    direct = (item.get("title") or "").strip()
+    if direct:
+        return direct
+
+    for key in ("ru", "romaji", "en", "ja", "short"):
+        value = (titles.get(key) or "").strip()
+        if value:
+            return value
+
+    for value in all_titles:
+        if (value or "").strip():
+            return str(value).strip()
+
+    return ""
+
+
 def _row_from_api(item: dict[str, Any]) -> dict[str, Any]:
     titles = item.get("titles") or {}
+    all_titles = item.get("allTitles") or list(titles.values())
     return {
         "id": item["id"],
         "titles": titles,
-        "all_titles": item.get("allTitles") or list(titles.values()),
-        "title": item.get("title") or "",
+        "all_titles": all_titles,
+        "title": _display_title(item, titles, all_titles),
         "type": item.get("type") or "",
         "type_title": item.get("typeTitle") or "",
         "year": item.get("year") or None,
         "season": item.get("season") or None,
+        "season_name": _split_season(item.get("season")),
         "number_of_episodes": item.get("numberOfEpisodes") or 0,
         "poster_url": item.get("posterUrl"),
         "poster_url_small": item.get("posterUrlSmall"),
@@ -62,12 +114,21 @@ def _row_from_api(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _upsert_series(session: Session, items: list[dict[str, Any]]) -> int:
+def _upsert_series(session: Session, items: list[dict[str, Any]]) -> tuple[int, int]:
     """Пакетная вставка с обновлением. Детальные поля (descriptions/links/episodes)
-    намеренно не трогаем: в списочном ответе их нет, и затирать уже загруженные не нужно."""
-    if not items:
-        return 0
+    намеренно не трогаем: в списочном ответе их нет, и затирать уже загруженные не нужно.
 
+    Возвращает (сохранено, отброшено мусорных).
+    """
+    if not items:
+        return 0, 0
+
+    clean = [i for i in items if not is_junk(i)]
+    skipped = len(items) - len(clean)
+    if not clean:
+        return 0, skipped
+
+    items = clean
     rows = [_row_from_api(i) for i in items]
     stmt = sqlite_insert(Series).values(rows)
     update_cols = {
@@ -78,7 +139,7 @@ def _upsert_series(session: Session, items: list[dict[str, Any]]) -> int:
     session.execute(stmt.on_conflict_do_update(index_elements=[Series.id], set_=update_cols))
 
     _sync_genres(session, items)
-    return len(rows)
+    return len(rows), skipped
 
 
 def _sync_genres(session: Session, items: list[dict[str, Any]]) -> None:
@@ -158,16 +219,18 @@ class CatalogSync:
         return stats
 
     async def _do_full(self) -> dict[str, Any]:
-        total = 0
+        total = skipped = 0
         touched: list[int] = []
         async with Anime365Client() as client:
             async for batch in client.iter_catalog(after_id=0):
                 with session_scope() as session:
-                    total += _upsert_series(session, batch)
-                touched.extend(i["id"] for i in batch)
+                    saved, junk = _upsert_series(session, batch)
+                total += saved
+                skipped += junk
+                touched.extend(i["id"] for i in batch if not is_junk(i))
 
         rebuild_fts_for(touched)
-        return {"synced": total}
+        return {"synced": total, "skipped_junk": skipped}
 
     async def _do_incremental(self) -> dict[str, Any]:
         with session_scope() as session:
@@ -177,26 +240,28 @@ class CatalogSync:
             log.info("Каталог пуст — запускаю полную синхронизацию вместо инкрементальной")
             return await self._do_full()
 
-        total = 0
+        total = skipped = 0
         touched: list[int] = []
         async with Anime365Client() as client:
             async for batch in client.iter_catalog(after_id=max_id):
                 with session_scope() as session:
-                    total += _upsert_series(session, batch)
-                touched.extend(i["id"] for i in batch)
+                    saved, junk = _upsert_series(session, batch)
+                total += saved
+                skipped += junk
+                touched.extend(i["id"] for i in batch if not is_junk(i))
 
         rebuild_fts_for(touched)
-        return {"new": total, "after_id": max_id}
+        return {"new": total, "skipped_junk": skipped, "after_id": max_id}
 
     async def _do_airing(self) -> dict[str, Any]:
         async with Anime365Client() as client:
             items = await client.airing()
 
         with session_scope() as session:
-            count = _upsert_series(session, items)
+            count, skipped = _upsert_series(session, items)
 
-        rebuild_fts_for([i["id"] for i in items])
-        return {"airing": count}
+        rebuild_fts_for([i["id"] for i in items if not is_junk(i)])
+        return {"airing": count, "skipped_junk": skipped}
 
 
 catalog_sync = CatalogSync()

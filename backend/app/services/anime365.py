@@ -27,6 +27,8 @@ log = logging.getLogger(__name__)
 CATALOG_FIELDS = (
     "id,titles,allTitles,title,type,typeTitle,year,season,numberOfEpisodes,"
     "posterUrl,posterUrlSmall,url,genres,isAiring,isActive,isHentai,"
+    # Из оценок берём только MAL: своей оценки у AniList в API нет (есть лишь id),
+    # а worldArtScore решено не показывать.
     "myAnimeListId,anilistId,aniDbId,myAnimeListScore"
 )
 
@@ -35,7 +37,9 @@ SERIES_DETAIL_FIELDS = CATALOG_FIELDS + ",descriptions,links,episodes"
 TRANSLATION_FIELDS = (
     "id,seriesId,episodeId,type,typeKind,typeLang,qualityType,authorsList,"
     "authorsSummary,title,isActive,priority,addedDateTime,updatedDateTime,"
-    "width,height,duration,episode"
+    # url — страница конкретного перевода конкретной серии на сайте.
+    # Именно она нужна кнопке «смотреть», а не общая страница тайтла.
+    "width,height,duration,episode,url"
 )
 
 MAX_LIMIT = 1000

@@ -1,0 +1,26 @@
+.navLink {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: var(--mantine-radius-sm);
+  color: var(--mantine-color-text);
+  /* Ширина меняется при сворачивании, поэтому подпись не должна разрывать строку. */
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.navLink[data-collapsed] {
+  justify-content: center;
+  padding: 9px 0;
+}
+
+.navLink:hover {
+  background: light-dark(var(--mantine-color-gray-1), var(--mantine-color-dark-6));
+}
+
+.navLink[data-active] {
+  background: var(--mantine-color-blue-light);
+  color: var(--mantine-color-blue-light-color);
+}

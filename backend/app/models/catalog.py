@@ -43,6 +43,9 @@ class Series(Base):
     # Строка вида "Осень 2015" — именно по ней разводятся сезоны при маппинге
     # (дата <premiered> из season.nfo отображается на это поле).
     season: Mapped[str | None] = mapped_column(String(64), index=True)
+    # Сезон отдельно от года, чтобы фильтровать «все зимние» независимо от года.
+    # В API это одна строка, поэтому разбираем при синхронизации.
+    season_name: Mapped[str | None] = mapped_column(String(16), index=True)
 
     # ВНИМАНИЕ: это запланированное число серий, а не выложенное.
     # У онгоингов реальных эпизодов в API бывает заметно меньше.
@@ -57,6 +60,8 @@ class Series(Base):
     # aniDbId намеренно не индексируем как ключ: он не уникален
     # (у всех трёх фильмов Heaven's Feel он одинаковый — 10755).
     anidb_id: Mapped[int | None] = mapped_column(Integer)
+    # Единственная оценка, которую показываем. Оценки AniList в API нет (только
+    # anilist_id), а worldArtScore пользователь решил не выводить.
     mal_score: Mapped[float | None] = mapped_column(Float)
 
     is_airing: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
@@ -155,6 +160,9 @@ class Translation(Base):
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     priority: Mapped[int | None] = mapped_column(Integer)
+    # Ссылка на страницу конкретного перевода конкретной серии на сайте —
+    # именно она нужна кнопке «смотреть», а не общая страница тайтла.
+    url: Mapped[str | None] = mapped_column(String(512))
     added_at: Mapped[str | None] = mapped_column(String(32))
     updated_at: Mapped[str | None] = mapped_column(String(32))
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

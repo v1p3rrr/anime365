@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.db import Base, engine, session_scope
+from app.core.migrations import add_missing_columns
 from app.models import DEFAULT_USER_ID, AppSetting, AppUser
 from app.services.fts import init_fts
 
@@ -18,6 +19,11 @@ def bootstrap() -> None:
     # Схема простая и меняется редко, поэтому обходимся create_all вместо Alembic.
     # Если появятся несовместимые изменения — заводим Alembic, но не раньше.
     Base.metadata.create_all(engine)
+    # Колонки, добавленные в модели после создания таблиц, дописываем на месте:
+    # каталог это кэш, но ронять сервис из-за новой колонки нельзя.
+    added = add_missing_columns()
+    if added:
+        log.info("Схема дополнена: добавлено колонок %d", added)
     init_fts()
 
     with session_scope() as session:

@@ -7,14 +7,29 @@ import {
   MultiSelect,
   NumberInput,
   Select,
+  Slider,
+  Stack,
   Switch,
+  Text,
   TextInput,
   Tooltip,
 } from '@mantine/core'
-import { IconFilter, IconSearch, IconX } from '@tabler/icons-react'
+import {
+  IconFilter,
+  IconSearch,
+  IconSortAscending,
+  IconSortDescending,
+  IconX,
+} from '@tabler/icons-react'
 import { useState } from 'react'
 
-import type { CatalogFilters as Filters, GenreItem } from '../api/client'
+import {
+  SEASONS,
+  SORT_LABELS,
+  type CatalogFilters as Filters,
+  type GenreItem,
+  type SortField,
+} from '../api/client'
 
 interface Props {
   filters: Filters
@@ -22,6 +37,8 @@ interface Props {
   onChange: (next: Filters) => void
   searchInput: string
   onSearchInput: (value: string) => void
+  /** На вкладке онгоингов фильтр «только онгоинги» бессмыслен — он там уже применён. */
+  hideAiringToggle?: boolean
 }
 
 const TYPES = [
@@ -35,23 +52,60 @@ const TYPES = [
   { value: 'music', label: 'Клип' },
 ]
 
-const SORTS = [
-  { value: 'id', label: 'Сначала новые' },
-  { value: 'year', label: 'По году' },
-  { value: 'score', label: 'По оценке' },
-  { value: 'title', label: 'По названию' },
-]
-
-export function CatalogFilters({ filters, genres, onChange, searchInput, onSearchInput }: Props) {
+export function CatalogFilters({
+  filters,
+  genres,
+  onChange,
+  searchInput,
+  onSearchInput,
+  hideAiringToggle = false,
+}: Props) {
   const [expanded, setExpanded] = useState(false)
 
   const patch = (part: Partial<Filters>) => onChange({ ...filters, ...part })
+
+  const sort = filters.sort ?? 'id'
+  const sortDir = filters.sortDir ?? 'desc'
+
+  // Значение селектора кодирует и поле, и направление: повторный выбор того же поля
+  // переворачивает порядок, а подпись сразу говорит, какой он сейчас.
+  const sortOptions = (Object.keys(SORT_LABELS) as SortField[]).flatMap((field) => [
+    { value: `${field}:desc`, label: SORT_LABELS[field].desc },
+    { value: `${field}:asc`, label: SORT_LABELS[field].asc },
+  ])
+
+  const applySort = (raw: string | null) => {
+    if (!raw) return
+    const [field, dir] = raw.split(':') as [SortField, 'asc' | 'desc']
+    patch({ sort: field, sortDir: dir })
+  }
+
+  const toggleSortDir = () => patch({ sortDir: sortDir === 'desc' ? 'asc' : 'desc' })
+
+  const sortControl = (extraProps: Record<string, unknown>) => (
+    <Group gap={4} wrap="nowrap" {...extraProps}>
+      <Select
+        w={168}
+        data={sortOptions}
+        value={`${sort}:${sortDir}`}
+        onChange={applySort}
+        allowDeselect={false}
+      />
+      <Tooltip label={sortDir === 'desc' ? 'Сейчас по убыванию' : 'Сейчас по возрастанию'}>
+        <ActionIcon variant="default" onClick={toggleSortDir} aria-label="Изменить порядок">
+          {sortDir === 'desc' ? <IconSortDescending size={16} /> : <IconSortAscending size={16} />}
+        </ActionIcon>
+      </Tooltip>
+    </Group>
+  )
 
   const activeCount =
     (filters.genres?.length ?? 0) +
     (filters.type ? 1 : 0) +
     (filters.yearFrom !== undefined ? 1 : 0) +
-    (filters.yearTo !== undefined ? 1 : 0)
+    (filters.yearTo !== undefined ? 1 : 0) +
+    (filters.season ? 1 : 0) +
+    (filters.scoreFrom !== undefined ? 1 : 0)
 
   return (
     <>
@@ -81,17 +135,20 @@ export function CatalogFilters({ filters, genres, onChange, searchInput, onSearc
           </Button>
         </Tooltip>
 
-        <Select
-          w={170}
-          data={SORTS}
-          value={filters.sort ?? 'id'}
-          onChange={(v) => patch({ sort: (v as Filters['sort']) ?? 'id' })}
-          allowDeselect={false}
-        />
+        {/* На узком экране селектор сортировки съедает строку поиска — прячем его
+            туда же, под кнопку «Фильтры». */}
+        {sortControl({ visibleFrom: 'sm' })}
       </Group>
 
       <Collapse in={expanded}>
         <Group gap="xs" align="flex-end" mt="xs" wrap="wrap">
+          <Stack gap={2} hiddenFrom="sm">
+            <Text size="sm" fw={500}>
+              Сортировка
+            </Text>
+            {sortControl({})}
+          </Stack>
+
           <Select
             w={160}
             label="Тип"
@@ -118,6 +175,18 @@ export function CatalogFilters({ filters, genres, onChange, searchInput, onSearc
             onChange={(v) => patch({ yearTo: v === '' ? undefined : Number(v) })}
           />
 
+          {/* Сезон отдельно от года: Anime365 хранит их одной строкой «Осень 2015»,
+              мы разбираем её при синхронизации, чтобы можно было искать «все зимние». */}
+          <Select
+            w={130}
+            label="Сезон"
+            placeholder="Любой"
+            clearable
+            data={[...SEASONS]}
+            value={filters.season ?? null}
+            onChange={(v) => patch({ season: v ?? undefined })}
+          />
+
           <MultiSelect
             flex={1}
             miw={240}
@@ -138,21 +207,61 @@ export function CatalogFilters({ filters, genres, onChange, searchInput, onSearc
           />
         </Group>
 
+        {/* Оценка MAL — шкала 0..10 с шагом 0.5. Ползунок вместо ввода числа:
+            точное значение тут не нужно, а промахнуться мимо диапазона нельзя. */}
+        <Stack gap={2} mt="md" maw={420}>
+          <Group justify="space-between">
+            <Text size="sm" fw={500}>
+              Оценка MAL не ниже
+            </Text>
+            <Text size="sm" c={filters.scoreFrom ? undefined : 'dimmed'}>
+              {filters.scoreFrom ? filters.scoreFrom.toFixed(1) : 'любая'}
+            </Text>
+          </Group>
+          <Slider
+            min={0}
+            max={10}
+            step={0.5}
+            value={filters.scoreFrom ?? 0}
+            onChange={(v) => patch({ scoreFrom: v === 0 ? undefined : v })}
+            marks={[
+              { value: 0, label: 'любая' },
+              { value: 5, label: '5' },
+              { value: 7, label: '7' },
+              { value: 8, label: '8' },
+              { value: 10, label: '10' },
+            ]}
+            mb="lg"
+          />
+          {filters.scoreFrom !== undefined && (
+            <Text size="xs" c="dimmed">
+              Тайтлы без оценки при этом фильтре скрыты.
+            </Text>
+          )}
+        </Stack>
+
         <Group gap="xs" mt="xs">
-          <Chip
-            checked={filters.isAiring === true}
-            onChange={(checked) => patch({ isAiring: checked ? true : undefined })}
-            size="xs"
-          >
-            Только онгоинги
-          </Chip>
+          {!hideAiringToggle && (
+            <Chip
+              checked={filters.isAiring === true}
+              onChange={(checked) => patch({ isAiring: checked ? true : undefined })}
+              size="xs"
+            >
+              Только онгоинги
+            </Chip>
+          )}
           {activeCount > 0 && (
             <Button
               size="xs"
               variant="subtle"
               color="gray"
               onClick={() =>
-                onChange({ sort: filters.sort, query: filters.query, isAiring: filters.isAiring })
+                onChange({
+                  sort: filters.sort,
+                  sortDir: filters.sortDir,
+                  query: filters.query,
+                  isAiring: filters.isAiring,
+                })
               }
             >
               Сбросить фильтры

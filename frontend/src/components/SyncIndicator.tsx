@@ -1,4 +1,4 @@
-import { ActionIcon, Badge, Group, Loader, Menu, Text, Tooltip } from '@mantine/core'
+import { ActionIcon, Group, Loader, Menu, Text, Tooltip } from '@mantine/core'
 import { IconRefresh } from '@tabler/icons-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { notifications } from '@mantine/notifications'
@@ -11,7 +11,12 @@ const MODE_LABELS: Record<string, string> = {
   catalog_airing: 'обновление онгоингов',
 }
 
-export function SyncIndicator() {
+interface Props {
+  /** Сколько тайтлов дал текущий фильтр — чтобы не печатать одно и то же число дважды. */
+  filteredTotal?: number
+}
+
+export function SyncIndicator({ filteredTotal }: Props) {
   const queryClient = useQueryClient()
 
   const statusQuery = useQuery({
@@ -39,6 +44,9 @@ export function SyncIndicator() {
 
   return (
     <Group gap="xs">
+      {/* Число в кэше не дублируем рядом со счётчиком «найдено»: без фильтров они
+          совпадают и выглядят как одна цифра, напечатанная дважды. Показываем его
+          только когда выборка отфильтрована, иначе — в подсказке у кнопки. */}
       {running ? (
         <Group gap={6}>
           <Loader size="xs" />
@@ -46,24 +54,26 @@ export function SyncIndicator() {
             {MODE_LABELS[running] ?? running}
           </Text>
         </Group>
-      ) : (
-        <Tooltip label={`В кэше тайтлов: ${status?.total_series?.toLocaleString('ru') ?? '—'}`}>
-          <Badge variant="light" color="gray">
-            {status?.total_series?.toLocaleString('ru') ?? '—'}
-          </Badge>
-        </Tooltip>
-      )}
+      ) : filteredTotal !== undefined &&
+        status?.total_series !== undefined &&
+        filteredTotal !== status.total_series ? (
+        <Text size="xs" c="dimmed">
+          из {status.total_series.toLocaleString('ru')}
+        </Text>
+      ) : null}
 
       <Menu position="bottom-end">
         <Menu.Target>
-          <ActionIcon
-            variant="default"
-            loading={sync.isPending}
-            disabled={Boolean(running)}
-            aria-label="Обновить каталог"
-          >
-            <IconRefresh size={16} />
-          </ActionIcon>
+          <Tooltip label={`В кэше тайтлов: ${status?.total_series?.toLocaleString('ru') ?? '—'}`}>
+            <ActionIcon
+              variant="default"
+              loading={sync.isPending}
+              disabled={Boolean(running)}
+              aria-label="Обновить каталог"
+            >
+              <IconRefresh size={16} />
+            </ActionIcon>
+          </Tooltip>
         </Menu.Target>
         <Menu.Dropdown>
           <Menu.Label>Обновить каталог</Menu.Label>

@@ -12,6 +12,7 @@ import {
   type AuthorGroup,
   type SummarySection,
 } from '../api/title'
+import { ErrorState } from './ErrorState'
 
 interface Props {
   sections: SummarySection[]
@@ -149,16 +150,36 @@ function AuthorRow({
         </Text>
         {kind === 'sub' && (
           <>
-            {embedQuery.isFetching && <Loader size={10} mt={4} />}
+            {embedQuery.isFetching && (
+              <Group gap={4} mt={4}>
+                <Loader size={10} />
+                <Text size="xs" c="dimmed">
+                  проверяю…
+                </Text>
+              </Group>
+            )}
             {embedQuery.data && (
               <Badge size="xs" mt={4} color={hardsub ? 'orange' : 'teal'} variant="light">
                 {hardsub ? 'вшитые в видео' : 'отдельный файл'}
               </Badge>
             )}
-            {!probe && !embedQuery.data && (
-              <Button size="compact-xs" variant="subtle" mt={2} onClick={() => setProbe(true)}>
-                проверить сабы
-              </Button>
+            {embedQuery.isError && (
+              <ErrorState
+                compact
+                error={embedQuery.error}
+                onRetry={() => embedQuery.refetch()}
+              />
+            )}
+            {!probe && (
+              <Tooltip
+                multiline
+                w={260}
+                label="Узнать, вшиты ли субтитры в видео или скачиваются отдельным файлом. В каталоге этого признака нет, нужен отдельный запрос — требуется премиум-токен."
+              >
+                <Button size="compact-xs" variant="subtle" mt={2} onClick={() => setProbe(true)}>
+                  вшитые или файлом?
+                </Button>
+              </Tooltip>
             )}
           </>
         )}
@@ -192,18 +213,28 @@ function AuthorRow({
               Скачать
             </Button>
           </Tooltip>
-          {seriesUrl && (
-            <Button
-              size="compact-xs"
-              variant="subtle"
-              leftSection={<IconPlayerPlay size={12} />}
-              component="a"
-              href={seriesUrl}
-              target="_blank"
-              rel="noreferrer noopener"
+          {/* Ведём на страницу конкретного перевода конкретной серии, а не на общую
+              страницу тайтла: у строки со сводкой это самая ранняя серия автора. */}
+          {(group.first_url || seriesUrl) && (
+            <Tooltip
+              label={
+                group.first_url
+                  ? `Открыть серию ${group.first_episode ?? ''} этого перевода на сайте`
+                  : 'Открыть страницу тайтла на сайте'
+              }
             >
-              На сайте
-            </Button>
+              <Button
+                size="compact-xs"
+                variant="subtle"
+                leftSection={<IconPlayerPlay size={12} />}
+                component="a"
+                href={group.first_url ?? seriesUrl ?? undefined}
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                Смотреть
+              </Button>
+            </Tooltip>
           )}
         </Stack>
       </Table.Td>

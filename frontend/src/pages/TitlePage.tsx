@@ -1,5 +1,4 @@
 import {
-  Alert,
   Anchor,
   Badge,
   Card,
@@ -21,6 +20,7 @@ import { useParams } from 'react-router-dom'
 
 import { ALL_LANGS, usePreferences, type Lang } from '../stores/preferences'
 import { KIND_LABELS, LANG_COLORS, LANG_LABELS, titleApi } from '../api/title'
+import { ErrorState } from '../components/ErrorState'
 import { TranslationGroups } from '../components/TranslationGroups'
 
 export function TitlePage() {
@@ -45,9 +45,11 @@ export function TitlePage() {
 
   if (query.isError || !query.data) {
     return (
-      <Alert color="red" title="Не удалось загрузить тайтл">
-        {(query.error as Error)?.message ?? 'Тайтл не найден'}
-      </Alert>
+      <ErrorState
+        error={query.error ?? new Error('Тайтл не найден')}
+        title="Не удалось загрузить тайтл"
+        onRetry={() => query.refetch()}
+      />
     )
   }
 

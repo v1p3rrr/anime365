@@ -94,8 +94,25 @@ export interface CatalogFilters {
   type?: string
   yearFrom?: number
   yearTo?: number
+  /** Зима | Весна | Лето | Осень — независимо от года. */
+  season?: string
   isAiring?: boolean
-  sort?: 'id' | 'year' | 'score' | 'title'
+  /** Минимальная оценка MAL. Тайтлы без оценки при этом фильтре не показываются. */
+  scoreFrom?: number
+  sort?: SortField
+  sortDir?: 'asc' | 'desc'
+}
+
+export type SortField = 'id' | 'year' | 'score' | 'title'
+
+export const SEASONS = ['Зима', 'Весна', 'Лето', 'Осень'] as const
+
+/** Подписи зависят от направления, иначе «По году» ничего не говорит о порядке. */
+export const SORT_LABELS: Record<SortField, { desc: string; asc: string }> = {
+  id: { desc: 'Сначала новые', asc: 'Сначала старые' },
+  year: { desc: 'Год: новее', asc: 'Год: старее' },
+  score: { desc: 'Оценка: выше', asc: 'Оценка: ниже' },
+  title: { desc: 'Название: Я–А', asc: 'Название: А–Я' },
 }
 
 function buildParams(filters: CatalogFilters): string {
@@ -108,8 +125,11 @@ function buildParams(filters: CatalogFilters): string {
   if (filters.type) params.set('type', filters.type)
   if (filters.yearFrom !== undefined) params.set('year_from', String(filters.yearFrom))
   if (filters.yearTo !== undefined) params.set('year_to', String(filters.yearTo))
+  if (filters.season) params.set('season', filters.season)
   if (filters.isAiring !== undefined) params.set('is_airing', String(filters.isAiring))
+  if (filters.scoreFrom !== undefined) params.set('score_from', String(filters.scoreFrom))
   if (filters.sort) params.set('sort', filters.sort)
+  if (filters.sortDir) params.set('sort_dir', filters.sortDir)
   return params.toString()
 }
 

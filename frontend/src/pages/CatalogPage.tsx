@@ -6,6 +6,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { catalogApi, type CatalogFilters as Filters } from '../api/client'
 import { CatalogFilters } from '../components/CatalogFilters'
 import { CatalogGrid } from '../components/CatalogGrid'
+import { ErrorState } from '../components/ErrorState'
 import { SyncIndicator } from '../components/SyncIndicator'
 import { useVirtualCatalog } from '../hooks/useVirtualCatalog'
 
@@ -18,7 +19,12 @@ export function CatalogPage({ onlyAiring = false }: Props) {
   // Каждый символ не должен порождать запрос: список id считается по всей выборке.
   const [debouncedSearch] = useDebouncedValue(searchInput, 350)
 
-  const [filters, setFilters] = useState<Filters>({ sort: 'id' })
+  // На вкладке онгоингов по умолчанию сортируем по оценке: там всего три сотни
+  // тайтлов, и интересны прежде всего лучшие, а не самые новые по id.
+  const [filters, setFilters] = useState<Filters>({
+    sort: onlyAiring ? 'score' : 'id',
+    sortDir: 'desc',
+  })
 
   const effectiveFilters = useMemo<Filters>(
     () => ({
@@ -49,7 +55,9 @@ export function CatalogPage({ onlyAiring = false }: Props) {
   )
 
   return (
-    <Stack gap="sm">
+    // Колонка на всю доступную высоту: сетка внутри растягивается сама,
+    // поэтому подстраивается под любую высоту шапки и блока фильтров.
+    <Stack gap="sm" h="100%" style={{ minHeight: 0 }}>
       <Group justify="space-between" align="center">
         <Group gap="sm" align="baseline">
           <Title order={3}>{onlyAiring ? 'Онгоинги' : 'Каталог'}</Title>
@@ -60,7 +68,7 @@ export function CatalogPage({ onlyAiring = false }: Props) {
           )}
           {idsQuery.isFetching && <Loader size="xs" />}
         </Group>
-        <SyncIndicator />
+        <SyncIndicator filteredTotal={idsQuery.data?.total} />
       </Group>
 
       <CatalogFilters
@@ -69,12 +77,19 @@ export function CatalogPage({ onlyAiring = false }: Props) {
         onChange={setFilters}
         searchInput={searchInput}
         onSearchInput={setSearchInput}
+        hideAiringToggle={onlyAiring}
       />
 
       {idsQuery.isError && (
-        <Alert color="red" title="Не удалось загрузить каталог">
-          {(idsQuery.error as Error).message}
-        </Alert>
+        <ErrorState
+          error={idsQuery.error}
+          title="Не удалось загрузить каталог"
+          onRetry={() => idsQuery.refetch()}
+        />
+      )}
+
+      {genresQuery.isError && (
+        <ErrorState compact error={genresQuery.error} onRetry={() => genresQuery.refetch()} />
       )}
 
       {idsQuery.isSuccess && ids.length === 0 && (

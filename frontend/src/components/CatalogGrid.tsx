@@ -54,6 +54,14 @@ export function CatalogGrid({ ids, cards, onRangeChange }: Props) {
     overscan: 3,
   })
 
+  // Высота строки зависит от ширины колонки, а её измеряет ResizeObserver уже после
+  // первого рендера. Виртуализатор кэширует размеры и сам про это не узнает: без
+  // принудительного пересчёта он продолжает считать строки по старой высоте, из-за
+  // чего рисует их меньше, чем помещается, и снизу остаётся пустая полоса.
+  useEffect(() => {
+    virtualizer.measure()
+  }, [virtualizer, rowHeight])
+
   const virtualRows = virtualizer.getVirtualItems()
 
   useEffect(() => {
@@ -67,11 +75,19 @@ export function CatalogGrid({ ids, cards, onRangeChange }: Props) {
     <div
       ref={parentRef}
       style={{
-        height: 'calc(100vh - 210px)',
+        // Занимаем всё оставшееся место в колонке-родителе. Фиксированная высота
+        // вида calc(100vh - N) не годится: N зависит от высоты шапки и фильтров,
+        // а она разная на разной ширине — снизу оставалась пустая полоса,
+        // а последний ряд карточек обрезался.
+        flex: 1,
+        minHeight: 0,
         overflowY: 'auto',
         // Горизонтальный скролл недопустим: сетка обязана укладываться в ширину.
         overflowX: 'hidden',
-        contain: 'strict',
+        // Именно layout и paint, без size: strict включает size-containment,
+        // из-за которого элемент перестаёт растягиваться по flex и снизу
+        // остаётся пустая полоса.
+        contain: 'layout paint',
       }}
     >
       <div style={{ height: virtualizer.getTotalSize(), position: 'relative', width: '100%' }}>

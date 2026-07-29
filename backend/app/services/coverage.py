@@ -64,6 +64,10 @@ class AuthorGroup:
     episode_numbers: list[float] = field(default_factory=list)
     # Максимальная высота исходников этого автора — ОЦЕНКА, не точные ступени.
     max_height: int | None = None
+    # Ссылка на самую раннюю серию этого автора: кнопка «смотреть» должна вести
+    # на страницу конкретного перевода, а не на общую страницу тайтла.
+    first_url: str | None = None
+    first_episode: float | None = None
 
     def to_dict(self, total_episodes: int) -> dict:
         covered = {n for n in self.episode_numbers if n is not None}
@@ -75,6 +79,8 @@ class AuthorGroup:
             "coverage": "все серии" if complete else format_ranges(covered),
             "is_complete": complete,
             "max_height_estimate": self.max_height,
+            "first_url": self.first_url,
+            "first_episode": self.first_episode,
         }
 
 
@@ -100,8 +106,18 @@ def build_summary(translations: list[dict], total_episodes: int) -> list[dict]:
             bucket[authors] = group
 
         group.translation_ids.append(item["id"])
-        if item.get("episode_num") is not None:
-            group.episode_numbers.append(item["episode_num"])
+        episode_num = item.get("episode_num")
+        if episode_num is not None:
+            group.episode_numbers.append(episode_num)
+
+        # Запоминаем ссылку на самую раннюю серию: с неё логично начинать просмотр.
+        url = item.get("url")
+        if url and (
+            group.first_url is None
+            or (episode_num is not None and (group.first_episode is None or episode_num < group.first_episode))
+        ):
+            group.first_url = url
+            group.first_episode = episode_num
 
         height = item.get("height")
         if height and (group.max_height is None or height > group.max_height):
