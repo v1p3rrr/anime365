@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -17,7 +18,9 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 log = logging.getLogger(__name__)
 
-DB_PATH = Path("/data/anime365.db")
+# Единственная настройка, которая не может жить в реестре: сам реестр читает
+# переопределения из БД, поэтому путь к БД обязан быть известен раньше.
+DB_PATH = Path(os.environ.get("A365_DB_PATH", "/data/anime365.db"))
 
 
 class Base(DeclarativeBase):

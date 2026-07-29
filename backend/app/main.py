@@ -13,9 +13,11 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import health
+from app.api import catalog, health
+from app.core.bootstrap import bootstrap
 from app.core.db import check_connection
 from app.core.logging_setup import setup_logging
+from app.workers.scheduler import start_scheduler, stop_scheduler
 
 log = logging.getLogger(__name__)
 
@@ -30,11 +32,14 @@ async def lifespan(_app: FastAPI):
     if not check_connection():
         log.error("БД недоступна — сервис поднимется, но работать не сможет")
 
-    # Здесь будут стартовать фоновые задачи (этап 1+):
-    # планировщик синка каталога, воркеры загрузок, слежение за файловой системой.
+    bootstrap()
+    start_scheduler()
+
+    # Воркеры загрузок и слежение за файловой системой добавятся на этапах 4-5.
 
     yield
 
+    stop_scheduler()
     log.info("Anime365 Downloader останавливается")
 
 
@@ -48,6 +53,7 @@ app = FastAPI(
 )
 
 app.include_router(health.router, prefix="/api")
+app.include_router(catalog.router, prefix="/api")
 
 
 if STATIC_DIR.is_dir():
