@@ -129,7 +129,9 @@ class TestSecretRedaction:
     def test_token_is_removed_from_log_text(self) -> None:
         from app.core.logging_setup import SecretRedactingFilter
 
-        token = "00000000000000000000000000000000deadbeef"
+        # Значение синтетическое. Настоящие токены не попадают ни в тесты, ни в фикстуры,
+        # ни в примеры — см. правило №0 в claude/07-security.md.
+        token = "0" * 32 + "deadbeef"
         text = f"GET /api/me?access_token={token} failed"
         assert token not in SecretRedactingFilter._redact(text, (token,))
 
