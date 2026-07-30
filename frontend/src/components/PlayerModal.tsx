@@ -1,4 +1,4 @@
-import { Alert, Badge, Group, Loader, Modal, Select, Stack, Text } from '@mantine/core'
+import { Alert, Badge, Group, Loader, Modal, Select, SimpleGrid, Stack, Text } from '@mantine/core'
 import { IconAlertTriangle } from '@tabler/icons-react'
 import { useEffect, useRef, useState } from 'react'
 
@@ -116,7 +116,9 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel, serie
               style={{ width: '100%', maxHeight: '60vh', background: '#000', borderRadius: 6 }}
             />
 
-            <Group gap="sm" grow align="flex-start">
+            {/* На 375px два селектора рядом сжимаются до «RU · StudioBand · 10»,
+                и выбранное не прочитать. Раскладываем их в столбик. */}
+            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
               <Select
                 size="xs"
                 label="Дорожка"
@@ -134,7 +136,7 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel, serie
                 value={subId}
                 onChange={setSubId}
               />
-            </Group>
+            </SimpleGrid>
 
             {subsLoading && (
               <Group gap="xs">
