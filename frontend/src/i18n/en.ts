@@ -234,6 +234,13 @@ export const en: Dictionary = {
     codecHintSite: ' Open the episode on the site instead.',
   },
 
+  downloadButton: {
+    subtitles: 'Download the subtitle file',
+    otherQuality: 'Another quality',
+    quality: 'Quality',
+    enqueueFailed: 'Could not add to the queue',
+  },
+
   batch: {
     all: 'All',
     tooltip: 'Download every episode by this author ({count})',
@@ -276,6 +283,23 @@ export const en: Dictionary = {
     kindSubtitle: 'subtitles',
     kindAudio: 'audio',
     attempts: 'attempt {n}',
+    loadFailed: 'Could not load the queue',
+    actionFailed: 'Did not work',
+    cleared: 'Entries removed: {count}',
+    requeued: 'Returned to the queue: {count}',
+    liveOn: 'Progress updates in real time',
+    liveOff: 'Live updates unavailable, the list refreshes every 15 seconds',
+    online: 'online',
+    polling: 'polling',
+    active: 'In progress',
+    finished: 'Finished',
+    columnWhat: 'What',
+    reasonUnknown: 'reason unknown',
+    attemptsCount: ' (attempts: {count})',
+    remaining: ' · {eta} left',
+    pauseHint: 'Pause, the file is kept',
+    resumeHint: 'Continue from the same place',
+    cancelHint: 'Cancel, the partial file is deleted',
   },
 
   library: {
@@ -330,6 +354,7 @@ export const en: Dictionary = {
     needsConfirmation: 'Awaiting confirmation: {count}',
     manual: 'Manual: {count}',
     weakest: 'Weakest matches',
+    noExplanation: 'no explanation',
     weakestHint: 'A sensible place to start checking by hand: an error is most likely here.',
     empty: 'No folder is matched yet. Run a scan.',
     failed: 'Could not build the report',
@@ -356,6 +381,14 @@ export const en: Dictionary = {
     needsConfirmation: 'Needs confirmation',
     unbound: 'Link removed',
     unbindFailed: 'Could not unlink',
+    primaryChanged: 'Primary folder changed',
+    makePrimaryHint: 'Put downloads into this folder',
+    unbindHint: 'Remove the link to this folder',
+    readOnlyHint: 'The volume is mounted read-only — downloads are unavailable',
+    confidenceHint: 'How confident the algorithm is in this link: {value} out of 100.',
+    matchedOn: ' Matched on: {what}',
+    premiered: ' · premiered {date}',
+    roleVideo: 'video',
     videosAndSize: '{count} videos · {size}',
   },
 
@@ -369,6 +402,7 @@ export const en: Dictionary = {
     failed: 'Could not link',
     kindMovies: 'movies',
     kindSeries: 'series',
+    pickTitle: 'Pick a folder for the title',
   },
 
   bindEpisode: {
@@ -394,6 +428,10 @@ export const en: Dictionary = {
     nothing: 'Nothing found. Try a different spelling — romaji instead of Russian, for example.',
     bound: 'Folder linked',
     failed: 'Could not link',
+    bindToTitle: 'Link the folder to a title',
+    noNfo: ' · no .nfo',
+    withNfo: ' · in .nfo: {title}',
+    searchCatalog: 'Search the catalog',
   },
 
   settings: {

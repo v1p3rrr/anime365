@@ -28,8 +28,9 @@ interface Props {
 }
 
 /** Короткие подписи для разбивки по папкам — там места мало. */
+/** Языковые коды одинаковы везде; «видео» берётся из словаря. */
 const ROLE_SHORT: Record<string, string> = {
-  video: 'видео',
+  video: '',
   sub_ru: 'RU',
   sub_ja: 'JA',
   sub_en: 'EN',
@@ -57,32 +58,31 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
   const unbind = useMutation({
     mutationFn: titleApi.unbind,
     onSuccess: () => {
-      notifications.show({ color: 'teal', message: 'Привязка удалена' })
+      notifications.show({ color: 'teal', message: t('mapping.unbound') })
       refresh()
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: 'Не удалось отвязать', message: error.message }),
+      notifications.show({ color: 'red', title: t('mapping.unbindFailed'), message: error.message }),
   })
 
   const makePrimary = useMutation({
     mutationFn: (mappingId: number) => titleApi.makePrimary(mappingId, seriesId),
     onSuccess: () => {
-      notifications.show({ color: 'teal', message: 'Основная папка изменена' })
+      notifications.show({ color: 'teal', message: t('mapping.primaryChanged') })
       refresh()
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: 'Не удалось изменить', message: error.message }),
+      notifications.show({ color: 'red', title: t('title.treatFailed'), message: error.message }),
   })
 
   if (mappings.length === 0) {
     return (
-      <Alert color="orange" title="Нет привязки к локальной папке" icon={<IconFolderOff size={18} />}>
+      <Alert color="orange" title={t('mapping.noneTitle')} icon={<IconFolderOff size={18} />}>
         <Text size="sm" mb="xs">
-          Этот тайтл не сопоставлен ни с одной папкой библиотеки. Скачанные файлы будет некуда
-          положить, пока привязка не создана.
+          {t('mapping.noneHint')}
         </Text>
         <Button size="xs" leftSection={<IconFolderPlus size={14} />} onClick={onRebind}>
-          Привязать папку
+          {t('mapping.bindFolder')}
         </Button>
       </Alert>
     )
@@ -98,8 +98,7 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
             почему счётчики не сходятся с содержимым конкретной папки. */}
         {multiple && (
           <Text size="xs" c="dimmed">
-            Тайтл лежит в {mappings.length} папках. Загрузки идут в основную,
-            остальные учитываются при подсчёте того, что уже есть.
+            {t('mapping.multiple', { count: mappings.length })}
           </Text>
         )}
         {mappings.map((mapping) => (
@@ -119,24 +118,26 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
                     <Tooltip
                       label={
                         mapping.primary_is_manual
-                          ? 'Сюда складываются загрузки. Выбрано вручную'
-                          : 'Сюда складываются загрузки. Выбрано автоматически — по числу серий этого тайтла в папке'
+                          ? t('mapping.primaryHintManual')
+                          : t('mapping.primaryHintAuto')
                       }
                     >
                       <Badge size="xs" color="blue" leftSection={<IconStar size={10} />}>
-                        основная{mapping.primary_is_manual ? '' : ' (авто)'}
+                        {mapping.primary_is_manual
+                          ? t('mapping.primaryManual')
+                          : t('mapping.primaryAuto')}
                       </Badge>
                     </Tooltip>
                   )}
                   {mapping.season_number != null && (
                     <Badge size="xs" variant="light">
-                      сезон {mapping.season_number}
+                      {t('mapping.seasonNumber', { n: mapping.season_number })}
                     </Badge>
                   )}
                   {!mapping.writable && (
-                    <Tooltip label="Том смонтирован только для чтения — загрузки недоступны">
+                    <Tooltip label={t('mapping.readOnlyHint')}>
                       <Badge size="xs" color="yellow" leftSection={<IconLock size={10} />}>
-                        только чтение
+                        {t('mapping.readOnly')}
                       </Badge>
                     </Tooltip>
                   )}
@@ -149,22 +150,25 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
                     multiline
                     w={320}
                     label={
-                      `Насколько алгоритм уверен в этой связи: ${mapping.confidence.toFixed(0)} из 100. ` +
-                      (mapping.matched_on ? `Совпало по: ${mapping.matched_on}` : '')
+                      t('mapping.confidenceHint', { value: mapping.confidence.toFixed(0) }) +
+                      (mapping.matched_on ? t('mapping.matchedOn', { what: mapping.matched_on }) : '')
                     }
                   >
                     <Badge size="sm" variant="light" color={SOURCE_COLORS[mapping.source] ?? 'gray'}>
                       {sourceLabel(mapping.source)}
-                      {!mapping.is_manual && ` · точность ${mapping.confidence.toFixed(0)}%`}
+                      {!mapping.is_manual && ` · ${t('mapping.accuracy', { value: mapping.confidence.toFixed(0) })}`}
                     </Badge>
                   </Tooltip>
                   {mapping.needs_confirmation && (
                     <Badge size="sm" color="yellow">
-                      требует подтверждения
+                      {t('mapping.needsConfirmation')}
                     </Badge>
                   )}
                   <Text size="xs" c="dimmed">
-                    {mapping.video_count} видео · {size(mapping.size_bytes)}
+                    {t('mapping.videosAndSize', {
+                      count: mapping.video_count,
+                      size: size(mapping.size_bytes),
+                    })}
                   </Text>
                 </Group>
 
@@ -172,9 +176,9 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
                     непонятно, откуда взялись суммарные цифры. */}
                 {multiple && Object.keys(mapping.counts).length > 0 && (
                   <Text size="xs" c="dimmed" mt={2}>
-                    здесь:{' '}
+                    {t('mapping.here', { what: '' })}
                     {Object.entries(mapping.counts)
-                      .map(([role, count]) => `${ROLE_SHORT[role] ?? role} ${count}`)
+                      .map(([role, count]) => `${ROLE_SHORT[role] || t('mapping.roleVideo')} ${count}`)
                       .join(' · ')}
                   </Text>
                 )}
@@ -183,15 +187,15 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
                     что привязка верная. */}
                 {mapping.nfo_title && (
                   <Text size="xs" c="dimmed" mt={2} style={{ wordBreak: 'break-word' }}>
-                    в .nfo: {mapping.nfo_title}
-                    {mapping.nfo_premiered ? ` · премьера ${mapping.nfo_premiered}` : ''}
+                    {t('mapping.nfoTitle', { title: mapping.nfo_title })}
+                    {mapping.nfo_premiered ? t('mapping.premiered', { date: mapping.nfo_premiered }) : ''}
                   </Text>
                 )}
               </div>
 
               <Stack gap={2} align="flex-end" style={{ flexShrink: 0 }}>
                 {multiple && !mapping.is_primary && (
-                  <Tooltip label="Складывать загрузки в эту папку">
+                  <Tooltip label={t('mapping.makePrimaryHint')}>
                     <Button
                       size="compact-xs"
                       variant="subtle"
@@ -199,11 +203,11 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
                       onClick={() => makePrimary.mutate(mapping.mapping_id)}
                       loading={makePrimary.isPending}
                     >
-                      Сделать основной
+                      {t('mapping.makePrimary')}
                     </Button>
                   </Tooltip>
                 )}
-                <Tooltip label="Убрать связь с этой папкой">
+                <Tooltip label={t('mapping.unbindHint')}>
                   <Button
                     size="compact-xs"
                     variant="subtle"
@@ -212,7 +216,7 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
                     onClick={() => unbind.mutate(mapping.mapping_id)}
                     loading={unbind.isPending}
                   >
-                    Отвязать
+                    {t('common.unbind')}
                   </Button>
                 </Tooltip>
               </Stack>
@@ -227,7 +231,7 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
             leftSection={<IconFolderPlus size={12} />}
             onClick={onRebind}
           >
-            Привязать ещё папку
+            {t('mapping.bindAnother')}
           </Button>
         </Group>
 

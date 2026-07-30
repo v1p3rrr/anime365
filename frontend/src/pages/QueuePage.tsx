@@ -87,7 +87,7 @@ export function QueuePage() {
     mutationFn: ({ fn, id }: { fn: (id: number) => Promise<unknown>; id: number }) => fn(id),
     onSuccess: refresh,
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: 'Не получилось', message: error.message }),
+      notifications.show({ color: 'red', title: t('queue.actionFailed'), message: error.message }),
   })
 
   const pauseAll = useMutation({ mutationFn: downloadsApi.pauseAll, onSuccess: refresh })
@@ -95,7 +95,7 @@ export function QueuePage() {
   const clearFinished = useMutation({
     mutationFn: downloadsApi.clearFinished,
     onSuccess: (result) => {
-      notifications.show({ color: 'teal', message: `Убрано записей: ${result.deleted}` })
+      notifications.show({ color: 'teal', message: t('queue.cleared', { count: result.deleted }) })
       refresh()
     },
   })
@@ -109,18 +109,18 @@ export function QueuePage() {
       return ids.length
     },
     onSuccess: (count) => {
-      notifications.show({ color: 'teal', message: `Возвращено в очередь: ${count}` })
+      notifications.show({ color: 'teal', message: t('queue.requeued', { count }) })
       refresh()
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: 'Не получилось', message: error.message }),
+      notifications.show({ color: 'red', title: t('queue.actionFailed'), message: error.message }),
   })
 
   if (queue.isError) {
     return (
       <ErrorState
         error={queue.error}
-        title="Не удалось загрузить очередь"
+        title={t('queue.loadFailed')}
         onRetry={() => queue.refetch()}
       />
     )
@@ -141,17 +141,17 @@ export function QueuePage() {
     <Stack gap="md" className={scrollClasses.scrollPage}>
       <Group justify="space-between" wrap="wrap">
         <Group gap="sm" align="center">
-          <Title order={3}>Очередь загрузок</Title>
+          <Title order={3}>{t('queue.title')}</Title>
           {queue.isFetching && <Loader size="xs" />}
           <Tooltip
             label={
               connected
-                ? 'Прогресс обновляется в реальном времени'
-                : 'Живое обновление недоступно, список обновляется раз в 15 секунд'
+                ? t('queue.liveOn')
+                : t('queue.liveOff')
             }
           >
             <Badge size="sm" variant="light" color={connected ? 'teal' : 'gray'}>
-              {connected ? 'онлайн' : 'опрос'}
+              {connected ? t('queue.online') : t('queue.polling')}
             </Badge>
           </Tooltip>
         </Group>
@@ -211,10 +211,10 @@ export function QueuePage() {
                 <Text size="sm" style={{ wordBreak: 'break-word' }}>
                   {task.series_title}
                   {task.episode != null && `, серия ${task.episode}`}
-                  {task.kind === 'subtitle' ? ' (субтитры)' : ' (видео)'}
+                  {` (${task.kind === 'subtitle' ? t('queue.kindSubtitle') : t('queue.kindVideo')})`}
                 </Text>
                 <Text size="xs" c="dimmed" style={{ wordBreak: 'break-word' }}>
-                  {task.last_error ?? 'причина неизвестна'}
+                  {task.last_error ?? t('queue.reasonUnknown')}
                 </Text>
               </div>
             ))}
@@ -260,8 +260,8 @@ export function QueuePage() {
         </Alert>
       )}
 
-      {active.length > 0 && <TaskTable title="В работе" tasks={active} action={action} />}
-      {finished.length > 0 && <TaskTable title="Завершённые" tasks={finished} action={action} />}
+      {active.length > 0 && <TaskTable title={t('queue.active')} tasks={active} action={action} />}
+      {finished.length > 0 && <TaskTable title={t('queue.finished')} tasks={finished} action={action} />}
     </Stack>
   )
 }
@@ -273,6 +273,7 @@ interface TableProps {
 }
 
 function TaskTable({ title, tasks, action }: TableProps) {
+  const { t } = useT()
   return (
     <div>
       <Text size="sm" fw={600} mb={4}>
@@ -282,10 +283,10 @@ function TaskTable({ title, tasks, action }: TableProps) {
         <Table striped highlightOnHover verticalSpacing="xs">
           <Table.Thead>
             <Table.Tr>
-              <Table.Th>Что</Table.Th>
-              <Table.Th w={230}>Прогресс</Table.Th>
-              <Table.Th w={130}>Статус</Table.Th>
-              <Table.Th w={120}>Действия</Table.Th>
+              <Table.Th>{t('queue.columnWhat')}</Table.Th>
+              <Table.Th w={230}>{t('queue.columnProgress')}</Table.Th>
+              <Table.Th w={130}>{t('queue.columnStatus')}</Table.Th>
+              <Table.Th w={120}>{t('queue.columnActions')}</Table.Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
@@ -313,7 +314,7 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
         <Link to={`/series/${task.series_id}`}>{task.series_title || `#${task.series_id}`}</Link>
         <Text size="xs" c="dimmed">
           {task.episode != null && `серия ${task.episode} · `}
-          {task.kind === 'video' ? 'видео' : 'субтитры'}
+          {task.kind === 'video' ? t('queue.kindVideo') : t('queue.kindSubtitle')}
           {task.lang && ` · ${task.lang}`}
           {task.authors && ` · ${task.authors}`}
           {task.resolved_height && ` · ${task.resolved_height}p`}
@@ -321,7 +322,7 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
         {task.last_error && (
           <Text size="xs" c="red" style={{ wordBreak: 'break-word' }}>
             {task.last_error}
-            {task.attempts > 0 && ` (попыток: ${task.attempts})`}
+            {task.attempts > 0 && t('queue.attemptsCount', { count: task.attempts })}
           </Text>
         )}
       </Table.Td>
@@ -340,7 +341,7 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
             <Text size="xs" c="dimmed">
               {formatBytes(task.bytes_done)} из {formatBytes(task.bytes_total)}
               {task.status === 'downloading' && ` · ${formatSpeed(task.speed_bps)}`}
-              {task.status === 'downloading' && ` · осталось ${formatEta(task)}`}
+              {task.status === 'downloading' && t('queue.remaining', { eta: formatEta(task) })}
             </Text>
           </>
         ) : task.bytes_done > 0 ? (
@@ -372,7 +373,7 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
       <Table.Td>
         <Group gap={2} wrap="nowrap">
           {canPause && (
-            <Tooltip label="Пауза, файл сохранится">
+            <Tooltip label={t('queue.pauseHint')}>
               <ActionIcon
                 size="sm"
                 variant="subtle"
@@ -383,7 +384,7 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
             </Tooltip>
           )}
           {canResume && (
-            <Tooltip label="Продолжить с того же места">
+            <Tooltip label={t('queue.resumeHint')}>
               <ActionIcon
                 size="sm"
                 variant="subtle"
@@ -394,7 +395,7 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
             </Tooltip>
           )}
           {canRetry && (
-            <Tooltip label="Повторить">
+            <Tooltip label={t('common.retry')}>
               <ActionIcon
                 size="sm"
                 variant="subtle"
@@ -405,7 +406,7 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
             </Tooltip>
           )}
           {canCancel && (
-            <Tooltip label="Отменить, недокачанное удалится">
+            <Tooltip label={t('queue.cancelHint')}>
               <ActionIcon
                 size="sm"
                 variant="subtle"

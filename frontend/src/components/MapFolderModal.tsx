@@ -20,6 +20,7 @@ import { catalogApi } from '../api/client'
 import { libraryApi, type UnmappedFolder } from '../api/library'
 import { ErrorState } from './ErrorState'
 import pathClasses from './PathLine.module.css'
+import { useT } from '../i18n'
 
 interface Props {
   folder: UnmappedFolder | null
@@ -34,6 +35,7 @@ interface Props {
  * от каталожного написанием.
  */
 export function MapFolderModal({ folder, onClose }: Props) {
+  const { t } = useT()
   const queryClient = useQueryClient()
   const [query, setQuery] = useState('')
   const [debounced] = useDebouncedValue(query, 300)
@@ -59,18 +61,18 @@ export function MapFolderModal({ folder, onClose }: Props) {
   const create = useMutation({
     mutationFn: (seriesId: number) => libraryApi.createMapping(folder!.folder_id, seriesId),
     onSuccess: () => {
-      notifications.show({ color: 'teal', message: 'Привязка сохранена' })
+      notifications.show({ color: 'teal', message: t('mapFolder.bound') })
       for (const key of ['library-unmapped', 'library-mappings', 'library-status']) {
         queryClient.invalidateQueries({ queryKey: [key] })
       }
       onClose()
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: 'Не удалось привязать', message: error.message }),
+      notifications.show({ color: 'red', title: t('mapFolder.failed'), message: error.message }),
   })
 
   return (
-    <Modal opened={Boolean(folder)} onClose={onClose} title="Привязать папку к тайтлу" size="lg">
+    <Modal opened={Boolean(folder)} onClose={onClose} title={t('mapFolder.bindToTitle')} size="lg">
       {folder && (
         <Stack gap="sm">
           <Alert color="gray" p="xs">
@@ -80,7 +82,9 @@ export function MapFolderModal({ folder, onClose }: Props) {
             <Text size="xs" c="dimmed">
               {folder.video_count} видео
               {folder.season_number != null ? ` · сезон ${folder.season_number}` : ''}
-              {folder.nfo_title ? ` · в .nfo: ${folder.nfo_title}` : ' · .nfo нет'}
+              {folder.nfo_title
+                ? t('mapFolder.withNfo', { title: folder.nfo_title })
+                : t('mapFolder.noNfo')}
               {folder.nfo_year ? ` (${folder.nfo_year})` : ''}
             </Text>
             {folder.season_number != null && folder.season_number > 0 && (
@@ -93,7 +97,7 @@ export function MapFolderModal({ folder, onClose }: Props) {
 
           <TextInput
             data-autofocus
-            placeholder="Поиск по каталогу"
+            placeholder={t('mapFolder.searchCatalog')}
             leftSection={<IconSearch size={16} />}
             value={query}
             onChange={(e) => setQuery(e.currentTarget.value)}
@@ -105,7 +109,7 @@ export function MapFolderModal({ folder, onClose }: Props) {
 
           {ids.data?.total === 0 && (
             <Text size="sm" c="dimmed">
-              Ничего не найдено. Попробуйте другое написание — например romaji вместо русского.
+              {t('mapFolder.nothing')}
             </Text>
           )}
 

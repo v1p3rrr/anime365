@@ -6,6 +6,7 @@ import { useState } from 'react'
 
 import { downloadsApi } from '../api/downloads'
 import { titleApi } from '../api/title'
+import { useT } from '../i18n'
 
 interface Props {
   translationId: number
@@ -32,6 +33,7 @@ export function DownloadButton({
   disabled,
   disabledReason,
 }: Props) {
+  const { t } = useT()
   const queryClient = useQueryClient()
   const [menuOpened, setMenuOpened] = useState(false)
 
@@ -47,21 +49,21 @@ export function DownloadButton({
     onSuccess: (result) => {
       notifications.show({
         color: result.created ? 'teal' : 'gray',
-        message: result.created ? 'Добавлено в очередь' : 'Уже в очереди',
+        message: result.created ? t('episode.queued') : t('episode.alreadyQueued'),
       })
       queryClient.invalidateQueries({ queryKey: ['downloads'] })
     },
     onError: (error: Error) =>
       notifications.show({
         color: 'red',
-        title: 'Не удалось поставить в очередь',
+        title: t('downloadButton.enqueueFailed'),
         message: error.message,
       }),
   })
 
   if (kind === 'subtitle') {
     return (
-      <Tooltip label={disabled ? disabledReason : 'Скачать файл субтитров'}>
+      <Tooltip label={disabled ? disabledReason : t('downloadButton.subtitles')}>
         <Button
           size="compact-xs"
           leftSection={<IconDownload size={12} />}
@@ -99,13 +101,13 @@ export function DownloadButton({
             px={4}
             disabled={disabled}
             style={{ borderTopLeftRadius: 0, borderBottomLeftRadius: 0 }}
-            aria-label="Другое качество"
+            aria-label={t('downloadButton.otherQuality')}
           >
             <IconChevronDown size={12} />
           </Button>
         </Menu.Target>
         <Menu.Dropdown>
-          <Menu.Label>Качество</Menu.Label>
+          <Menu.Label>{t('downloadButton.quality')}</Menu.Label>
           {embed.isFetching && (
             <Menu.Item disabled leftSection={<Loader size={10} />}>
               узнаю доступные…

@@ -233,6 +233,13 @@ export const ru = {
     codecHintSite: ' Тогда откройте серию на сайте.',
   },
 
+  downloadButton: {
+    subtitles: 'Скачать файл субтитров',
+    otherQuality: 'Другое качество',
+    quality: 'Качество',
+    enqueueFailed: 'Не удалось поставить в очередь',
+  },
+
   batch: {
     all: 'Все',
     tooltip: 'Скачать все серии этого автора ({count} шт.)',
@@ -275,6 +282,23 @@ export const ru = {
     kindSubtitle: 'субтитры',
     kindAudio: 'звук',
     attempts: 'попытка {n}',
+    loadFailed: 'Не удалось загрузить очередь',
+    actionFailed: 'Не получилось',
+    cleared: 'Убрано записей: {count}',
+    requeued: 'Возвращено в очередь: {count}',
+    liveOn: 'Прогресс обновляется в реальном времени',
+    liveOff: 'Живое обновление недоступно, список обновляется раз в 15 секунд',
+    online: 'онлайн',
+    polling: 'опрос',
+    active: 'В работе',
+    finished: 'Завершённые',
+    columnWhat: 'Что',
+    reasonUnknown: 'причина неизвестна',
+    attemptsCount: ' (попыток: {count})',
+    remaining: ' · осталось {eta}',
+    pauseHint: 'Пауза, файл сохранится',
+    resumeHint: 'Продолжить с того же места',
+    cancelHint: 'Отменить, недокачанное удалится',
   },
 
   library: {
@@ -329,6 +353,7 @@ export const ru = {
     needsConfirmation: 'Ждут подтверждения: {count}',
     manual: 'Вручную: {count}',
     weakest: 'Самые слабые связи',
+    noExplanation: 'без пояснения',
     weakestHint: 'С них разумно начинать ручную проверку: если ошибка есть, она скорее здесь.',
     empty: 'Пока ни одна папка не привязана. Запустите сканирование.',
     failed: 'Не удалось построить отчёт',
@@ -355,6 +380,14 @@ export const ru = {
     needsConfirmation: 'Требует подтверждения',
     unbound: 'Привязка снята',
     unbindFailed: 'Не удалось отвязать',
+    primaryChanged: 'Основная папка изменена',
+    makePrimaryHint: 'Складывать загрузки в эту папку',
+    unbindHint: 'Убрать связь с этой папкой',
+    readOnlyHint: 'Том смонтирован только для чтения — загрузки недоступны',
+    confidenceHint: 'Насколько алгоритм уверен в этой связи: {value} из 100.',
+    matchedOn: ' Совпало по: {what}',
+    premiered: ' · премьера {date}',
+    roleVideo: 'видео',
     videosAndSize: '{count} видео · {size}',
   },
 
@@ -368,6 +401,7 @@ export const ru = {
     failed: 'Не удалось привязать',
     kindMovies: 'фильмы',
     kindSeries: 'сериалы',
+    pickTitle: 'Выбрать папку для тайтла',
   },
 
   bindEpisode: {
@@ -394,6 +428,10 @@ export const ru = {
     nothing: 'Ничего не найдено. Попробуйте другое написание — например romaji вместо русского.',
     bound: 'Папка привязана',
     failed: 'Не удалось привязать',
+    bindToTitle: 'Привязать папку к тайтлу',
+    noNfo: ' · .nfo нет',
+    withNfo: ' · в .nfo: {title}',
+    searchCatalog: 'Поиск по каталогу',
   },
 
   settings: {

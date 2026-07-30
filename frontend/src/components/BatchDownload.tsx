@@ -5,6 +5,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { downloadsApi } from '../api/downloads'
+import { useT } from '../i18n'
 import type { AuthorGroup } from '../api/title'
 
 interface Props {
@@ -16,12 +17,8 @@ interface Props {
   disabledReason?: string
 }
 
-const HEIGHTS = [
-  { value: '1080', label: 'до 1080p (максимум)' },
-  { value: '720', label: 'до 720p' },
-  { value: '480', label: 'до 480p' },
-  { value: '360', label: 'до 360p' },
-]
+/** Ступени качества. Подписи собираются из словаря: «до 720p» переводится. */
+const HEIGHTS = ['1080', '720', '480', '360'] as const
 
 /**
  * Батч-загрузка всех серий одного автора.
@@ -38,6 +35,7 @@ export function BatchDownload({
   disabledReason,
 }: Props) {
   const queryClient = useQueryClient()
+  const { t } = useT()
   const [height, setHeight] = useState('1080')
   const [includeExtras, setIncludeExtras] = useState(false)
 
@@ -50,34 +48,34 @@ export function BatchDownload({
     mutationFn: (what: 'video' | 'subtitle' | 'both') =>
       downloadsApi.batch(ids, what, what === 'subtitle' ? undefined : Number(height)),
     onSuccess: (result) => {
-      const parts = [`добавлено: ${result.created}`]
-      if (result.skipped) parts.push(`уже в очереди: ${result.skipped}`)
-      if (result.failed) parts.push(`не вышло: ${result.failed}`)
+      const parts = [t('batch.added', { count: result.created })]
+      if (result.skipped) parts.push(t('batch.skipped', { count: result.skipped }))
+      if (result.failed) parts.push(t('batch.failed', { count: result.failed }))
       notifications.show({
         color: result.failed ? 'yellow' : 'teal',
-        title: 'Батч поставлен в очередь',
+        title: t('batch.queued'),
         message: parts.join(' · '),
       })
       // Ошибки отдельных задач видны в очереди — туда и отправляем.
       if (result.errors.length > 0) {
         notifications.show({
           color: 'red',
-          title: 'Часть переводов не поставилась',
+          title: t('batch.partialFailed'),
           message: result.errors.slice(0, 3).join('; '),
         })
       }
       queryClient.invalidateQueries({ queryKey: ['downloads'] })
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: 'Батч не поставился', message: error.message }),
+      notifications.show({ color: 'red', title: t('batch.failedTitle'), message: error.message }),
   })
 
-  const label = `${ids.length} шт.`
+  const label = String(ids.length)
 
   return (
     <Menu position="bottom-end" closeOnItemClick={false}>
       <Menu.Target>
-        <Tooltip label={disabled ? disabledReason : `Скачать все серии этого автора (${label})`}>
+        <Tooltip label={disabled ? disabledReason : t('batch.tooltip', { count: label })}>
           <Button
             size="compact-xs"
             variant="light"
@@ -86,7 +84,7 @@ export function BatchDownload({
             disabled={disabled}
             loading={run.isPending}
           >
-            Все
+            {t('batch.all')}
           </Button>
         </Tooltip>
       </Menu.Target>
@@ -94,16 +92,19 @@ export function BatchDownload({
       <Menu.Dropdown>
         <Stack gap="xs" p="xs" w={250}>
           <Text size="xs" c="dimmed">
-            Переводов у автора: {ids.length}
-            {contentEpisodes.size > 0 && ` · серий у тайтла: ${contentEpisodes.size}`}
+            {t('batch.countLine', { count: ids.length })}
+            {contentEpisodes.size > 0 && t('batch.episodesLine', { count: contentEpisodes.size })}
           </Text>
 
           {kind !== 'sub' && (
             <Select
               size="xs"
-              label="Качество"
-              description="Если такой ступени нет, возьмём ближайшую ниже"
-              data={HEIGHTS}
+              label={t('batch.quality')}
+              description={t('batch.qualityHint')}
+              data={HEIGHTS.map((h) => ({
+                value: h,
+                label: h === '1080' ? t('batch.upToMax') : t('batch.upTo', { height: h }),
+              }))}
               value={height}
               onChange={(value) => setHeight(value ?? '1080')}
               allowDeselect={false}
@@ -116,8 +117,8 @@ export function BatchDownload({
           {extras.length > 0 && (
             <Switch
               size="xs"
-              label={`Включая спешлы и OVA (${extras.length})`}
-              description="По умолчанию только основные серии"
+              label={t('batch.includeExtras', { count: extras.length })}
+              description={t('batch.includeExtrasHint')}
               checked={includeExtras}
               onChange={(event) => setIncludeExtras(event.currentTarget.checked)}
             />
@@ -129,20 +130,20 @@ export function BatchDownload({
               // только файлы субтитров либо видео вместе с ними.
               <>
                 <Button size="compact-xs" onClick={() => run.mutate('subtitle')}>
-                  Только субтитры
+                  {t('batch.subsOnly')}
                 </Button>
                 <Button size="compact-xs" variant="light" onClick={() => run.mutate('video')}>
-                  Только видео
+                  {t('batch.videoOnly')}
                 </Button>
                 <Button size="compact-xs" variant="light" onClick={() => run.mutate('both')}>
-                  Видео и субтитры
+                  {t('batch.videoAndSubs')}
                 </Button>
               </>
             ) : (
               // Озвучка и RAW — это видеодорожка, отдельного файла субтитров
               // у такого перевода не бывает, поэтому вариант один.
               <Button size="compact-xs" onClick={() => run.mutate('video')}>
-                Все видео
+                {t('batch.allVideo')}
               </Button>
             )}
           </Stack>

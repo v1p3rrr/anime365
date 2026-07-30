@@ -17,6 +17,7 @@ import { useMemo, useState } from 'react'
 import { formatBytes, libraryApi } from '../api/library'
 import { ErrorState } from './ErrorState'
 import pathClasses from './PathLine.module.css'
+import { useT } from '../i18n'
 
 interface Props {
   opened: boolean
@@ -32,6 +33,7 @@ interface Props {
  * почти всегда ошибка, а для переноса есть кнопка «Отвязать».
  */
 export function BindFolderModal({ opened, seriesId, seriesTitle, onClose }: Props) {
+  const { t } = useT()
   const queryClient = useQueryClient()
   const [filter, setFilter] = useState('')
 
@@ -51,18 +53,18 @@ export function BindFolderModal({ opened, seriesId, seriesTitle, onClose }: Prop
   const bind = useMutation({
     mutationFn: (folderId: number) => libraryApi.createMapping(folderId, seriesId),
     onSuccess: () => {
-      notifications.show({ color: 'teal', message: 'Папка привязана' })
+      notifications.show({ color: 'teal', message: t('bindFolder.bound') })
       for (const key of ['title', 'library-status', 'library-unmapped', 'library-mappings']) {
         queryClient.invalidateQueries({ queryKey: [key] })
       }
       onClose()
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: 'Не удалось привязать', message: error.message }),
+      notifications.show({ color: 'red', title: t('bindFolder.failed'), message: error.message }),
   })
 
   return (
-    <Modal opened={opened} onClose={onClose} title="Выбрать папку для тайтла" size="lg">
+    <Modal opened={opened} onClose={onClose} title={t('bindFolder.pickTitle')} size="lg">
       <Stack gap="sm">
         <Alert color="gray" p="xs">
           <Text size="sm" style={{ wordBreak: 'break-word' }}>
@@ -72,7 +74,7 @@ export function BindFolderModal({ opened, seriesId, seriesTitle, onClose }: Prop
 
         <TextInput
           data-autofocus
-          placeholder="Фильтр по пути папки"
+          placeholder={t('bindFolder.filter')}
           leftSection={<IconSearch size={16} />}
           value={filter}
           onChange={(e) => setFilter(e.currentTarget.value)}
@@ -104,7 +106,7 @@ export function BindFolderModal({ opened, seriesId, seriesTitle, onClose }: Prop
               </Text>
               <Group gap={6} mt={2}>
                 <Badge size="xs" variant="light">
-                  {folder.root_kind === 'movie' ? 'фильмы' : 'сериалы'}
+                  {folder.root_kind === 'movie' ? t('bindFolder.kindMovies') : t('bindFolder.kindSeries')}
                 </Badge>
                 {folder.season_number != null && (
                   <Badge size="xs" variant="light">

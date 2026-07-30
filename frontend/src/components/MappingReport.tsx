@@ -27,7 +27,7 @@ export function MappingReport() {
       <ErrorState
         compact
         error={report.error}
-        title="Не удалось построить отчёт"
+        title={t('report.failed')}
         onRetry={() => report.refetch()}
       />
     )
@@ -40,7 +40,7 @@ export function MappingReport() {
   if (totalMappings === 0) {
     return (
       <Text size="sm" c="dimmed">
-        Пока ни одна папка не привязана. Запустите сканирование.
+        {t('report.empty')}
       </Text>
     )
   }
@@ -52,7 +52,7 @@ export function MappingReport() {
       <Group gap="md" wrap="wrap" align="flex-start">
         <Card withBorder padding="sm" miw={220} style={{ flexShrink: 0 }}>
           <Text size="sm" fw={600} mb={6}>
-            Чем найдено
+            {t('report.bySource')}
           </Text>
           <Stack gap={6}>
             {data.by_source.map((row) => (
@@ -77,7 +77,7 @@ export function MappingReport() {
 
         <Card withBorder padding="sm" miw={220} style={{ flexShrink: 0 }}>
           <Text size="sm" fw={600} mb={6}>
-            Уверенность
+            {t('report.confidence')}
           </Text>
           <Stack gap={6}>
             {data.confidence_buckets.map((bucket) => (
@@ -101,19 +101,19 @@ export function MappingReport() {
 
         <Card withBorder padding="sm" miw={200} style={{ flexShrink: 0 }}>
           <Text size="sm" fw={600} mb={6}>
-            Итого
+            {t('report.totals')}
           </Text>
           <Stack gap={2}>
-            <Text size="sm">Папок всего: {data.folders_total}</Text>
-            <Text size="sm">Привязано: {data.folders_mapped}</Text>
+            <Text size="sm">{t('report.foldersTotal', { count: data.folders_total })}</Text>
+            <Text size="sm">{t('report.foldersMapped', { count: data.folders_mapped })}</Text>
             <Text size="sm" c={data.folders_unmapped > 0 ? 'orange' : undefined}>
-              Без привязки: {data.folders_unmapped}
+              {t('report.foldersUnmapped', { count: data.folders_unmapped })}
             </Text>
             <Text size="sm" c={data.needs_confirmation > 0 ? 'yellow' : undefined}>
-              Ждут подтверждения: {data.needs_confirmation}
+              {t('report.needsConfirmation', { count: data.needs_confirmation })}
             </Text>
             <Text size="sm" c="dimmed">
-              Вручную: {data.manual}
+              {t('report.manual', { count: data.manual })}
             </Text>
           </Stack>
         </Card>
@@ -122,18 +122,18 @@ export function MappingReport() {
       {data.weakest.length > 0 && (
         <div>
           <Text size="sm" fw={600} mb={4}>
-            Самые слабые связи
+            {t('report.weakest')}
           </Text>
           <Text size="xs" c="dimmed" mb="xs">
-            С них разумно начинать ручную проверку: если ошибка есть, она скорее здесь.
+            {t('report.weakestHint')}
           </Text>
           <Table.ScrollContainer minWidth={520}>
             <Table striped highlightOnHover verticalSpacing="xs">
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th>Папка</Table.Th>
-                  <Table.Th>Тайтл</Table.Th>
-                  <Table.Th w={150}>Чем определено</Table.Th>
+                  <Table.Th>{t('library.columnFolder')}</Table.Th>
+                  <Table.Th>{t('library.columnTitle')}</Table.Th>
+                  <Table.Th w={150}>{t('library.columnSource')}</Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -150,7 +150,7 @@ export function MappingReport() {
                       </Text>
                     </Table.Td>
                     <Table.Td>
-                      <Tooltip label={row.matched_on ?? 'без пояснения'}>
+                      <Tooltip label={row.matched_on ?? t('report.noExplanation')}>
                         <Badge
                           size="xs"
                           variant="light"

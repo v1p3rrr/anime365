@@ -233,6 +233,13 @@ export const ja: Dictionary = {
     codecHintSite: ' その場合はサイトで開いてください。',
   },
 
+  downloadButton: {
+    subtitles: '字幕ファイルをダウンロード',
+    otherQuality: '別の画質',
+    quality: '画質',
+    enqueueFailed: 'キューに追加できませんでした',
+  },
+
   batch: {
     all: 'すべて',
     tooltip: 'この翻訳者の全話をダウンロード（{count} 件）',
@@ -275,6 +282,23 @@ export const ja: Dictionary = {
     kindSubtitle: '字幕',
     kindAudio: '音声',
     attempts: '{n} 回目',
+    loadFailed: 'キューを読み込めませんでした',
+    actionFailed: '実行できませんでした',
+    cleared: '削除した項目：{count}',
+    requeued: 'キューに戻した項目：{count}',
+    liveOn: '進捗はリアルタイムで更新されます',
+    liveOff: 'リアルタイム更新は利用できません。15 秒ごとに更新します',
+    online: 'オンライン',
+    polling: 'ポーリング',
+    active: '処理中',
+    finished: '完了',
+    columnWhat: '対象',
+    reasonUnknown: '原因不明',
+    attemptsCount: '（試行 {count} 回）',
+    remaining: ' ・残り {eta}',
+    pauseHint: '一時停止（ファイルは保持されます）',
+    resumeHint: '同じ位置から再開',
+    cancelHint: 'キャンセル（未完了のファイルは削除されます）',
   },
 
   library: {
@@ -329,6 +353,7 @@ export const ja: Dictionary = {
     needsConfirmation: '確認待ち：{count}',
     manual: '手動：{count}',
     weakest: '最も確度の低い紐付け',
+    noExplanation: '説明なし',
     weakestHint: '手動確認はここから始めるのが妥当です。誤りがあるとすればこの辺りです。',
     empty: 'まだ紐付けられたフォルダーがありません。スキャンを実行してください。',
     failed: 'レポートを作成できませんでした',
@@ -355,6 +380,14 @@ export const ja: Dictionary = {
     needsConfirmation: '確認が必要',
     unbound: '紐付けを解除しました',
     unbindFailed: '解除できませんでした',
+    primaryChanged: '主フォルダーを変更しました',
+    makePrimaryHint: 'ダウンロードをこのフォルダーに保存する',
+    unbindHint: 'このフォルダーとの紐付けを解除',
+    readOnlyHint: 'ボリュームが読み取り専用でマウントされています。ダウンロードはできません',
+    confidenceHint: 'この紐付けの確度：100 中 {value}。',
+    matchedOn: ' 一致した項目：{what}',
+    premiered: ' ・放送開始 {date}',
+    roleVideo: '映像',
     videosAndSize: '映像 {count} 件・{size}',
   },
 
@@ -368,6 +401,7 @@ export const ja: Dictionary = {
     failed: '紐付けできませんでした',
     kindMovies: '映画',
     kindSeries: 'シリーズ',
+    pickTitle: '作品のフォルダーを選ぶ',
   },
 
   bindEpisode: {
@@ -394,6 +428,10 @@ export const ja: Dictionary = {
     nothing: '見つかりません。ロシア語ではなくローマ字など、別の表記もお試しください。',
     bound: 'フォルダーを紐付けました',
     failed: '紐付けできませんでした',
+    bindToTitle: 'フォルダーを作品に紐付ける',
+    noNfo: ' ・.nfo なし',
+    withNfo: ' ・.nfo：{title}',
+    searchCatalog: 'カタログを検索',
   },
 
   settings: {
