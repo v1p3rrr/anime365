@@ -119,3 +119,49 @@ class TestPostprocessClaim:
 
     def test_empty_queue_returns_none(self) -> None:
         assert DownloadQueue()._claim_next_postprocess() is None
+
+
+class TestCancelBeforeMove:
+    """Отмена задачи, которая уже скачана и ждёт перемещения.
+
+    Раньше воркер постобработки множество отменённых не смотрел: файл всё
+    равно уезжал в библиотеку, хотя API уже ответил «отменено».
+    """
+
+    def test_cancelled_task_is_not_moved(self, tmp_path: Path) -> None:
+        source = tmp_path / "a365-9.mp4"
+        source.write_bytes(b"x" * 32)
+        target = tmp_path / "lib" / "Show S01E01.mp4"
+
+        task_id = _task(
+            TaskStatus.DOWNLOADED,
+            translation_id=301,
+            tmp_path=str(source),
+            target_path=str(target),
+        )
+
+        queue = DownloadQueue()
+        queue.cancel(task_id)
+
+        assert queue._claim_next_postprocess() is None
+        assert _status(task_id) == TaskStatus.CANCELLED
+        # Недокачанное держать незачем, а в библиотеку оно не поехало.
+        assert not source.exists()
+        assert not target.exists()
+
+    def test_cancel_mark_is_released(self, tmp_path: Path) -> None:
+        source = tmp_path / "a365-10.mp4"
+        source.write_bytes(b"x")
+        task_id = _task(
+            TaskStatus.DOWNLOADED,
+            translation_id=302,
+            tmp_path=str(source),
+            target_path=str(tmp_path / "lib" / "x.mp4"),
+        )
+
+        queue = DownloadQueue()
+        queue.cancel(task_id)
+        queue._claim_next_postprocess()
+
+        # Отметка снимается, иначе множество растёт всю жизнь процесса.
+        assert task_id not in queue._cancelled

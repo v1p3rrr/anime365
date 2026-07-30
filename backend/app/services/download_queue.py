@@ -283,6 +283,7 @@ def _finish(task_id: int, status: str, error: str | None = None) -> None:
         # Снимаем задачу с уникального ключа, чтобы её можно было поставить заново.
         task.active_key = task.id
 
+    download_queue.forget_cancelled(task_id)
     bus.publish("download.status", task_id=task_id, status=str(status), error=error)
 
 
@@ -336,6 +337,15 @@ class DownloadQueue:
 
     def cancel(self, task_id: int) -> None:
         self._cancelled.add(task_id)
+
+    def forget_cancelled(self, task_id: int) -> None:
+        """Убирает отметку отмены у завершённой задачи.
+
+        Без этого множество растёт всю жизнь процесса: отметка снимается только
+        в той ветке, которая её отработала, а задача может успеть завершиться
+        раньше, чем воркер до неё дойдёт.
+        """
+        self._cancelled.discard(task_id)
 
     def start(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
         count = settings.get_int("max_concurrent_downloads")
@@ -630,6 +640,19 @@ class DownloadQueue:
             ).scalar_one_or_none()
             if task is None:
                 return None
+
+            if task.id in self._cancelled:
+                # Отмена задачи, ждущей перемещения. Без этой ветки файл всё
+                # равно уезжал в библиотеку, хотя API уже ответил «отменено».
+                self._cancelled.discard(task.id)
+                if task.tmp_path:
+                    Path(task.tmp_path).unlink(missing_ok=True)
+                task.status = TaskStatus.CANCELLED
+                task.finished_at = datetime.utcnow()
+                task.active_key = task.id
+                log.info("Задача %s отменена до перемещения", task.id)
+                return None
+
             if not task.tmp_path or not task.target_path:
                 # Такого быть не должно: пути пишутся до начала загрузки.
                 # Но если задача пережила рестарт в странном состоянии, лучше
