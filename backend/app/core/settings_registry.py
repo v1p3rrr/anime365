@@ -227,6 +227,17 @@ SETTINGS: tuple[Setting, ...] = (
         label_ru="Корень фильмов",
     ),
     Setting(
+        key="audio_root",
+        type=SettingType.PATH,
+        default="/media/audio",
+        group=SettingGroup.PATHS,
+        label_ru="Корень фонотеки",
+        help_ru=(
+            "Отдельный корень для извлечённых звуковых дорожек. В библиотеку они не "
+            "кладутся: Jellyfin индексировал бы их как видео без картинки."
+        ),
+    ),
+    Setting(
         key="download_tmp",
         type=SettingType.PATH,
         default="/data/tmp",

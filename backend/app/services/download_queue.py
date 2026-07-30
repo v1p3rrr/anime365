@@ -28,7 +28,13 @@ from app.core.events import bus
 from app.core.paths import UnsafePathError, resolve_within
 from app.models.catalog import Series, Translation
 from app.models.downloads import ACTIVE_KEY, ACTIVE_STATUSES, DownloadTask, TaskStatus
-from app.models.library import LibraryFile, LibraryFolder, LibraryRoot, TitleMapping
+from app.models.library import (
+    EpisodeMapping,
+    LibraryFile,
+    LibraryFolder,
+    LibraryRoot,
+    TitleMapping,
+)
 from app.services.anime365 import Anime365Error, SubscriptionRequired
 from app.services.downloader import (
     DownloadCancelled,
@@ -38,6 +44,7 @@ from app.services.downloader import (
 )
 from app.services.naming import (
     NamingContext,
+    audio_name,
     build_target_name,
     folder_name_for_title,
     pick_neighbour,
@@ -429,6 +436,13 @@ class DownloadQueue:
                 "series_title": task.series_title,
             }
 
+        if snapshot["kind"] == "audio":
+            # У фонотеки своя логика: файл может вообще не качаться, а цель
+            # лежит вне библиотеки. Смешивать её с ветками видео и субтитров
+            # значило бы обвесить общий путь условиями на каждом шаге.
+            await self._process_audio(task_id, snapshot)
+            return
+
         if already_downloaded(snapshot["translation_id"]):
             log.info("Перевод %s уже есть локально", snapshot["translation_id"])
             _finish(task_id, TaskStatus.ALREADY_EXISTS)
@@ -559,6 +573,168 @@ class DownloadQueue:
                 db_task.status = TaskStatus.DOWNLOADED
                 db_task.speed_bps = 0.0
         bus.publish("download.status", task_id=task_id, status=TaskStatus.DOWNLOADED)
+
+    async def _process_audio(self, task_id: int, snapshot: dict) -> None:
+        """Извлечение звуковой дорожки.
+
+        Два пути, различие по решению пользователя:
+          * видео этой серии уже лежит локально — берём дорожку прямо из него,
+            сам файл не трогаем;
+          * видео нет — качаем во временную папку, вырезаем звук и **удаляем
+            скачанное**: оно нужно было только как источник.
+
+        Результат кладём во временную папку, а переносит его общий воркер
+        постобработки. Так частично записанный файл не появится в фонотеке.
+        """
+        from app.services.audio import (
+            AudioError,
+            extract_audio,
+            ffmpeg_available,
+            pick_stream,
+            probe_audio_streams,
+        )
+
+        if not ffmpeg_available():
+            _finish(
+                task_id,
+                TaskStatus.FAILED,
+                "В образе нет ffmpeg — извлечение звука недоступно. "
+                "Пересоберите образ или отключите загрузку дорожек",
+            )
+            return
+
+        target_dir = _audio_target_folder(snapshot["series_id"])
+        if target_dir is None:
+            _finish(task_id, TaskStatus.FAILED, "Не удалось определить папку в корне фонотеки")
+            return
+
+        tmp_dir = Path(settings.get_str("download_tmp"))
+        problem = check_free_space(
+            tmp_dir, target_dir, settings.get_int("min_free_space_gb") * (1 << 30)
+        )
+        if problem:
+            _fail_with_backoff(task_id, problem)
+            return
+
+        episode = snapshot["episode"] or 1
+        source = _existing_video_path_for_episode(snapshot["series_id"], episode)
+        downloaded_here = source is None
+        tmp_video: Path | None = None
+
+        try:
+            if source is None:
+                source = tmp_video = await self._download_source_video(task_id, snapshot, tmp_dir)
+                if source is None:
+                    return
+            else:
+                log.info("Беру дорожку из уже скачанного %s", source.name)
+
+            try:
+                streams = await probe_audio_streams(source)
+            except AudioError as exc:
+                _fail_with_backoff(task_id, str(exc))
+                return
+
+            stream = pick_stream(streams, snapshot["lang"])
+            if stream is None:
+                _finish(task_id, TaskStatus.FAILED, f"В файле {source.name} нет звуковых дорожек")
+                return
+
+            if len(streams) > 1 and stream.lang != snapshot["lang"]:
+                # Не ошибка, но пользователь должен знать: язык дорожки может
+                # не совпасть с языком перевода, если разметка в файле неполная.
+                log.warning(
+                    "Дорожка выбрана без совпадения по языку: нужен %s, взята %s",
+                    snapshot["lang"],
+                    stream.lang or "без метки",
+                )
+
+            ctx = NamingContext(
+                show_title=snapshot["series_title"] or "Unknown",
+                season=None,
+                episode=episode,
+                episode_title=None,
+                authors=snapshot["authors"],
+                height=0,
+                lang=snapshot["lang"] or stream.lang or "ja",
+                kind=snapshot["type_kind"] or "raw",
+                extension=stream.extension,
+            )
+            filename = audio_name(ctx)
+            tmp_audio = tmp_dir / f"a365-audio-{task_id}{stream.extension}"
+
+            try:
+                await extract_audio(source, stream, tmp_audio)
+            except AudioError as exc:
+                _fail_with_backoff(task_id, str(exc))
+                return
+
+            with session_scope() as session:
+                db_task = session.get(DownloadTask, task_id)
+                if db_task is not None:
+                    db_task.tmp_path = str(tmp_audio)
+                    db_task.target_path = str(target_dir / filename)
+                    db_task.status = TaskStatus.DOWNLOADED
+                    db_task.speed_bps = 0.0
+            bus.publish("download.status", task_id=task_id, status=TaskStatus.DOWNLOADED)
+            log.info("Дорожка извлечена: %s (%s)", filename, stream.codec)
+
+        finally:
+            # Скачанное ради звука видео в библиотеке не нужно — по решению
+            # пользователя оно идёт в мусор. Уже лежавшее не трогаем никогда.
+            if downloaded_here and tmp_video is not None:
+                tmp_video.unlink(missing_ok=True)
+                tmp_video.with_suffix(tmp_video.suffix + ".part").unlink(missing_ok=True)
+
+    async def _download_source_video(
+        self, task_id: int, snapshot: dict, tmp_dir: Path
+    ) -> Path | None:
+        """Качает видео во временную папку — только как источник звука.
+
+        В библиотеку оно не попадёт, поэтому имя техническое и качество берём
+        минимальное из доступных: звуковая дорожка от разрешения не зависит,
+        а лишние сотни мегабайт качать незачем.
+        """
+        async with Downloader() as downloader:
+            try:
+                links = await downloader.resolve_links(snapshot["translation_id"])
+            except SubscriptionRequired as exc:
+                _finish(task_id, TaskStatus.FAILED, str(exc))
+                return None
+
+            heights = sorted(links.get("heights") or [])
+            url, _ = pick_download_url(links, heights[0] if heights else 360)
+            if not url:
+                _finish(task_id, TaskStatus.FAILED, "Нет доступных ссылок для скачивания")
+                return None
+
+            tmp_video = tmp_dir / f"a365-src-{task_id}{VIDEO_EXTENSION}"
+
+            def on_progress(progress) -> None:
+                with session_scope() as session:
+                    db_task = session.get(DownloadTask, task_id)
+                    if db_task is not None:
+                        db_task.bytes_done = progress.bytes_done
+                        db_task.bytes_total = progress.bytes_total
+                        db_task.speed_bps = progress.speed_bps
+
+            def should_stop() -> bool:
+                return task_id in self._cancelled or self._paused or self._stop.is_set()
+
+            try:
+                await downloader.fetch(url, tmp_video, on_progress, should_stop, expect="video")
+            except DownloadCancelled:
+                was_cancelled = task_id in self._cancelled
+                self._cancelled.discard(task_id)
+                tmp_video.unlink(missing_ok=True)
+                tmp_video.with_suffix(tmp_video.suffix + ".part").unlink(missing_ok=True)
+                _finish(task_id, TaskStatus.CANCELLED if was_cancelled else TaskStatus.PAUSED)
+                return None
+            except Anime365Error as exc:
+                _fail_with_backoff(task_id, str(exc))
+                return None
+
+            return tmp_video
 
     def _build_name(
         self, snapshot: dict, folder: LibraryFolder, height: int, extension: str
@@ -735,3 +911,61 @@ class DownloadQueue:
 
 
 download_queue = DownloadQueue()
+
+
+def _existing_video_path_for_episode(series_id: int, episode: float) -> Path | None:
+    """Полный путь к уже лежащему видео этой серии, если оно есть.
+
+    Нужен фонотеке: по решению пользователя из уже скачанного видео дорожка
+    извлекается на месте, а само видео остаётся нетронутым. Скачивать его
+    заново ради звука было бы расточительно.
+    """
+    with session_scope() as session:
+        row = session.execute(
+            select(LibraryFile.filename, LibraryFolder.rel_path, LibraryRoot.path)
+            .join(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
+            .join(LibraryRoot, LibraryFolder.root_id == LibraryRoot.id)
+            .join(EpisodeMapping, EpisodeMapping.file_id == LibraryFile.id)
+            .where(
+                EpisodeMapping.series_id == series_id,
+                EpisodeMapping.episode == episode,
+                EpisodeMapping.role == "video",
+                LibraryFile.excluded_reason.is_(None),
+            )
+            .limit(1)
+        ).first()
+
+    if row is None:
+        return None
+    filename, rel_path, root_path = row
+    candidate = Path(root_path) / rel_path / filename
+    return candidate if candidate.is_file() else None
+
+
+def _audio_target_folder(series_id: int) -> Path | None:
+    """Папка тайтла внутри корня фонотеки.
+
+    Корень свой, отдельный от библиотеки: Jellyfin индексировал бы звуковые
+    файлы как видео без картинки. Имя папки берём тем же правилом, что и для
+    библиотеки, — так фонотека и библиотека выглядят одинаково.
+    """
+    with session_scope() as session:
+        series = session.get(Series, series_id)
+        if series is None:
+            return None
+        titles = dict(series.titles or {})
+        year = series.year
+        is_movie = (
+            series.treat_as_movie if series.treat_as_movie is not None else series.type == "movie"
+        )
+
+    folder_name = folder_name_for_title(titles, year=year, is_movie=is_movie)
+    if not folder_name:
+        return None
+
+    root = Path(settings.get_str("audio_root"))
+    try:
+        return resolve_within(root, folder_name)
+    except UnsafePathError as exc:
+        log.error("Имя папки фонотеки вышло за корень: %s", exc)
+        return None

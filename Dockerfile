@@ -25,7 +25,7 @@ ENV PYTHONUNBUFFERED=1 \
 # tini — корректная обработка сигналов, иначе SIGTERM не доходит до uvicorn
 # и контейнер убивается по таймауту, обрывая загрузки.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends tini curl && \
+    apt-get install -y --no-install-recommends tini curl ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

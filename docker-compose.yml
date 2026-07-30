@@ -25,6 +25,10 @@ services:
       # rw нужен, потому что мы кладём сюда скачанные файлы.
       - /mnt/media/anime/library:/media/anime
       - /mnt/media/anime_movies/library:/media/anime_movies
+      # Фонотека: извлечённые звуковые дорожки. Корень отдельный, потому что
+      # Jellyfin индексировал бы их в библиотеке как видео без картинки.
+      # Путь должен совпадать с A365_AUDIO_ROOT.
+      - /mnt/media/anime_audio:/media/audio
 
     security_opt:
       - no-new-privileges:true

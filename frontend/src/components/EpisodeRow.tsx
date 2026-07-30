@@ -6,11 +6,12 @@ import {
   IconDownload,
   IconExternalLink,
   IconLink,
+  IconMusic,
 } from '@tabler/icons-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
-import { downloadsApi } from '../api/downloads'
+import { downloadsApi, type DownloadKind } from '../api/downloads'
 import { LANG_COLORS, LANG_LABELS, type EpisodeItem, type EpisodeTranslation } from '../api/title'
 import { BindEpisodeModal } from './BindEpisodeModal'
 
@@ -37,7 +38,7 @@ export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props
   const [binding, setBinding] = useState(false)
 
   const enqueue = useMutation({
-    mutationFn: ({ id, kind }: { id: number; kind: 'video' | 'subtitle' }) =>
+    mutationFn: ({ id, kind }: { id: number; kind: DownloadKind }) =>
       downloadsApi.enqueue(id, kind),
     onSuccess: (result) => {
       notifications.show({
@@ -60,6 +61,9 @@ export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props
       badge.role === 'video' ||
       langs.includes(Object.entries(ROLE_BY_LANG).find(([, r]) => r === badge.role)?.[0] ?? ''),
   )
+
+  // Субтитры звука не содержат: извлекать можно только из озвучки и оригинала.
+  const audioSources = available.filter((t) => t.kind !== 'sub')
 
   const handlePick = (translation: EpisodeTranslation) => {
     const kind = translation.kind === 'sub' ? 'subtitle' : 'video'
@@ -159,6 +163,39 @@ export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props
               )}
             </Menu.Dropdown>
           </Menu>
+
+          {/* Отдельная кнопка, а не пункт в общем меню: звук нужен редко, но
+              искать его правым кликом или в конце длинного списка переводов
+              никто не станет. */}
+          {audioSources.length > 0 && (
+            <Menu position="bottom-end">
+              <Menu.Target>
+                <Tooltip label="Извлечь звуковую дорожку в фонотеку">
+                  <Button size="compact-xs" variant="subtle" color="grape" px={6}>
+                    <IconMusic size={12} />
+                  </Button>
+                </Tooltip>
+              </Menu.Target>
+              <Menu.Dropdown mah={340} style={{ overflowY: 'auto' }}>
+                <Menu.Label>Только звук — в корень фонотеки</Menu.Label>
+                {audioSources.map((translation) => (
+                  <Menu.Item
+                    key={translation.id}
+                    onClick={() => enqueue.mutate({ id: translation.id, kind: 'audio' })}
+                  >
+                    <Group gap={6} wrap="nowrap">
+                      <Badge size="xs" color={LANG_COLORS[translation.lang]} variant="light">
+                        {translation.lang}
+                      </Badge>
+                      <Text size="xs" style={{ wordBreak: 'break-word' }}>
+                        {translation.authors}
+                      </Text>
+                    </Group>
+                  </Menu.Item>
+                ))}
+              </Menu.Dropdown>
+            </Menu>
+          )}
 
           {seriesUrl && (
             <Tooltip label="Открыть серию на сайте">

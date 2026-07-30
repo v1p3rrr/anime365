@@ -73,15 +73,18 @@ export const ACTIVE_STATUSES: TaskStatus[] = [
   'paused',
 ]
 
+/** audio — извлечение звуковой дорожки в отдельный корень фонотеки. */
+export type DownloadKind = 'video' | 'subtitle' | 'audio'
+
 export const downloadsApi = {
   list: () => api.get<QueueState>('/downloads'),
-  enqueue: (translationId: number, kind: 'video' | 'subtitle', height?: number) =>
+  enqueue: (translationId: number, kind: DownloadKind, height?: number) =>
     api.post<{ id: number; created: boolean }>('/downloads', {
       translation_id: translationId,
       kind,
       height,
     }),
-  batch: (translationIds: number[], kind: 'video' | 'subtitle' | 'both', height?: number) =>
+  batch: (translationIds: number[], kind: DownloadKind | 'both', height?: number) =>
     api.post<{ created: number; skipped: number; failed: number; errors: string[] }>(
       '/downloads/batch',
       { translation_ids: translationIds, kind, height },

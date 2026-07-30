@@ -337,3 +337,33 @@ def unique_path(folder: PurePosixPath | Path, filename: str, existing: set[str])
 
     # Практически недостижимо, но молча перетирать нельзя.
     raise ValueError(f"Не удалось подобрать свободное имя для {filename}")
+
+
+def audio_name(ctx: NamingContext) -> str:
+    """Имя файла звуковой дорожки.
+
+    Отличается от видео двумя вещами:
+      * **нет метки источника** (`WEBDL-1080p`) — у звука разрешения не бывает,
+        а откуда взято видео, для фонотеки значения не имеет;
+      * **язык указывается всегда**, включая японский оригинал. У видео японская
+        дорожка суффикса не получает, потому что она там по умолчанию; в
+        фонотеке рядом лежат дорожки разных языков, и без пометки их не различить.
+
+    Расширение приходит готовым: оно определяется кодеком дорожки, потому что
+    поток копируется без перекодирования.
+    """
+    author = sanitize_author(ctx.authors)
+    lang = ctx.lang or "ja"
+
+    if ctx.is_movie:
+        title = sanitize_component(ctx.show_title)
+        year = f" ({ctx.year})" if ctx.year else ""
+        name = f"{title}{year} [anime365_{author}].{lang}{ctx.extension}"
+        return truncate_to_bytes(name)
+
+    show = sanitize_component(ctx.show_title)
+    code = _episode_code(ctx.season, ctx.episode)
+    episode_title = sanitize_component(ctx.episode_title or "")
+    title_part = f" - {episode_title}" if episode_title else ""
+    name = f"{show} {code}{title_part} [anime365_{author}].{lang}{ctx.extension}"
+    return truncate_to_bytes(name)

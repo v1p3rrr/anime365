@@ -23,13 +23,15 @@ router = APIRouter(prefix="/downloads", tags=["downloads"])
 
 class EnqueueRequest(BaseModel):
     translation_id: int
-    kind: str = Field("video", pattern="^(video|subtitle)$")
+    # audio — извлечение звуковой дорожки: файл уходит не в библиотеку,
+    # а в отдельный корень фонотеки.
+    kind: str = Field("video", pattern="^(video|subtitle|audio)$")
     height: int | None = None
 
 
 class BatchRequest(BaseModel):
     translation_ids: list[int] = Field(min_length=1, max_length=2000)
-    kind: str = Field("video", pattern="^(video|subtitle|both)$")
+    kind: str = Field("video", pattern="^(video|subtitle|both|audio)$")
     height: int | None = None
 
 
@@ -91,7 +93,10 @@ def create_task(payload: EnqueueRequest) -> dict[str, Any]:
     except QueueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    _check_target_writable(_series_of(payload.translation_id))
+    # Звук уходит в корень фонотеки, а не в библиотеку: её доступность
+    # на запись для такой задачи значения не имеет.
+    if payload.kind != "audio":
+        _check_target_writable(_series_of(payload.translation_id))
     return result
 
 
