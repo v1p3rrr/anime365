@@ -35,7 +35,13 @@ from app.services.downloader import (
     free_space_bytes,
     pick_download_url,
 )
-from app.services.naming import NamingContext, build_target_name, pick_neighbour, unique_path
+from app.services.naming import (
+    NamingContext,
+    build_target_name,
+    folder_name_for_title,
+    pick_neighbour,
+    unique_path,
+)
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +80,92 @@ def _primary_folder(series_id: int) -> tuple[LibraryFolder, LibraryRoot] | None:
         session.expunge(folder)
         session.expunge(root)
         return folder, root
+
+
+def ensure_target_folder(series_id: int) -> tuple[LibraryFolder, LibraryRoot] | None:
+    """Папка для загрузки: существующая привязка либо новая папка.
+
+    Тайтла может не быть в библиотеке вовсе — это штатный случай, когда качают
+    что-то новое. Тогда создаём папку по названию тайтла в подходящем корне
+    (фильмы отдельно от сериалов) и сразу привязываем: дальше всё работает как
+    с любой другой папкой, включая маппинг серий и подсчёт наличия.
+    """
+    existing = _primary_folder(series_id)
+    if existing is not None:
+        return existing
+
+    with session_scope() as session:
+        series = session.get(Series, series_id)
+        if series is None:
+            return None
+        titles = dict(series.titles or {})
+        is_movie = series.type == "movie"
+        year = series.year
+
+    folder_name = folder_name_for_title(titles, year=year, is_movie=is_movie)
+    if not folder_name:
+        log.error("У тайтла %s нет пригодного названия для папки", series_id)
+        return None
+
+    root_kind = "movie" if is_movie else "series"
+    with session_scope() as session:
+        root = session.execute(
+            select(LibraryRoot).where(
+                LibraryRoot.kind == root_kind, LibraryRoot.is_available.is_(True)
+            )
+        ).scalars().first()
+        if root is None:
+            log.error("Нет доступного корня библиотеки для типа %s", root_kind)
+            return None
+        if not root.is_writable:
+            log.error("Корень %s только для чтения — папку не создать", root.path)
+            return None
+        root_id, root_path = root.id, root.path
+
+    target = Path(root_path) / folder_name
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.error("Не удалось создать папку %s: %s", target, exc)
+        return None
+
+    with session_scope() as session:
+        folder = session.execute(
+            select(LibraryFolder).where(
+                LibraryFolder.root_id == root_id, LibraryFolder.rel_path == folder_name
+            )
+        ).scalar_one_or_none()
+        if folder is None:
+            folder = LibraryFolder(
+                root_id=root_id,
+                rel_path=folder_name,
+                name=folder_name,
+                season_number=None,
+                video_count=0,
+            )
+            session.add(folder)
+            session.flush()
+
+        exists = session.execute(
+            select(TitleMapping).where(
+                TitleMapping.series_id == series_id, TitleMapping.folder_id == folder.id
+            )
+        ).scalar_one_or_none()
+        if exists is None:
+            session.add(
+                TitleMapping(
+                    series_id=series_id,
+                    folder_id=folder.id,
+                    source="created",
+                    confidence=100.0,
+                    matched_on="папка создана при загрузке",
+                    is_manual=False,
+                    is_primary=True,
+                )
+            )
+
+    log.info("Создана папка для тайтла %s: %s", series_id, target)
+    return _primary_folder(series_id)
 
 
 def _existing_video_for_episode(folder_id: int, episode: float) -> str | None:
@@ -319,9 +411,15 @@ class DownloadQueue:
             _finish(task_id, TaskStatus.ALREADY_EXISTS)
             return
 
-        target = _primary_folder(snapshot["series_id"])
+        # Папки может не быть вовсе — тогда создаём её по названию тайтла.
+        target = ensure_target_folder(snapshot["series_id"])
         if target is None:
-            _finish(task_id, TaskStatus.FAILED, "Тайтл не привязан ни к одной локальной папке")
+            _finish(
+                task_id,
+                TaskStatus.FAILED,
+                "Некуда складывать: тайтл не привязан к папке, и создать новую не вышло. "
+                "Проверьте, что корень библиотеки доступен на запись",
+            )
             return
 
         folder, root = target

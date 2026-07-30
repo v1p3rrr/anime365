@@ -131,6 +131,11 @@ def _episode_code(season: int | None, episode: float) -> str:
     return f"S{season_no:02d}E{episode:g}".replace(".", "_")
 
 
+def _source_tag(height: int) -> str:
+    """Метка источника. У субтитров разрешения нет — «WEBDL-0p» выглядело нелепо."""
+    return f"{SOURCE_TAG}-{height}p" if height else SOURCE_TAG
+
+
 def _lang_suffix(ctx: NamingContext) -> str:
     if ctx.kind == "sub":
         return SUB_LANG_SUFFIX.get(ctx.lang, "")
@@ -148,7 +153,7 @@ def canonical_name(ctx: NamingContext) -> str:
     if ctx.is_movie:
         title = sanitize_component(ctx.show_title)
         year = f" ({ctx.year})" if ctx.year else ""
-        name = f"{title}{year} - [{SOURCE_TAG}-{ctx.height}p] [anime365_{author}]{suffix}{ctx.extension}"
+        name = f"{title}{year} - [{_source_tag(ctx.height)}] [anime365_{author}]{suffix}{ctx.extension}"
         return truncate_to_bytes(name)
 
     show = sanitize_component(ctx.show_title)
@@ -157,7 +162,7 @@ def canonical_name(ctx: NamingContext) -> str:
     title_part = f" - {episode_title}" if episode_title else ""
     name = (
         f"{show} {code}{title_part} "
-        f"[anime365_{author}] {SOURCE_TAG}-{ctx.height}p{suffix}{ctx.extension}"
+        f"[anime365_{author}] {_source_tag(ctx.height)}{suffix}{ctx.extension}"
     )
     return truncate_to_bytes(name)
 
@@ -216,7 +221,7 @@ def name_from_neighbour(neighbour: str, ctx: NamingContext) -> str | None:
         code,
         middle.strip(),
         f"[anime365_{author}]",
-        f"{SOURCE_TAG}-{ctx.height}p",
+        _source_tag(ctx.height),
     ]
     if tail:
         parts.append(tail)
@@ -284,6 +289,35 @@ def build_target_name(
         log.debug("Образец %s не разобрался, использую каноническую схему", neighbour)
 
     return canonical_name(ctx)
+
+
+def folder_name_for_title(
+    titles: dict[str, str], year: int | None = None, is_movie: bool = False
+) -> str:
+    """Имя папки для тайтла, которого ещё нет в библиотеке.
+
+    Берём romaji: библиотека пользователя названа по-английски, а `titles.en`
+    заполнен лишь у 46% тайтлов, тогда как romaji есть почти у всех.
+    Схема совпадает с тем, как называет папки Sonarr и Radarr, чтобы Jellyfin
+    распознал их без ручной правки.
+    """
+    raw = (
+        (titles or {}).get("romaji")
+        or (titles or {}).get("en")
+        or (titles or {}).get("ru")
+        or ""
+    )
+    # В библиотеке пользователя слеш заменён на плюс: «Fate+stay night».
+    # Держимся того же соглашения, иначе рядом появится папка с другим написанием.
+    # Матчер нормализует «+» обратно в «/», поэтому сопоставление не пострадает.
+    raw = raw.replace("/", "+")
+    name = sanitize_component(raw, max_chars=150)
+    if not name:
+        return ""
+    # У фильмов Radarr держит год прямо в имени папки.
+    if is_movie and year:
+        name = f"{name} ({year})"
+    return name
 
 
 def unique_path(folder: PurePosixPath | Path, filename: str, existing: set[str]) -> str:
