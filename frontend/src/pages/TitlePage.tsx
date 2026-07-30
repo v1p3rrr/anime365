@@ -60,6 +60,10 @@ export function TitlePage() {
   const { series, titles, quality } = data
   const primary = titles.ru || titles.romaji || `#${series.id}`
   const episodes = data.episodes.filter((e) => showNonContent || e.is_content)
+  // Номера настоящих серий: трейлеры и реклама в батч-загрузку не идут.
+  const contentEpisodes = new Set(
+    data.episodes.filter((e) => e.is_content && e.episode_num != null).map((e) => e.episode_num!),
+  )
   const hiddenCount = data.episodes.length - data.episodes.filter((e) => e.is_content).length
 
   return (
@@ -231,6 +235,7 @@ export function TitlePage() {
           langs={prefs.langs}
           kinds={prefs.kinds}
           seriesUrl={series.url}
+          contentEpisodes={contentEpisodes}
         />
       </div>
 

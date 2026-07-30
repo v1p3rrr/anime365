@@ -14,6 +14,7 @@ import {
 } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
 import {
+  IconAlertTriangle,
   IconPlayerPause,
   IconPlayerPlay,
   IconRefresh,
@@ -96,6 +97,22 @@ export function QueuePage() {
     },
   })
 
+  const retryAll = useMutation({
+    mutationFn: async () => {
+      const ids = (queue.data?.tasks ?? [])
+        .filter((task) => task.status === 'failed')
+        .map((task) => task.id)
+      await Promise.all(ids.map((id) => downloadsApi.retry(id)))
+      return ids.length
+    },
+    onSuccess: (count) => {
+      notifications.show({ color: 'teal', message: `Возвращено в очередь: ${count}` })
+      refresh()
+    },
+    onError: (error: Error) =>
+      notifications.show({ color: 'red', title: 'Не получилось', message: error.message }),
+  })
+
   if (queue.isError) {
     return (
       <ErrorState
@@ -112,6 +129,7 @@ export function QueuePage() {
 
   const active = merged.filter((t) => ACTIVE_STATUSES.includes(t.status))
   const finished = merged.filter((t) => !ACTIVE_STATUSES.includes(t.status))
+  const failed = merged.filter((t) => t.status === 'failed')
 
   const counts = data?.counts ?? {}
   const postprocessing = counts.postprocessing ?? 0
@@ -173,6 +191,48 @@ export function QueuePage() {
       {data?.paused && (
         <Alert color="yellow">
           Очередь на паузе. Незавершённые файлы сохранены и докачаются с того же места.
+        </Alert>
+      )}
+
+      {/* Упавшие задачи выносим наверх: в длинном списке они иначе теряются,
+          а причина отказа — то, ради чего пользователь сюда и заходит. */}
+      {failed.length > 0 && (
+        <Alert
+          color="red"
+          title={`Не удалось скачать: ${failed.length}`}
+          icon={<IconAlertTriangle size={18} />}
+        >
+          <Stack gap={6}>
+            {failed.slice(0, 5).map((task) => (
+              <div key={task.id}>
+                <Text size="sm" style={{ wordBreak: 'break-word' }}>
+                  {task.series_title}
+                  {task.episode != null && `, серия ${task.episode}`}
+                  {task.kind === 'subtitle' ? ' (субтитры)' : ' (видео)'}
+                </Text>
+                <Text size="xs" c="dimmed" style={{ wordBreak: 'break-word' }}>
+                  {task.last_error ?? 'причина неизвестна'}
+                </Text>
+              </div>
+            ))}
+            {failed.length > 5 && (
+              <Text size="xs" c="dimmed">
+                и ещё {failed.length - 5} — весь список ниже
+              </Text>
+            )}
+            <Group gap="xs" mt={4}>
+              <Button
+                size="xs"
+                variant="light"
+                color="red"
+                leftSection={<IconRefresh size={14} />}
+                onClick={() => retryAll.mutate()}
+                loading={retryAll.isPending}
+              >
+                Повторить все неудачные
+              </Button>
+            </Group>
+          </Stack>
         </Alert>
       )}
 
@@ -262,6 +322,8 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
       </Table.Td>
 
       <Table.Td>
+        {/* Объём бывает неизвестен: при сжатом ответе content-length описывает
+            сжатые байты, и полоса врала бы. Тогда показываем только скачанное. */}
         {task.bytes_total > 0 ? (
           <>
             <Progress
@@ -274,6 +336,19 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
               {formatBytes(task.bytes_done)} из {formatBytes(task.bytes_total)}
               {task.status === 'downloading' && ` · ${formatSpeed(task.speed_bps)}`}
               {task.status === 'downloading' && ` · осталось ${formatEta(task)}`}
+            </Text>
+          </>
+        ) : task.bytes_done > 0 ? (
+          <>
+            <Progress
+              value={100}
+              size="sm"
+              color={STATUS_COLORS[task.status] ?? 'blue'}
+              animated={task.status === 'downloading'}
+            />
+            <Text size="xs" c="dimmed">
+              {formatBytes(task.bytes_done)}
+              {task.status === 'downloading' && ` · ${formatSpeed(task.speed_bps)}`}
             </Text>
           </>
         ) : (

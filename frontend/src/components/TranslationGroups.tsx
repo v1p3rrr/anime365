@@ -1,5 +1,5 @@
 import { Accordion, Badge, Button, Group, Loader, Stack, Table, Text, Tooltip } from '@mantine/core'
-import { IconDownload, IconPlayerPlay } from '@tabler/icons-react'
+import { IconPlayerPlay } from '@tabler/icons-react'
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
@@ -12,6 +12,8 @@ import {
   type AuthorGroup,
   type SummarySection,
 } from '../api/title'
+import { BatchDownload } from './BatchDownload'
+import { DownloadButton } from './DownloadButton'
 import { ErrorState } from './ErrorState'
 
 interface Props {
@@ -19,6 +21,8 @@ interface Props {
   langs: string[]
   kinds: string[]
   seriesUrl: string | null
+  /** Номера серий, считающихся контентом: нужны батч-загрузке. */
+  contentEpisodes: Set<number>
 }
 
 /**
@@ -27,7 +31,13 @@ interface Props {
  * Всё под аккордеонами, и содержимое монтируется только при раскрытии: у популярного
  * тайтла около двух тысяч переводов, и вываливать их в DOM разом нельзя.
  */
-export function TranslationGroups({ sections, langs, kinds, seriesUrl }: Props) {
+export function TranslationGroups({
+  sections,
+  langs,
+  kinds,
+  seriesUrl,
+  contentEpisodes,
+}: Props) {
   const visible = sections.filter((s) => langs.includes(s.lang) && kinds.includes(s.kind))
 
   // Какие секции пользователь уже открывал. Mantine Accordion сам по себе панели не
@@ -75,7 +85,12 @@ export function TranslationGroups({ sections, langs, kinds, seriesUrl }: Props) 
             </Accordion.Control>
             <Accordion.Panel>
               {everOpened.has(key) ? (
-                <AuthorTable groups={section.groups} kind={section.kind} seriesUrl={seriesUrl} />
+                <AuthorTable
+                  groups={section.groups}
+                  kind={section.kind}
+                  seriesUrl={seriesUrl}
+                  contentEpisodes={contentEpisodes}
+                />
               ) : null}
             </Accordion.Panel>
           </Accordion.Item>
@@ -89,10 +104,12 @@ function AuthorTable({
   groups,
   kind,
   seriesUrl,
+  contentEpisodes,
 }: {
   groups: AuthorGroup[]
   kind: string
   seriesUrl: string | null
+  contentEpisodes: Set<number>
 }) {
   return (
     <Table.ScrollContainer minWidth={560}>
@@ -107,7 +124,13 @@ function AuthorTable({
         </Table.Thead>
         <Table.Tbody>
           {groups.map((group) => (
-            <AuthorRow key={group.authors} group={group} kind={kind} seriesUrl={seriesUrl} />
+            <AuthorRow
+              key={group.authors}
+              group={group}
+              kind={kind}
+              seriesUrl={seriesUrl}
+              contentEpisodes={contentEpisodes}
+            />
           ))}
         </Table.Tbody>
       </Table>
@@ -119,10 +142,12 @@ function AuthorRow({
   group,
   kind,
   seriesUrl,
+  contentEpisodes,
 }: {
   group: AuthorGroup
   kind: string
   seriesUrl: string | null
+  contentEpisodes: Set<number>
 }) {
   // Признак вшитых субтитров и точные ступени качества доступны только через embed —
   // один запрос на перевод. Поэтому тянем по требованию и только для одного
@@ -205,11 +230,28 @@ function AuthorRow({
 
       <Table.Td>
         <Stack gap={4}>
-          <Tooltip label="Загрузка появится на этапе 5">
-            <Button size="compact-xs" leftSection={<IconDownload size={12} />} disabled>
-              Скачать
-            </Button>
-          </Tooltip>
+          {/* Ставим в очередь первый перевод группы: остальные серии добираются
+              батч-кнопками в сводке. */}
+          <DownloadButton
+            translationId={sample}
+            kind={kind === 'sub' ? 'subtitle' : 'video'}
+            estimatedHeight={group.max_height_estimate}
+            disabled={hardsub === true}
+            disabledReason={
+              hardsub ? 'Субтитры вшиты в видео, отдельного файла нет' : undefined
+            }
+          />
+          {group.translation_ids.length > 1 && (
+            <BatchDownload
+              group={group}
+              kind={kind as 'voice' | 'sub' | 'raw'}
+              contentEpisodes={contentEpisodes}
+              disabled={hardsub === true}
+              disabledReason={
+                hardsub ? 'Субтитры вшиты в видео, отдельного файла нет' : undefined
+              }
+            />
+          )}
           {/* Ведём на страницу конкретного перевода конкретной серии, а не на общую
               страницу тайтла: у строки со сводкой это самая ранняя серия автора. */}
           {(group.first_url || seriesUrl) && (

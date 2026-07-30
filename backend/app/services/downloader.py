@@ -179,7 +179,12 @@ class Downloader:
             # который выглядит скачанным и попадает в библиотеку.
             _ensure_expected_content(response, expect, url)
 
-            total = existing + int(response.headers.get("content-length", 0))
+            # При сжатии content-length описывает СЖАТЫЙ ответ, а на диск пишется
+            # распакованное — прогресс уходил за 100% («54 КБ из 13 КБ»).
+            # В таком случае честнее показать неизвестный объём.
+            compressed = bool(response.headers.get("content-encoding"))
+            declared = int(response.headers.get("content-length", 0))
+            total = 0 if compressed else existing + declared
             mode = "ab" if existing else "wb"
 
             with part.open(mode) as handle:
