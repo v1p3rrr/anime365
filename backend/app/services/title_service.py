@@ -238,6 +238,13 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
             "url": series.url,
             "mal_score": series.mal_score,
             "is_airing": series.is_airing,
+            # None — решение не принято, действует автоопределение по типу.
+            "treat_as_movie": series.treat_as_movie,
+            "effective_is_movie": (
+                series.treat_as_movie
+                if series.treat_as_movie is not None
+                else series.type == "movie"
+            ),
         }
 
     _attach_episode_numbers(translations, episodes)

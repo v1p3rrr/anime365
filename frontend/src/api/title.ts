@@ -121,6 +121,10 @@ export interface TitlePageData {
     url: string | null
     mal_score: number | null
     is_airing: boolean
+    /** null — решение не принято, действует автоопределение по типу. */
+    treat_as_movie: boolean | null
+    /** Как тайтл трактуется сейчас: от этого зависит корень для загрузок. */
+    effective_is_movie: boolean
   }
   titles: Record<string, string>
   all_titles: string[]

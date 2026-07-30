@@ -45,6 +45,20 @@ export function TitlePage() {
     enabled: Number.isFinite(seriesId),
   })
 
+  // Автоматически развести «фильм» и «сериал» нельзя: у тайтла с type=movie
+  // бывает несколько эпизодов — это связка фильмов, и Radarr фильмом её не
+  // считает. Решение за пользователем, от него зависит корень для загрузок.
+  const treatAs = useMutation({
+    mutationFn: (asMovie: boolean) =>
+      api.put<unknown>(`/series/${seriesId}/treat-as-movie`, { treat_as_movie: asMovie }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['title', seriesId] })
+      notifications.show({ color: 'teal', message: 'Трактовка тайтла изменена' })
+    },
+    onError: (error: Error) =>
+      notifications.show({ color: 'red', title: 'Не удалось изменить', message: error.message }),
+  })
+
   const refine = useMutation({
     mutationFn: () =>
       api.post<{ episodes: number; refined: number; failed: number; reason: string | null }>(
@@ -137,6 +151,23 @@ export function TitlePage() {
           )}
 
           <Group gap="xs" mt={4}>
+            <Tooltip
+              label={
+                series.effective_is_movie
+                  ? 'Загрузки уйдут в корень фильмов'
+                  : 'Загрузки уйдут в корень сериалов'
+              }
+            >
+              <Badge
+                variant="light"
+                color={series.treat_as_movie != null ? 'teal' : undefined}
+                style={{ cursor: 'pointer' }}
+                onClick={() => treatAs.mutate(!series.effective_is_movie)}
+              >
+                {series.effective_is_movie ? 'как фильм' : 'как сериал'}
+                {series.treat_as_movie != null && ' ·  вручную'}
+              </Badge>
+            </Tooltip>
             <Badge variant="light">{series.type_title}</Badge>
             {series.year && <Badge variant="light">{series.year}</Badge>}
             {series.season && <Badge variant="light">{series.season}</Badge>}

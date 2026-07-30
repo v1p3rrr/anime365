@@ -6,8 +6,11 @@ import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from app.api.deps import rate_limit
+from app.core.db import session_scope
+from app.models.catalog import Series
 from app.services.anime365 import Anime365Error, SubscriptionRequired
 from app.services.title_service import build_title_page, get_embed, quality_refiner
 
@@ -71,3 +74,30 @@ async def refine_quality(series_id: int) -> dict[str, Any]:
         raise HTTPException(409, str(exc)) from exc
     except Anime365Error as exc:
         raise HTTPException(502, f"Anime365 недоступен: {exc}") from exc
+
+
+class TreatAsMovieRequest(BaseModel):
+    # None возвращает автоопределение по типу из каталога.
+    treat_as_movie: bool | None = None
+
+
+@router.put("/series/{series_id}/treat-as-movie")
+def set_treat_as_movie(series_id: int, payload: TreatAsMovieRequest) -> dict[str, Any]:
+    """Считать тайтл фильмом или сериалом.
+
+    Автоматически развести это нельзя: в каталоге есть тайтлы с `type=movie` и
+    несколькими эпизодами — связка из двух-трёх фильмов. Radarr фильмом такое не
+    считает, и класть её надо к сериалам. Решение остаётся за пользователем, а
+    от него зависит корень, в который уедут загрузки.
+    """
+    with session_scope() as session:
+        series = session.get(Series, series_id)
+        if series is None:
+            raise HTTPException(404, "Тайтл не найден")
+        series.treat_as_movie = payload.treat_as_movie
+        effective = (
+            payload.treat_as_movie
+            if payload.treat_as_movie is not None
+            else series.type == "movie"
+        )
+    return {"treat_as_movie": payload.treat_as_movie, "effective_is_movie": effective}

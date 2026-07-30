@@ -211,7 +211,14 @@ class TestFileIdIsStableAcrossScans:
             ).scalars().all()
 
         assert survived, "ручная привязка снесена каскадом при пересканировании"
-        assert survived[0].file_id == file_id
+        assert [m.file_id for m in survived] == [file_id]
+
+        # Убираем за собой: БД общая на весь прогон, и остаток выглядел бы
+        # в следующем запуске как «привязка выжила», хотя выжила чужая.
+        with session_scope() as session:
+            session.execute(
+                sa_delete(EpisodeMapping).where(EpisodeMapping.series_id == series_id)
+            )
 
     def test_deleted_file_row_disappears(self, tmp_path: Path) -> None:
         from app.core.db import Base, engine

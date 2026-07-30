@@ -100,7 +100,12 @@ def ensure_target_folder(series_id: int) -> tuple[LibraryFolder, LibraryRoot] | 
         if series is None:
             return None
         titles = dict(series.titles or {})
-        is_movie = series.type == "movie"
+        # Решение пользователя перевешивает тип из каталога: у тайтла с
+        # type=movie и несколькими эпизодами это связка фильмов, которую
+        # Radarr фильмом не считает, и класть её надо к сериалам.
+        is_movie = (
+            series.treat_as_movie if series.treat_as_movie is not None else series.type == "movie"
+        )
         year = series.year
 
     folder_name = folder_name_for_title(titles, year=year, is_movie=is_movie)

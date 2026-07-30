@@ -74,6 +74,12 @@ class Series(Base):
     # Заполнены ли поля, которые приходят только из GET /api/series/{id}.
     has_details: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Решение пользователя «это фильм / это сериал». None — определять по типу.
+    # Автоматически развести случаи нельзя: в каталоге есть тайтлы с type=movie
+    # и несколькими эпизодами (связка из 2-3 фильмов), и Radarr-фильмом такое
+    # не является. От этого зависит, в какой корень лягут загрузки.
+    treat_as_movie: Mapped[bool | None] = mapped_column(Boolean)
+
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     genres: Mapped[list[Genre]] = relationship(
