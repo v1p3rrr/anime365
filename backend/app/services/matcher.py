@@ -46,6 +46,11 @@ _MONTH_TO_SEASON = {
     9: "Осень", 10: "Осень", 11: "Осень",
 }
 
+# Служебные типы каталога: реклама, промо, клипы. Локальной папкой с аниме они
+# быть не могут, а в нечётком поиске выигрывали у настоящего сериала —
+# «Zombie Land Saga» уезжала в «Curry Meshi x Zombieland Saga» типа cm.
+SERVICE_TYPES = frozenset({"cm", "pv", "music"})
+
 
 def season_label_from_premiered(year: int, month: int) -> str:
     """«2012-07-02» → «Лето 2012». Декабрь относится к зиме следующего года."""
@@ -118,8 +123,18 @@ class TitleIndex:
 
             for title in self._all_variants(item):
                 norm = normalize_title(title)
-                if norm:
-                    self.by_norm_title.setdefault(norm, []).append(item.id)
+                if not norm:
+                    continue
+                bucket = self.by_norm_title.setdefault(norm, [])
+                # Без проверки один тайтл попадает в список несколько раз: одинаковое
+                # нормализованное название приходит и из titles, и из allTitles.
+                # Тогда «ровно один кандидат» никогда не выполняется, и точное
+                # совпадение всегда проваливается в нечёткий поиск.
+                if item.id not in bucket:
+                    bucket.append(item.id)
+
+        for ids in self.by_japanese.values():
+            ids[:] = list(dict.fromkeys(ids))
 
         # Для fuzzy: плоский список ключей, по которому идёт поиск похожих.
         self._norm_keys = list(self.by_norm_title.keys())
@@ -131,12 +146,34 @@ class TitleIndex:
         return [t for t in out if t]
 
     def fuzzy(self, query: str, limit: int = 8) -> list[tuple[str, float]]:
+        """Похожие названия.
+
+        Используется token_sort_ratio, а НЕ token_set_ratio: последний считает
+        совпадение подмножества полным, поэтому ключ «zombie» получал те же 100
+        баллов, что и «zombie land saga», и короткие мусорные названия выигрывали
+        у правильного тайтла. token_sort_ratio штрафует за недостающие слова.
+        """
         if not query or not self._norm_keys:
             return []
         found = process.extract(
-            query, self._norm_keys, scorer=fuzz.token_set_ratio, limit=limit, score_cutoff=60
+            query, self._norm_keys, scorer=fuzz.token_sort_ratio, limit=limit, score_cutoff=60
         )
         return [(key, score) for key, score, _ in found]
+
+    def by_prefix(self, prefix: str) -> list[int]:
+        """Все тайтлы, чьё название начинается с указанного.
+
+        Нужно каскаду сезонов: сиквелы называются «{база} 2nd Season»,
+        «{база} Revenge», «{база} San☆Hai!». Полагаться на топ-N нечёткого
+        поиска нельзя — при частом названии нужный сиквел в него не попадает.
+        """
+        if not prefix:
+            return []
+        out: list[int] = []
+        for key, ids in self.by_norm_title.items():
+            if key.startswith(prefix):
+                out.extend(ids)
+        return list(dict.fromkeys(out))
 
 
 @dataclass
@@ -229,7 +266,7 @@ class Matcher:
             norm, _ = normalize_for_match(raw)
             if not norm:
                 continue
-            if any(fuzz.token_set_ratio(norm, v) >= self.suggest_threshold for v in variants):
+            if any(fuzz.token_sort_ratio(norm, v) >= self.suggest_threshold for v in variants):
                 return True
         return False
 
@@ -321,6 +358,8 @@ class Matcher:
             if not norm:
                 continue
             found.extend(self.index.by_norm_title.get(norm) or [])
+            # Поиск по префиксу ловит сиквелы, которые не попадают в топ-N нечёткого.
+            found.extend(self.index.by_prefix(norm))
             for key, score in self.index.fuzzy(norm, limit=12):
                 if score >= self.suggest_threshold:
                     found.extend(self.index.by_norm_title.get(key) or [])
@@ -335,6 +374,12 @@ class Matcher:
         candidates = [c for sid in ids if (c := self.index.by_id.get(sid)) is not None]
         if not candidates:
             return None
+        if len(candidates) == 1:
+            return candidates[0].id
+
+        # Реклама, промо и клипы отдельной папкой в библиотеке не лежат.
+        real = [c for c in candidates if c.type not in SERVICE_TYPES]
+        candidates = real or candidates
         if len(candidates) == 1:
             return candidates[0].id
 
