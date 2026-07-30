@@ -30,15 +30,15 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import {
-  formatBytes,
   libraryApi,
   SOURCE_COLORS,
-  SOURCE_LABELS,
   type UnmappedFolder,
 } from '../api/library'
 import { ErrorState } from '../components/ErrorState'
 import { MapFolderModal } from '../components/MapFolderModal'
 import { MappingReport } from '../components/MappingReport'
+import { useT, type TranslationKey } from '../i18n'
+import { useFormat } from '../i18n/format'
 import scrollClasses from './ScrollPage.module.css'
 import pathClasses from '../components/PathLine.module.css'
 
@@ -48,6 +48,9 @@ function capitalize(text: string | null | undefined): string {
 
 export function LibraryPage() {
   const queryClient = useQueryClient()
+  const { t } = useT()
+  const { size } = useFormat()
+  const sourceLabel = (key: string) => t(`source.${key}` as TranslationKey)
   const [mappingFolder, setMappingFolder] = useState<UnmappedFolder | null>(null)
 
   const status = useQuery({
@@ -172,7 +175,7 @@ export function LibraryPage() {
               {root.path}
             </Text>
             <Text size="sm" mt={4}>
-              {root.folder_count} папок · {formatBytes(root.total_bytes)}
+              {root.folder_count} папок · {size(root.total_bytes)}
             </Text>
           </Card>
         ))}
@@ -275,7 +278,7 @@ export function LibraryPage() {
                       )}
                     </Table.Td>
                     <Table.Td>{folder.video_count || '—'}</Table.Td>
-                    <Table.Td>{formatBytes(folder.size_bytes)}</Table.Td>
+                    <Table.Td>{size(folder.size_bytes)}</Table.Td>
                     <Table.Td>
                       <Button size="compact-xs" onClick={() => setMappingFolder(folder)}>
                         Привязать
@@ -325,7 +328,7 @@ export function LibraryPage() {
                       }
                     >
                       <Badge size="sm" variant="light" color={SOURCE_COLORS[row.source] ?? 'gray'}>
-                        {SOURCE_LABELS[row.source] ?? row.source}
+                        {sourceLabel(row.source)}
                         {!row.is_manual && ` · ${row.confidence.toFixed(0)}%`}
                       </Badge>
                     </Tooltip>

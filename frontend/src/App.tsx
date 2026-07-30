@@ -4,6 +4,7 @@ import {
   Badge,
   Drawer,
   Group,
+  Select,
   Text,
   Tooltip,
   UnstyledButton,
@@ -21,6 +22,7 @@ import {
 import { Link, Route, Routes, useLocation } from 'react-router-dom'
 
 import { useAuth } from './hooks/useAuth'
+import { LOCALES, useT, type Locale } from './i18n'
 import { CatalogPage } from './pages/CatalogPage'
 import { LibraryPage } from './pages/LibraryPage'
 import { LoginPage } from './pages/LoginPage'
@@ -30,12 +32,12 @@ import { TitlePage } from './pages/TitlePage'
 import classes from './App.module.css'
 
 const NAV = [
-  { to: '/', label: 'Каталог', icon: IconLayoutGrid },
-  { to: '/ongoing', label: 'Онгоинги', icon: IconBroadcast },
-  { to: '/queue', label: 'Очередь', icon: IconDownload },
-  { to: '/library', label: 'Библиотека', icon: IconFolders },
-  { to: '/settings', label: 'Настройки', icon: IconSettings },
-]
+  { to: '/', key: 'nav.catalog', icon: IconLayoutGrid },
+  { to: '/ongoing', key: 'nav.ongoing', icon: IconBroadcast },
+  { to: '/queue', key: 'nav.queue', icon: IconDownload },
+  { to: '/library', key: 'nav.library', icon: IconFolders },
+  { to: '/settings', key: 'nav.settings', icon: IconSettings },
+] as const
 
 const WIDE = 200
 const NARROW = 56
@@ -43,6 +45,7 @@ const NARROW = 56
 export function App() {
   const { pathname } = useLocation()
   const auth = useAuth()
+  const { t, locale, setLocale } = useT()
   // Свёрнуто по умолчанию: в узком окне развёрнутое меню съедало почти всю ширину.
   const [collapsed, setCollapsed] = useLocalStorage({
     key: 'a365.v1.navCollapsed',
@@ -64,7 +67,8 @@ export function App() {
   }
 
   const navItems = (showLabels: boolean, onNavigate?: () => void) =>
-    NAV.map(({ to, label, icon: Icon }) => {
+    NAV.map(({ to, key, icon: Icon }) => {
+      const label = t(key)
       const active = pathname === to
       const item = (
         <UnstyledButton
@@ -108,11 +112,19 @@ export function App() {
       <AppShell.Header>
         <Group h="100%" px="sm" justify="space-between" wrap="nowrap">
           <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
-            <Tooltip label={isMobile ? 'Меню' : collapsed ? 'Развернуть меню' : 'Свернуть меню'}>
+            <Tooltip
+              label={
+                isMobile
+                  ? t('nav.menu')
+                  : collapsed
+                    ? t('nav.expandMenu')
+                    : t('nav.collapseMenu')
+              }
+            >
               <ActionIcon
                 variant="subtle"
                 onClick={() => (isMobile ? toggleMobile() : setCollapsed((v) => !v))}
-                aria-label="Переключить меню"
+                aria-label={t('nav.toggleMenu')}
               >
                 <IconLayoutSidebar size={18} />
               </ActionIcon>
@@ -125,11 +137,23 @@ export function App() {
             <Badge variant="light" color="gray" visibleFrom="xs">
               v0.1.0
             </Badge>
+            {/* Язык — личная настройка: сайт могут открыть несколько человек. */}
+            <Tooltip label={t('nav.language')}>
+              <Select
+                size="xs"
+                w={110}
+                data={LOCALES}
+                value={locale}
+                onChange={(value) => value && setLocale(value as Locale)}
+                allowDeselect={false}
+                aria-label={t('nav.language')}
+              />
+            </Tooltip>
             {auth.passwordRequired && (
-              <Tooltip label="Выйти">
+              <Tooltip label={t('nav.logout')}>
                 <ActionIcon
                   variant="subtle"
-                  aria-label="Выйти"
+                  aria-label={t('nav.logout')}
                   onClick={() => auth.logout().then(auth.refresh)}
                 >
                   <IconLogout size={18} />

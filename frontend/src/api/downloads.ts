@@ -40,18 +40,6 @@ export interface QueueState {
   tasks: DownloadTask[]
 }
 
-export const STATUS_LABELS: Record<TaskStatus, string> = {
-  queued: 'в очереди',
-  downloading: 'скачивается',
-  downloaded: 'скачано',
-  postprocessing: 'раскладывается',
-  done: 'готово',
-  failed: 'ошибка',
-  paused: 'пауза',
-  cancelled: 'отменено',
-  already_exists: 'уже было',
-}
-
 export const STATUS_COLORS: Record<TaskStatus, string> = {
   queued: 'gray',
   downloading: 'blue',

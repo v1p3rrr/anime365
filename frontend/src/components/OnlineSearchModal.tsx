@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { api } from '../api/client'
 import { ErrorState } from './ErrorState'
+import { useT } from '../i18n'
 
 interface OnlineResult {
   id: number
@@ -31,6 +32,7 @@ interface Props {
  */
 export function OnlineSearchModal({ query, opened, onClose }: Props) {
   const navigate = useNavigate()
+  const { t } = useT()
 
   const search = useQuery({
     queryKey: ['search-online', query],
@@ -44,30 +46,30 @@ export function OnlineSearchModal({ query, opened, onClose }: Props) {
   const newCount = search.data?.filter((r) => r.was_new).length ?? 0
 
   return (
-    <Modal opened={opened} onClose={onClose} title={`Поиск на сайте: «${query}»`} size="lg">
+    <Modal opened={opened} onClose={onClose} title={t('onlineSearch.title', { query })} size="lg">
       <Stack gap="sm">
         {search.isFetching && (
           <Group gap="xs">
             <Loader size="sm" />
             <Text size="sm" c="dimmed">
-              Запрашиваем Anime365…
+              {t('onlineSearch.asking')}
             </Text>
           </Group>
         )}
 
         {search.isError && (
-          <ErrorState error={search.error} title="Поиск не удался" onRetry={() => search.refetch()} />
+          <ErrorState error={search.error} title={t('onlineSearch.failed')} onRetry={() => search.refetch()} />
         )}
 
         {search.isSuccess && search.data.length === 0 && (
           <Text size="sm" c="dimmed">
-            На сайте тоже ничего не нашлось. Попробуйте romaji или японское написание.
+            {t('onlineSearch.nothing')}
           </Text>
         )}
 
         {newCount > 0 && (
           <Text size="xs" c="teal">
-            Новых для локального кэша: {newCount}. Они уже сохранены и доступны в каталоге.
+            {t('onlineSearch.newCount', { count: newCount })}
           </Text>
         )}
 
@@ -100,7 +102,7 @@ export function OnlineSearchModal({ query, opened, onClose }: Props) {
                     </Text>
                     {result.was_new && (
                       <Badge size="xs" color="teal" variant="light">
-                        новое
+                        {t('onlineSearch.isNew')}
                       </Badge>
                     )}
                   </Group>

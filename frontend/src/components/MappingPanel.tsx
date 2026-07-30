@@ -14,9 +14,11 @@ import { notifications } from '@mantine/notifications'
 import { IconFolderOff, IconFolderPlus, IconLock, IconStar, IconUnlink } from '@tabler/icons-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
-import { formatBytes, SOURCE_COLORS, SOURCE_LABELS } from '../api/library'
+import { SOURCE_COLORS } from '../api/library'
 import { titleApi, type LocalCoverage, type TitleMappingInfo } from '../api/title'
 import pathClasses from './PathLine.module.css'
+import { useT, type TranslationKey } from '../i18n'
+import { useFormat } from '../i18n/format'
 
 interface Props {
   seriesId: number
@@ -42,6 +44,9 @@ const ROLE_SHORT: Record<string, string> = {
  */
 export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
   const queryClient = useQueryClient()
+  const { t } = useT()
+  const { size } = useFormat()
+  const sourceLabel = (key: string) => t(`source.${key}` as TranslationKey)
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['title', seriesId] })
@@ -149,7 +154,7 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
                     }
                   >
                     <Badge size="sm" variant="light" color={SOURCE_COLORS[mapping.source] ?? 'gray'}>
-                      {SOURCE_LABELS[mapping.source] ?? mapping.source}
+                      {sourceLabel(mapping.source)}
                       {!mapping.is_manual && ` · точность ${mapping.confidence.toFixed(0)}%`}
                     </Badge>
                   </Tooltip>
@@ -159,7 +164,7 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
                     </Badge>
                   )}
                   <Text size="xs" c="dimmed">
-                    {mapping.video_count} видео · {formatBytes(mapping.size_bytes)}
+                    {mapping.video_count} видео · {size(mapping.size_bytes)}
                   </Text>
                 </Group>
 

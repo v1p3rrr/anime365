@@ -150,13 +150,11 @@ export type SortField = 'id' | 'year' | 'score' | 'title'
 
 export const SEASONS = ['Зима', 'Весна', 'Лето', 'Осень'] as const
 
-/** Подписи зависят от направления, иначе «По году» ничего не говорит о порядке. */
-export const SORT_LABELS: Record<SortField, { desc: string; asc: string }> = {
-  id: { desc: 'Сначала новые', asc: 'Сначала старые' },
-  year: { desc: 'Год: новее', asc: 'Год: старее' },
-  score: { desc: 'Оценка: выше', asc: 'Оценка: ниже' },
-  title: { desc: 'Название: Я–А', asc: 'Название: А–Я' },
-}
+/**
+ * Поля сортировки. Подписи живут в словарях (`sort.*`): они зависят и от поля,
+ * и от направления — «по году» само по себе не говорит о порядке.
+ */
+export const SORT_FIELDS: SortField[] = ['id', 'year', 'score', 'title']
 
 function buildParams(filters: CatalogFilters): string {
   const params = new URLSearchParams()

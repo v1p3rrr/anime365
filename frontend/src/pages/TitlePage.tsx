@@ -23,12 +23,13 @@ import { useParams } from 'react-router-dom'
 
 import { api } from '../api/client'
 import { ALL_LANGS, usePreferences, type Lang } from '../stores/preferences'
-import { KIND_LABELS, LANG_COLORS, LANG_LABELS, titleApi } from '../api/title'
+import { LANG_COLORS, titleApi } from '../api/title'
 import { BindFolderModal } from '../components/BindFolderModal'
 import { EpisodeRow } from '../components/EpisodeRow'
 import { ErrorState } from '../components/ErrorState'
 import { MappingPanel } from '../components/MappingPanel'
 import { TranslationGroups } from '../components/TranslationGroups'
+import { useT, type TranslationKey } from '../i18n'
 import scrollClasses from './ScrollPage.module.css'
 
 export function TitlePage() {
@@ -36,6 +37,7 @@ export function TitlePage() {
   const seriesId = Number(id)
   const { prefs, toggleLang, toggleKind } = usePreferences()
   const queryClient = useQueryClient()
+  const { t } = useT()
   const [showNonContent, setShowNonContent] = useState(false)
   const [binding, setBinding] = useState(false)
 
@@ -334,7 +336,7 @@ export function TitlePage() {
               onChange={() => toggleLang(lang)}
               color={LANG_COLORS[lang]}
             >
-              {LANG_LABELS[lang]}
+              {t(`lang.${lang}` as TranslationKey)}
             </Chip>
           ))}
         </Group>
@@ -350,7 +352,7 @@ export function TitlePage() {
               checked={prefs.kinds.includes(kind)}
               onChange={() => toggleKind(kind)}
             >
-              {KIND_LABELS[kind]}
+              {t(`kind.${kind}` as TranslationKey)}
             </Chip>
           ))}
         </Group>

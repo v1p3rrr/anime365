@@ -83,15 +83,6 @@ export interface UnmatchedFile {
 }
 
 /** Понятные подписи для того, чем именно получена связь. */
-export const SOURCE_LABELS: Record<string, string> = {
-  anilist_id: 'по AniList ID',
-  mal_id: 'по MAL ID',
-  original_title: 'по японскому названию',
-  exact_title: 'по точному названию',
-  premiered: 'по дате премьеры',
-  fuzzy: 'по похожему названию',
-  manual: 'вручную',
-}
 
 export const SOURCE_COLORS: Record<string, string> = {
   anilist_id: 'teal',
@@ -135,9 +126,14 @@ export const libraryApi = {
   confirmMapping: (id: number) => api.post<unknown>(`/library/mappings/${id}/confirm`),
 }
 
-export function formatBytes(bytes: number): string {
+/**
+ * Размер с единицами измерения.
+ *
+ * Единицы приходят снаружи: в японском и английском они пишутся латиницей,
+ * а в русском кириллицей, и зашивать одно из написаний нельзя.
+ */
+export function formatBytes(bytes: number, units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ']): string {
   if (!bytes) return '—'
-  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ']
   let value = bytes
   let unit = 0
   while (value >= 1024 && unit < units.length - 1) {

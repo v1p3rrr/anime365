@@ -31,16 +31,18 @@ import {
   formatEta,
   formatSpeed,
   STATUS_COLORS,
-  STATUS_LABELS,
   type DownloadTask,
   type TaskStatus,
 } from '../api/downloads'
 import { formatBytes } from '../api/library'
 import { ErrorState } from '../components/ErrorState'
 import { useServerEvents, type ServerEvent } from '../hooks/useServerEvents'
+import { useT, type TranslationKey } from '../i18n'
 import scrollClasses from './ScrollPage.module.css'
 
 export function QueuePage() {
+  const { t } = useT()
+  const statusLabel = (key: string) => t(`status.${key}` as TranslationKey)
   const queryClient = useQueryClient()
   // Прогресс приходит событиями и живёт отдельно от списка: перезапрашивать
   // весь список несколько раз в секунду незачем.
@@ -246,7 +248,7 @@ export function QueuePage() {
       <Group gap="xs" wrap="wrap">
         {(Object.entries(counts) as [TaskStatus, number][]).map(([status, count]) => (
           <Badge key={status} variant="light" color={STATUS_COLORS[status] ?? 'gray'}>
-            {STATUS_LABELS[status] ?? status}: {count}
+            {statusLabel(status)}: {count}
           </Badge>
         ))}
       </Group>
@@ -298,6 +300,8 @@ function TaskTable({ title, tasks, action }: TableProps) {
 }
 
 function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['action'] }) {
+  const { t } = useT()
+  const statusLabel = (key: string) => t(`status.${key}` as TranslationKey)
   const canPause = task.status === 'downloading' || task.status === 'queued'
   const canResume = task.status === 'paused'
   const canRetry = task.status === 'failed' || task.status === 'cancelled'
@@ -361,7 +365,7 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
 
       <Table.Td>
         <Badge size="sm" variant="light" color={STATUS_COLORS[task.status] ?? 'gray'}>
-          {STATUS_LABELS[task.status] ?? task.status}
+          {statusLabel(task.status)}
         </Badge>
       </Table.Td>
 

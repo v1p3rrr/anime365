@@ -2,6 +2,7 @@ import { Alert, Button, Code, Group, Text } from '@mantine/core'
 import { IconAlertTriangle, IconRefresh } from '@tabler/icons-react'
 
 import { ApiError } from '../api/client'
+import { useT, type TranslationKey } from '../i18n'
 
 interface Props {
   error: unknown
@@ -18,7 +19,8 @@ interface Props {
  * и, где это уместно, подсказка что делать.
  */
 export function ErrorState({ error, title, onRetry, compact = false }: Props) {
-  const { heading, hint } = describe(error, title)
+  const { t } = useT()
+  const { heading, hint } = describe(error, t, title)
   const detail = error instanceof Error ? error.message : String(error)
 
   if (compact) {
@@ -28,7 +30,7 @@ export function ErrorState({ error, title, onRetry, compact = false }: Props) {
         {hint && ` — ${hint}`}
         {onRetry && (
           <Button size="compact-xs" variant="subtle" ml={6} onClick={onRetry}>
-            ещё раз
+            {t('errorCodes.retryShort')}
           </Button>
         )}
       </Text>
@@ -48,7 +50,7 @@ export function ErrorState({ error, title, onRetry, compact = false }: Props) {
       {onRetry && (
         <Group mt="sm">
           <Button size="xs" leftSection={<IconRefresh size={14} />} onClick={onRetry}>
-            Повторить
+            {t('common.retry')}
           </Button>
         </Group>
       )}
@@ -57,38 +59,34 @@ export function ErrorState({ error, title, onRetry, compact = false }: Props) {
 }
 
 /** Превращает код ответа в понятную причину и совет. */
-function describe(error: unknown, fallbackTitle?: string): { heading: string; hint?: string } {
+function describe(
+  error: unknown,
+  t: (key: TranslationKey, vars?: Record<string, string | number>) => string,
+  fallbackTitle?: string,
+): { heading: string; hint?: string } {
   if (error instanceof ApiError) {
     switch (error.status) {
       case 401:
-        return { heading: 'Требуется вход', hint: 'Сессия истекла — войдите заново.' }
+        return { heading: t('errorCodes.e401'), hint: t('errorCodes.e401hint') }
       case 403:
-        return {
-          heading: 'Нет доступа к видео и субтитрам',
-          hint:
-            'Этот запрос требует access_token от аккаунта с активной премиум-подпиской. ' +
-            'Задайте токен в настройках и проверьте, что подписка не истекла.',
-        }
+        return { heading: t('errorCodes.e403'), hint: t('errorCodes.e403hint') }
       case 404:
-        return { heading: 'Не найдено', hint: 'Запись отсутствует в каталоге.' }
+        return { heading: t('errorCodes.e404'), hint: t('errorCodes.e404hint') }
       case 409:
-        return { heading: 'Операция уже выполняется', hint: 'Дождитесь завершения.' }
+        return { heading: t('errorCodes.e409'), hint: t('errorCodes.e409hint') }
       case 429:
-        return { heading: 'Слишком много запросов', hint: 'Подождите немного и повторите.' }
+        return { heading: t('errorCodes.e429'), hint: t('errorCodes.e429hint') }
       case 502:
       case 503:
-        return {
-          heading: 'Anime365 недоступен',
-          hint: 'Сайт не отвечает или зеркало заблокировано. Попробуйте сменить зеркало в настройках.',
-        }
+        return { heading: t('errorCodes.e502'), hint: t('errorCodes.e502hint') }
       default:
-        return { heading: fallbackTitle ?? `Ошибка ${error.status}` }
+        return { heading: fallbackTitle ?? t('errorCodes.generic', { status: error.status }) }
     }
   }
 
   if (error instanceof TypeError) {
-    return { heading: 'Нет связи с сервером', hint: 'Проверьте, запущено ли приложение.' }
+    return { heading: t('errorCodes.offline'), hint: t('errorCodes.offlineHint') }
   }
 
-  return { heading: fallbackTitle ?? 'Что-то пошло не так' }
+  return { heading: fallbackTitle ?? t('errors.title') }
 }

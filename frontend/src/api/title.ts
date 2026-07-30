@@ -154,17 +154,7 @@ export const titleApi = {
     api.post<unknown>(`/library/mappings/${mappingId}/primary`, { series_id: seriesId }),
 }
 
-export const LANG_LABELS: Record<string, string> = {
-  ru: 'Русский',
-  en: 'Английский',
-  ja: 'Японский',
-}
 
-export const KIND_LABELS: Record<string, string> = {
-  voice: 'Озвучка',
-  sub: 'Субтитры',
-  raw: 'Оригинал (RAW)',
-}
 
 /** Цвета разводят языки и типы визуально, как требует ТЗ. */
 export const LANG_COLORS: Record<string, string> = {

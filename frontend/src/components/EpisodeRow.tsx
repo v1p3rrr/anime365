@@ -13,7 +13,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { downloadsApi, type DownloadKind } from '../api/downloads'
-import { LANG_COLORS, LANG_LABELS, type EpisodeItem, type EpisodeTranslation } from '../api/title'
+import { LANG_COLORS, type EpisodeItem, type EpisodeTranslation } from '../api/title'
+import { useT } from '../i18n'
 import { BindEpisodeModal } from './BindEpisodeModal'
 import { PlayerModal } from './PlayerModal'
 
@@ -26,8 +27,9 @@ interface Props {
 }
 
 /** Что показываем как «есть локально». Порядок фиксирован для читаемости. */
+/** Языковые коды не переводятся, «видео» — переводится. */
 const ROLE_BADGES: Array<{ role: string; label: string; color: string }> = [
-  { role: 'video', label: 'Видео', color: 'teal' },
+  { role: 'video', label: '', color: 'teal' },
   { role: 'sub_ru', label: 'RU', color: 'blue' },
   { role: 'sub_ja', label: 'JA', color: 'teal' },
   { role: 'sub_en', label: 'EN', color: 'grape' },
@@ -37,8 +39,10 @@ const ROLE_BY_LANG: Record<string, string> = { ru: 'sub_ru', ja: 'sub_ja', en: '
 
 export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props) {
   const queryClient = useQueryClient()
+  const { t } = useT()
   const [binding, setBinding] = useState(false)
   const [playing, setPlaying] = useState(false)
+  const badgeLabel = (badge: { label: string }) => badge.label || t('catalog.badgeVideo')
 
   const enqueue = useMutation({
     mutationFn: ({ id, kind }: { id: number; kind: DownloadKind }) =>
@@ -46,12 +50,12 @@ export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props
     onSuccess: (result) => {
       notifications.show({
         color: result.created ? 'teal' : 'gray',
-        message: result.created ? 'Добавлено в очередь' : 'Уже в очереди',
+        message: result.created ? t('episode.queued') : t('episode.alreadyQueued'),
       })
       queryClient.invalidateQueries({ queryKey: ['downloads'] })
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: 'Не удалось поставить', message: error.message }),
+      notifications.show({ color: 'red', title: t('episode.enqueueFailed'), message: error.message }),
   })
 
   const available = episode.translations.filter(
@@ -75,10 +79,8 @@ export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props
     if (targetRole && episode.have.includes(targetRole)) {
       notifications.show({
         color: 'yellow',
-        title: 'Такой файл уже есть',
-        message:
-          'Существующий не перезаписывается — новый ляжет рядом отдельным файлом ' +
-          'с именем автора перевода.',
+        title: t('episode.existsTitle'),
+        message: t('episode.existsMessage'),
       })
     }
     enqueue.mutate({ id: translation.id, kind })
@@ -107,7 +109,11 @@ export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props
             return (
               <Tooltip
                 key={badge.role}
-                label={have ? `${badge.label}: есть локально` : `${badge.label}: нет`}
+                label={
+                  have
+                    ? t('episode.haveLocal', { label: badgeLabel(badge) })
+                    : t('episode.missing', { label: badgeLabel(badge) })
+                }
               >
                 <Badge
                   size="xs"
@@ -115,7 +121,7 @@ export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props
                   color={have ? badge.color : 'gray'}
                   leftSection={have ? <IconCheck size={9} /> : undefined}
                 >
-                  {badge.label}
+                  {badgeLabel(badge)}
                 </Badge>
               </Tooltip>
             )
@@ -134,16 +140,16 @@ export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props
                 disabled={available.length === 0}
                 loading={enqueue.isPending}
               >
-                Скачать
+                {t('episode.download')}
               </Button>
             </Menu.Target>
             <Menu.Dropdown mah={340} style={{ overflowY: 'auto' }}>
               {available.length === 0 ? (
-                <Menu.Item disabled>нет переводов на выбранных языках</Menu.Item>
+                <Menu.Item disabled>{t('episode.noTranslations')}</Menu.Item>
               ) : (
                 Object.entries(groupByLangKind(available)).map(([key, items]) => (
                   <div key={key}>
-                    <Menu.Label>{describeGroup(key)}</Menu.Label>
+                    <Menu.Label>{key.replace('|', ' · ')}</Menu.Label>
                     {items.map((translation) => (
                       <Menu.Item key={translation.id} onClick={() => handlePick(translation)}>
                         <Group gap={6} wrap="nowrap">
@@ -170,7 +176,7 @@ export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props
           {/* Плеер идёт до ссылки на сайт: смотреть у себя — основной путь,
               а сайт остаётся запасным, если браузер не тянет кодек. */}
           {available.length > 0 && (
-            <Tooltip label="Смотреть здесь">
+            <Tooltip label={t('episode.play')}>
               <Button
                 size="compact-xs"
                 variant="light"
@@ -189,14 +195,14 @@ export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props
           {audioSources.length > 0 && (
             <Menu position="bottom-end">
               <Menu.Target>
-                <Tooltip label="Извлечь звуковую дорожку в фонотеку">
+                <Tooltip label={t('episode.audio')}>
                   <Button size="compact-xs" variant="subtle" color="grape" px={6}>
                     <IconMusic size={12} />
                   </Button>
                 </Tooltip>
               </Menu.Target>
               <Menu.Dropdown mah={340} style={{ overflowY: 'auto' }}>
-                <Menu.Label>Только звук — в корень фонотеки</Menu.Label>
+                <Menu.Label>{t('episode.audioMenu')}</Menu.Label>
                 {audioSources.map((translation) => (
                   <Menu.Item
                     key={translation.id}
@@ -217,7 +223,7 @@ export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props
           )}
 
           {seriesUrl && (
-            <Tooltip label="Открыть серию на сайте">
+            <Tooltip label={t('episode.openOnSite')}>
               <Button
                 size="compact-xs"
                 variant="subtle"
@@ -235,7 +241,7 @@ export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props
           {/* Разбор имени ошибается на сдвинутой нумерации и на файлах без
               номера — тогда серию привязывают к файлу руками. */}
           {episode.episode_num != null && (
-            <Tooltip label="Привязать локальный файл к этой серии">
+            <Tooltip label={t('episode.bind')}>
               <Button
                 size="compact-xs"
                 variant="subtle"
@@ -280,8 +286,3 @@ function groupByLangKind(items: EpisodeTranslation[]): Record<string, EpisodeTra
   return out
 }
 
-function describeGroup(key: string): string {
-  const [lang, kind] = key.split('|')
-  const kindLabel = kind === 'sub' ? 'субтитры' : kind === 'voice' ? 'озвучка' : 'оригинал'
-  return `${LANG_LABELS[lang] ?? lang} · ${kindLabel}`
-}

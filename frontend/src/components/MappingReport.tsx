@@ -2,9 +2,10 @@ import { Badge, Card, Group, Progress, Stack, Table, Text, Tooltip } from '@mant
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 
-import { libraryApi, SOURCE_COLORS, SOURCE_LABELS } from '../api/library'
+import { libraryApi, SOURCE_COLORS } from '../api/library'
 import { ErrorState } from './ErrorState'
 import pathClasses from './PathLine.module.css'
+import { useT, type TranslationKey } from '../i18n'
 
 /**
  * Чем именно смапились папки и с какой уверенностью.
@@ -14,6 +15,8 @@ import pathClasses from './PathLine.module.css'
  * неразобранного — опустить.
  */
 export function MappingReport() {
+  const { t } = useT()
+  const sourceLabel = (key: string) => t(`source.${key}` as TranslationKey)
   const report = useQuery({
     queryKey: ['library-mapping-report'],
     queryFn: libraryApi.mappingReport,
@@ -56,7 +59,7 @@ export function MappingReport() {
               <div key={row.source}>
                 <Group justify="space-between" gap="xs" mb={2}>
                   <Badge size="xs" variant="light" color={SOURCE_COLORS[row.source] ?? 'gray'}>
-                    {SOURCE_LABELS[row.source] ?? row.source}
+                    {sourceLabel(row.source)}
                   </Badge>
                   <Text size="xs" c="dimmed">
                     {row.count}
@@ -153,7 +156,7 @@ export function MappingReport() {
                           variant="light"
                           color={SOURCE_COLORS[row.source] ?? 'gray'}
                         >
-                          {SOURCE_LABELS[row.source] ?? row.source} · {Math.round(row.confidence)}%
+                          {sourceLabel(row.source)} · {Math.round(row.confidence)}%
                         </Badge>
                       </Tooltip>
                     </Table.Td>

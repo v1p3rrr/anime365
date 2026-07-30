@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom'
 import { formatBytes } from '../api/library'
 import type { CatalogCard as CardData } from '../api/client'
 import classes from './CatalogCard.module.css'
+import { useT } from '../i18n'
 
 interface Props {
   card?: CardData
@@ -14,8 +15,9 @@ interface Props {
 
 export type BadgeKey = 'video' | 'sub_ru' | 'sub_ja' | 'sub_en'
 
+/** Подписи значков. Языковые коды не переводятся — они одинаковы везде. */
 export const BADGE_LABELS: Record<BadgeKey, string> = {
-  video: 'Видео',
+  video: '',
   sub_ru: 'RU',
   sub_ja: 'JA',
   sub_en: 'EN',
@@ -33,6 +35,7 @@ function coverageColor(have: number, total: number): string {
 
 export function CatalogCard({ card, visibleBadges = DEFAULT_BADGES }: Props) {
   const navigate = useNavigate()
+  const { t } = useT()
 
   if (!card) {
     // Заглушка ровно тех же размеров: иначе при подгрузке окна сетка дёргается.
@@ -79,7 +82,7 @@ export function CatalogCard({ card, visibleBadges = DEFAULT_BADGES }: Props) {
 
         {card.is_airing && (
           <Badge className={classes.cornerBadge} size="xs" color="red" variant="filled">
-            онгоинг
+            {t('catalog.cardOngoing')}
           </Badge>
         )}
 
@@ -87,7 +90,7 @@ export function CatalogCard({ card, visibleBadges = DEFAULT_BADGES }: Props) {
           <div className={classes.badgeStrip}>
             {card.mapping_problem && (
               <Badge size="xs" color="orange" variant="filled">
-                проверить привязку
+                {t('catalog.badgeCheckMapping')}
               </Badge>
             )}
             {visibleBadges.map((key) => {
@@ -102,7 +105,7 @@ export function CatalogCard({ card, visibleBadges = DEFAULT_BADGES }: Props) {
                   variant="filled"
                   color={coverageColor(have, local.total)}
                 >
-                  {BADGE_LABELS[key]} {have}/{local.total}
+                  {BADGE_LABELS[key] || t('catalog.badgeVideo')} {have}/{local.total}
                 </Badge>
               )
             })}

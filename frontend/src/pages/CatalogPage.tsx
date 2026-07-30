@@ -12,6 +12,7 @@ import { OnlineSearchModal } from '../components/OnlineSearchModal'
 import { SyncIndicator } from '../components/SyncIndicator'
 import { useVirtualCatalog } from '../hooks/useVirtualCatalog'
 import { usePreferences } from '../stores/preferences'
+import { useT } from '../i18n'
 
 interface Props {
   onlyAiring?: boolean
@@ -27,6 +28,7 @@ export function CatalogPage({ onlyAiring = false }: Props) {
   const [filters, setFilters] = useState<Filters>({ sort: 'score', sortDir: 'desc' })
   const [onlineOpened, { open: openOnline, close: closeOnline }] = useDisclosure(false)
   const { prefs, toggleEnBadges } = usePreferences()
+  const { t, locale } = useT()
 
   // Значок английских субтитров по ТЗ выключен по умолчанию: у большинства
   // они не нужны, а лишний бейдж на каждой карточке — шум.
@@ -86,12 +88,12 @@ export function CatalogPage({ onlyAiring = false }: Props) {
     filters.scoreFrom !== undefined
 
   const emptyReason = catalogIsEmpty
-    ? 'Каталог ещё не синхронизирован. Нажмите кнопку обновления справа сверху — это занимает около минуты.'
+    ? t('catalog.emptyNotSynced')
     : debouncedSearch
-      ? 'Попробуйте изменить запрос или поискать на сайте — кнопка справа от поля поиска. Локальный кэш обновляется раз в час, совсем свежих тайтлов в нём может не быть.'
+      ? t('catalog.emptySearch')
       : hasFilters
-        ? 'Под выбранные фильтры не подошёл ни один тайтл. Ослабьте условия или сбросьте фильтры.'
-        : 'Под текущие условия не подошёл ни один тайтл.'
+        ? t('catalog.emptyFilters')
+        : t('catalog.emptyOther')
 
   return (
     // Колонка на всю доступную высоту: сетка внутри растягивается сама,
@@ -99,10 +101,10 @@ export function CatalogPage({ onlyAiring = false }: Props) {
     <Stack gap="sm" h="100%" style={{ minHeight: 0 }}>
       <Group justify="space-between" align="center">
         <Group gap="sm" align="baseline">
-          <Title order={3}>{onlyAiring ? 'Онгоинги' : 'Каталог'}</Title>
+          <Title order={3}>{onlyAiring ? t('catalog.ongoing') : t('catalog.title')}</Title>
           {idsQuery.data && (
             <Text c="dimmed" size="sm">
-              найдено: {idsQuery.data.total.toLocaleString('ru')}
+              {t('catalog.found', { count: idsQuery.data.total.toLocaleString(locale) })}
             </Text>
           )}
           {idsQuery.isFetching && <Loader size="xs" />}
@@ -131,7 +133,7 @@ export function CatalogPage({ onlyAiring = false }: Props) {
       {idsQuery.isError && (
         <ErrorState
           error={idsQuery.error}
-          title="Не удалось загрузить каталог"
+          title={t('catalog.loadFailed')}
           onRetry={() => idsQuery.refetch()}
         />
       )}
@@ -141,7 +143,7 @@ export function CatalogPage({ onlyAiring = false }: Props) {
       )}
 
       {idsQuery.isSuccess && ids.length === 0 && (
-        <Alert color="gray" title="Ничего не найдено" style={{ flexShrink: 0 }}>
+        <Alert color="gray" title={t('common.nothingFound')} style={{ flexShrink: 0 }}>
           {emptyReason}
         </Alert>
       )}

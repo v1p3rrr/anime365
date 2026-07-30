@@ -26,11 +26,12 @@ import { useState } from 'react'
 
 import {
   SEASONS,
-  SORT_LABELS,
+  SORT_FIELDS,
   type CatalogFilters as Filters,
   type GenreItem,
   type SortField,
 } from '../api/client'
+import { useT, type TranslationKey } from '../i18n'
 
 interface Props {
   filters: Filters
@@ -46,16 +47,8 @@ interface Props {
   onToggleEnBadges: () => void
 }
 
-const TYPES = [
-  { value: '', label: 'Любой тип' },
-  { value: 'tv', label: 'ТВ сериал' },
-  { value: 'movie', label: 'Фильм' },
-  { value: 'ova', label: 'OVA' },
-  { value: 'ona', label: 'ONA' },
-  { value: 'special', label: 'Спешл' },
-  { value: 'tv_special', label: 'ТВ спешл' },
-  { value: 'music', label: 'Клип' },
-]
+/** Типы приходят с сайта как есть; подписи к ним даёт TYPE_LABELS в словаре. */
+const TYPE_VALUES = ['', 'tv', 'movie', 'ova', 'ona', 'special', 'tv_special', 'music'] as const
 
 export function CatalogFilters({
   filters,
@@ -69,6 +62,11 @@ export function CatalogFilters({
   onToggleEnBadges,
 }: Props) {
   const [expanded, setExpanded] = useState(false)
+  const { t } = useT()
+
+  // Значения типов и сезонов приходят с сайта и уходят в API как есть —
+  // переводим только подписи.
+  const typeLabel = (value: string) => t(`types.${value}` as TranslationKey)
 
   const patch = (part: Partial<Filters>) => onChange({ ...filters, ...part })
 
@@ -77,9 +75,9 @@ export function CatalogFilters({
 
   // Значение селектора кодирует и поле, и направление: повторный выбор того же поля
   // переворачивает порядок, а подпись сразу говорит, какой он сейчас.
-  const sortOptions = (Object.keys(SORT_LABELS) as SortField[]).flatMap((field) => [
-    { value: `${field}:desc`, label: SORT_LABELS[field].desc },
-    { value: `${field}:asc`, label: SORT_LABELS[field].asc },
+  const sortOptions = SORT_FIELDS.flatMap((field) => [
+    { value: `${field}:desc`, label: t(`sort.${field}.desc` as TranslationKey) },
+    { value: `${field}:asc`, label: t(`sort.${field}.asc` as TranslationKey) },
   ])
 
   const applySort = (raw: string | null) => {
@@ -99,8 +97,8 @@ export function CatalogFilters({
         onChange={applySort}
         allowDeselect={false}
       />
-      <Tooltip label={sortDir === 'desc' ? 'Сейчас по убыванию' : 'Сейчас по возрастанию'}>
-        <ActionIcon variant="default" onClick={toggleSortDir} aria-label="Изменить порядок">
+      <Tooltip label={sortDir === 'desc' ? t('catalog.sortDesc') : t('catalog.sortAsc')}>
+        <ActionIcon variant="default" onClick={toggleSortDir} aria-label={t('catalog.sortOrder')}>
           {sortDir === 'desc' ? <IconSortDescending size={16} /> : <IconSortAscending size={16} />}
         </ActionIcon>
       </Tooltip>
@@ -122,7 +120,7 @@ export function CatalogFilters({
       <Group gap="xs" wrap="nowrap">
         <TextInput
           flex={1}
-          placeholder="Поиск по названию — русскому, romaji или японскому"
+          placeholder={t('catalog.search')}
           leftSection={<IconSearch size={16} />}
           value={searchInput}
           onChange={(e) => onSearchInput(e.currentTarget.value)}
@@ -138,25 +136,25 @@ export function CatalogFilters({
         {/* Появляется только при непустом запросе: без него искать нечего,
             а каждый вызов — это запрос на сайт. */}
         {searchInput.trim().length > 0 && (
-          <Tooltip label="Искать на сайте — ловит то, чего ещё нет в локальном кэше">
+          <Tooltip label={t('catalog.searchOnline')}>
             <ActionIcon
               variant="default"
               size="input-sm"
               onClick={onSearchOnline}
-              aria-label="Искать на сайте"
+              aria-label={t('catalog.searchOnline')}
             >
               <IconWorldSearch size={17} />
             </ActionIcon>
           </Tooltip>
         )}
 
-        <Tooltip label="Фильтры">
+        <Tooltip label={t('catalog.filters')}>
           <Button
             variant={activeCount > 0 ? 'filled' : 'default'}
             leftSection={<IconFilter size={16} />}
             onClick={() => setExpanded((v) => !v)}
           >
-            {activeCount > 0 ? activeCount : 'Фильтры'}
+            {activeCount > 0 ? activeCount : t('catalog.filters')}
           </Button>
         </Tooltip>
 
@@ -169,15 +167,15 @@ export function CatalogFilters({
         <Group gap="xs" align="flex-end" mt="xs" wrap="wrap">
           <Stack gap={2} hiddenFrom="sm">
             <Text size="sm" fw={500}>
-              Сортировка
+              {t('catalog.sortOrder')}
             </Text>
             {sortControl({})}
           </Stack>
 
           <Select
             w={160}
-            label="Тип"
-            data={TYPES}
+            label={t('catalog.type')}
+            data={TYPE_VALUES.map((v) => ({ value: v, label: typeLabel(v) }))}
             value={filters.type ?? ''}
             onChange={(v) => patch({ type: v || undefined })}
             allowDeselect={false}
@@ -185,7 +183,7 @@ export function CatalogFilters({
 
           <NumberInput
             w={110}
-            label="Год от"
+            label={t('catalog.yearFrom')}
             min={1900}
             max={2100}
             value={filters.yearFrom ?? ''}
@@ -193,7 +191,7 @@ export function CatalogFilters({
           />
           <NumberInput
             w={110}
-            label="Год до"
+            label={t('catalog.yearTo')}
             min={1900}
             max={2100}
             value={filters.yearTo ?? ''}
@@ -204,10 +202,10 @@ export function CatalogFilters({
               мы разбираем её при синхронизации, чтобы можно было искать «все зимние». */}
           <Select
             w={130}
-            label="Сезон"
-            placeholder="Любой"
+            label={t('catalog.season')}
+            placeholder={t('catalog.anySeason')}
             clearable
-            data={[...SEASONS]}
+            data={SEASONS.map((value) => ({ value, label: t(`seasons.${value}` as TranslationKey) }))}
             value={filters.season ?? null}
             onChange={(v) => patch({ season: v ?? undefined })}
           />
@@ -215,8 +213,8 @@ export function CatalogFilters({
           <MultiSelect
             flex={1}
             miw={240}
-            label="Жанры"
-            placeholder="Любые"
+            label={t('catalog.genres')}
+            placeholder={t('catalog.anyGenres')}
             searchable
             clearable
             data={genres.map((g) => ({ value: String(g.id), label: `${g.title} (${g.count})` }))}
@@ -225,8 +223,8 @@ export function CatalogFilters({
           />
 
           <Switch
-            label="Все жанры сразу"
-            description="Иначе достаточно любого"
+            label={t('catalog.allGenres')}
+            description={t('catalog.allGenresHint')}
             checked={filters.genresAnd ?? false}
             onChange={(e) => patch({ genresAnd: e.currentTarget.checked })}
           />
@@ -235,8 +233,8 @@ export function CatalogFilters({
               участвует в счётчике активных фильтров и не сбрасывается вместе
               с ними: у каждого свой выбор, и он хранится в браузере. */}
           <Switch
-            label="Значок EN-субтитров"
-            description="На карточках каталога"
+            label={t('catalog.enBadges')}
+            description={t('catalog.enBadgesHint')}
             checked={showEnBadges}
             onChange={onToggleEnBadges}
           />
@@ -247,10 +245,10 @@ export function CatalogFilters({
         <Stack gap={2} mt="md" maw={420}>
           <Group justify="space-between">
             <Text size="sm" fw={500}>
-              Оценка MAL не ниже
+              {t('catalog.scoreFrom')}
             </Text>
             <Text size="sm" c={filters.scoreFrom ? undefined : 'dimmed'}>
-              {filters.scoreFrom ? filters.scoreFrom.toFixed(1) : 'любая'}
+              {filters.scoreFrom ? filters.scoreFrom.toFixed(1) : t('catalog.scoreAny')}
             </Text>
           </Group>
           <Slider
@@ -260,7 +258,7 @@ export function CatalogFilters({
             value={filters.scoreFrom ?? 0}
             onChange={(v) => patch({ scoreFrom: v === 0 ? undefined : v })}
             marks={[
-              { value: 0, label: 'любая' },
+              { value: 0, label: t('catalog.scoreAny') },
               { value: 5, label: '5' },
               { value: 7, label: '7' },
               { value: 8, label: '8' },
@@ -270,7 +268,7 @@ export function CatalogFilters({
           />
           {filters.scoreFrom !== undefined && (
             <Text size="xs" c="dimmed">
-              Тайтлы без оценки при этом фильтре скрыты.
+              {t('catalog.scoreHint')}
             </Text>
           )}
         </Stack>
@@ -282,7 +280,7 @@ export function CatalogFilters({
               onChange={(checked) => patch({ isAiring: checked ? true : undefined })}
               size="xs"
             >
-              Только онгоинги
+              {t('catalog.onlyOngoing')}
             </Chip>
           )}
 
@@ -295,7 +293,7 @@ export function CatalogFilters({
             size="xs"
             color="teal"
           >
-            Есть в библиотеке
+            {t('catalog.inLibrary')}
           </Chip>
           <Chip
             checked={filters.local === 'missing'}
@@ -303,7 +301,7 @@ export function CatalogFilters({
             size="xs"
             color="orange"
           >
-            Нет в библиотеке
+            {t('catalog.notInLibrary')}
           </Chip>
 
           {/* Очередь на ручную проверку: привязка нашлась нечётким совпадением
@@ -315,7 +313,7 @@ export function CatalogFilters({
             size="xs"
             color="yellow"
           >
-            Привязка под вопросом
+            {t('catalog.mappingProblem')}
           </Chip>
           {activeCount > 0 && (
             <Button
@@ -331,7 +329,7 @@ export function CatalogFilters({
                 })
               }
             >
-              Сбросить фильтры
+              {t('catalog.resetFilters')}
             </Button>
           )}
         </Group>

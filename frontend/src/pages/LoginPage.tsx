@@ -4,6 +4,7 @@ import { useMutation } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { api } from '../api/client'
+import { useT } from '../i18n'
 
 interface LoginPageProps {
   onSuccess: () => void
@@ -11,6 +12,7 @@ interface LoginPageProps {
 
 export function LoginPage({ onSuccess }: LoginPageProps) {
   const [password, setPassword] = useState('')
+  const { t } = useT()
 
   const login = useMutation({
     mutationFn: () => api.post<{ ok: boolean }>('/auth/login', { password }),
@@ -22,9 +24,9 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
       <Card withBorder padding="lg" style={{ width: '100%', maxWidth: 360 }}>
         <Stack gap="md">
           <Stack gap={2}>
-            <Title order={4}>Anime365 Downloader</Title>
+            <Title order={4}>{t('login.title')}</Title>
             <Text size="xs" c="dimmed">
-              Введите пароль, заданный в настройках или переменной A365_UI_PASSWORD.
+              {t('login.hint')}
             </Text>
           </Stack>
 
@@ -42,7 +44,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
           >
             <Stack gap="sm">
               <PasswordInput
-                label="Пароль"
+                label={t('login.password')}
                 value={password}
                 onChange={(event) => setPassword(event.currentTarget.value)}
                 leftSection={<IconLock size={16} />}
@@ -52,7 +54,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                 autoComplete="current-password"
               />
               <Button type="submit" loading={login.isPending} disabled={!password}>
-                Войти
+                {t('login.submit')}
               </Button>
             </Stack>
           </form>

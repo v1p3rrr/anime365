@@ -5,15 +5,14 @@ import { useState } from 'react'
 
 import {
   KIND_ICONS,
-  KIND_LABELS,
   LANG_COLORS,
-  LANG_LABELS,
   titleApi,
   type AuthorGroup,
   type SummarySection,
 } from '../api/title'
 import { BatchDownload } from './BatchDownload'
 import { ErrorState } from './ErrorState'
+import { useT, type TranslationKey } from '../i18n'
 
 interface Props {
   sections: SummarySection[]
@@ -38,6 +37,7 @@ export function TranslationGroups({
   seriesUrl,
   contentEpisodes,
 }: Props) {
+  const { t } = useT()
   const visible = sections.filter((s) => langs.includes(s.lang) && kinds.includes(s.kind))
 
   // Какие секции пользователь уже открывал. Mantine Accordion сам по себе панели не
@@ -73,10 +73,10 @@ export function TranslationGroups({
             <Accordion.Control>
               <Group gap="xs" wrap="nowrap">
                 <Badge color={LANG_COLORS[section.lang]} variant="filled" size="sm">
-                  {LANG_LABELS[section.lang] ?? section.lang}
+                  {t(`lang.${section.lang}` as TranslationKey)}
                 </Badge>
                 <Text size="sm" fw={500}>
-                  {KIND_ICONS[section.kind] ?? ''} {KIND_LABELS[section.kind] ?? section.kind}
+                  {KIND_ICONS[section.kind] ?? ''} {t(`kind.${section.kind}` as TranslationKey)}
                 </Text>
                 <Text size="xs" c="dimmed">
                   {section.groups.length} авторов · {section.total_translations} переводов

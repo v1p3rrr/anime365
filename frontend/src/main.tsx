@@ -9,6 +9,7 @@ import '@mantine/core/styles.css'
 import '@mantine/notifications/styles.css'
 
 import { App } from './App'
+import { I18nProvider } from './i18n'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -27,9 +28,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <MantineProvider defaultColorScheme="dark">
       <Notifications />
       <QueryClientProvider client={queryClient}>
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
+        <I18nProvider>
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
+        </I18nProvider>
       </QueryClientProvider>
     </MantineProvider>
   </React.StrictMode>,
