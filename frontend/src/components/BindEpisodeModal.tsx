@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { api } from '../api/client'
+import { formatBytes } from '../api/library'
 import { ErrorState } from './ErrorState'
 
 interface LocalFile {
@@ -29,12 +30,6 @@ interface Props {
   /** Серия, к которой привязываем. */
   episode: number
   episodeLabel: string
-}
-
-function formatSize(bytes: number): string {
-  if (bytes >= 1 << 30) return `${(bytes / (1 << 30)).toFixed(1)} ГБ`
-  if (bytes >= 1 << 20) return `${(bytes / (1 << 20)).toFixed(0)} МБ`
-  return `${(bytes / 1024).toFixed(0)} КБ`
 }
 
 /**
@@ -117,7 +112,7 @@ export function BindEpisodeModal({ opened, onClose, seriesId, episode, episodeLa
                     {file.filename}
                   </Text>
                   <Text size="xs" c="dimmed" truncate>
-                    {file.folder} · {formatSize(file.size_bytes)}
+                    {file.folder} · {formatBytes(file.size_bytes)}
                     {file.matched_rule_id && ` · правило ${file.matched_rule_id}`}
                   </Text>
                 </Stack>

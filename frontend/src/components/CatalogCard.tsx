@@ -2,6 +2,7 @@ import { Badge, Skeleton, Text } from '@mantine/core'
 import { IconStar } from '@tabler/icons-react'
 import { useNavigate } from 'react-router-dom'
 
+import { formatBytes } from '../api/library'
 import type { CatalogCard as CardData } from '../api/client'
 import classes from './CatalogCard.module.css'
 
@@ -105,6 +106,13 @@ export function CatalogCard({ card, visibleBadges = DEFAULT_BADGES }: Props) {
                 </Badge>
               )
             })}
+            {/* Размер — в ту же полосу, а не в строку метаданных: там nowrap,
+                и четвёртый элемент вытеснял бы оценку на узкой карточке. */}
+            {local && local.size_bytes > 0 && (
+              <Badge size="xs" variant="filled" color="dark">
+                {formatBytes(local.size_bytes)}
+              </Badge>
+            )}
           </div>
         )}
       </div>

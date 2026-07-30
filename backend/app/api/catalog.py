@@ -39,6 +39,8 @@ class LocalBadges(BaseModel):
     sub_ru: int = 0
     sub_ja: int = 0
     sub_en: int = 0
+    # Занятое место по всем привязанным папкам тайтла.
+    size_bytes: int = 0
 
 
 class CatalogCard(BaseModel):

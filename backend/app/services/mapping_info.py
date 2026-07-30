@@ -320,12 +320,30 @@ def series_badges(series_ids: list[int] | None = None) -> dict[int, dict[str, An
         api_counts = dict(session.execute(api_stmt).all())
         planned = dict(session.execute(planned_stmt).all())
 
+        # Размер занятого места по привязанным папкам. Двойного счёта нет:
+        # size_bytes папки учитывает только её собственные файлы, подпапки
+        # считаются отдельными записями, и обе могут быть привязаны к тайтлу.
+        size_stmt = (
+            select(TitleMapping.series_id, func.sum(LibraryFolder.size_bytes))
+            .join(LibraryFolder, TitleMapping.folder_id == LibraryFolder.id)
+            .group_by(TitleMapping.series_id)
+        )
+        if series_ids is not None:
+            size_stmt = size_stmt.where(TitleMapping.series_id.in_(series_ids))
+        sizes = dict(session.execute(size_stmt).all())
+
     out: dict[int, dict[str, Any]] = {}
     local_max: dict[int, float] = {}
     for series_id, role, count, highest in rows:
         entry = out.setdefault(series_id, {})
         entry[role] = count
         local_max[series_id] = max(local_max.get(series_id, 0.0), float(highest or 0))
+
+    # Тайтл может быть привязан к папке, в которой ещё нет ни одной серии
+    # (пустая папка с одним tvshow.nfo — такое в библиотеке встречается).
+    # Тогда счётчиков нет, но размер и сам факт привязки показать надо.
+    for series_id in sizes:
+        out.setdefault(series_id, {})
 
     for series_id, entry in out.items():
         entry["total"] = int(
@@ -335,4 +353,5 @@ def series_badges(series_ids: list[int] | None = None) -> dict[int, dict[str, An
                 local_max.get(series_id, 0.0),
             )
         )
+        entry["size_bytes"] = int(sizes.get(series_id) or 0)
     return out

@@ -77,6 +77,8 @@ export interface LocalBadges {
   sub_ru: number
   sub_ja: number
   sub_en: number
+  /** Занятое место по всем привязанным папкам тайтла. */
+  size_bytes: number
 }
 
 export interface CatalogCard {
