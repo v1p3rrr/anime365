@@ -17,12 +17,14 @@ import logging
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.db import session_scope
+from app.core.events import bus
 from app.models.catalog import Series, Translation
 from app.models.downloads import ACTIVE_KEY, ACTIVE_STATUSES, DownloadTask, TaskStatus
 from app.models.library import LibraryFile, LibraryFolder, LibraryRoot, TitleMapping
@@ -183,6 +185,8 @@ def _finish(task_id: int, status: str, error: str | None = None) -> None:
         # Снимаем задачу с уникального ключа, чтобы её можно было поставить заново.
         task.active_key = task.id
 
+    bus.publish("download.status", task_id=task_id, status=str(status), error=error)
+
 
 def _fail_with_backoff(task_id: int, error: str) -> None:
     """Помечает падение и назначает время повтора."""
@@ -207,6 +211,8 @@ def _fail_with_backoff(task_id: int, error: str) -> None:
         task.status = TaskStatus.QUEUED
         task.retry_after = datetime.utcnow() + timedelta(seconds=delay)
         log.warning("Задача %s упала (%s), повтор через %d с", task_id, error, delay)
+
+    bus.publish("download.status", task_id=task_id, status="retrying", error=error)
 
 
 class DownloadQueue:
@@ -365,7 +371,10 @@ class DownloadQueue:
                     db_task.tmp_path = str(tmp_path)
                     db_task.target_path = str(Path(root.path) / folder.rel_path / filename)
 
+            last_publish = 0.0
+
             def on_progress(progress) -> None:
+                nonlocal last_publish
                 with session_scope() as session:
                     db_task = session.get(DownloadTask, task_id)
                     if db_task is not None:
@@ -373,11 +382,25 @@ class DownloadQueue:
                         db_task.bytes_total = progress.bytes_total
                         db_task.speed_bps = progress.speed_bps
 
+                # Событие не на каждый чанк: при мегабайтных кусках это сотни
+                # сообщений на файл, а интерфейсу хватает пары раз в секунду.
+                now = monotonic()
+                if now - last_publish >= 1.0:
+                    last_publish = now
+                    bus.publish(
+                        "download.progress",
+                        task_id=task_id,
+                        bytes_done=progress.bytes_done,
+                        bytes_total=progress.bytes_total,
+                        speed_bps=round(progress.speed_bps),
+                    )
+
             def should_stop() -> bool:
                 return task_id in self._cancelled or self._paused or self._stop.is_set()
 
             try:
-                await downloader.fetch(url, tmp_path, on_progress, should_stop)
+                expect = "subtitle" if snapshot["kind"] == "subtitle" else "video"
+                await downloader.fetch(url, tmp_path, on_progress, should_stop, expect=expect)
             except DownloadCancelled:
                 # Проверяем ДО снятия отметки: иначе отмена всегда выглядела бы паузой.
                 was_cancelled = task_id in self._cancelled

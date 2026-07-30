@@ -175,6 +175,19 @@ class Anime365Client:
         return [primary, *rest]
 
     @staticmethod
+    def _with_token(url: str) -> str:
+        """Добавляет access_token к ссылке скачивания.
+
+        Без токена сайт отвечает HTML-страницей, а не файлом, причём со статусом
+        200 — молчаливая подмена, которую легко не заметить.
+        """
+        token = settings.get_str("access_token")
+        if not url or not token or "access_token=" in url:
+            return url
+        separator = "&" if "?" in url else "?"
+        return f"{url}{separator}access_token={token}"
+
+    @staticmethod
     def rewrite_host(url: str) -> str:
         """Переписывает хост ссылки на выбранное зеркало.
 
@@ -291,8 +304,12 @@ class Anime365Client:
         subtitles_url = data.get("subtitlesUrl")
         return EmbedInfo(
             translation_id=translation_id,
+            # ⚠️ Ссылкам на видео нужен access_token: без него сайт отдаёт HTML-страницу
+            # со статусом 200, и она молча сохранялась бы вместо видеофайла.
+            # Субтитрам токен не нужен — проверено.
             download=[
-                {**d, "url": self.rewrite_host(d.get("url", ""))} for d in data.get("download") or []
+                {**d, "url": self._with_token(self.rewrite_host(d.get("url", "")))}
+                for d in data.get("download") or []
             ],
             stream=data.get("stream") or [],
             # None у перевода с typeKind == "sub" означает вшитые субтитры.

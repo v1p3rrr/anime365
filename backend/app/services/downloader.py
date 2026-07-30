@@ -64,6 +64,39 @@ def is_allowed_target(url: str) -> bool:
     return any(host.endswith(suffix) for suffix in ALLOWED_CDN_SUFFIXES)
 
 
+# Что считаем допустимым содержимым для каждого вида загрузки.
+EXPECTED_CONTENT = {
+    "video": ("video/", "application/octet-stream", "application/mp4"),
+    "subtitle": ("text/", "application/octet-stream", "application/x-subrip"),
+}
+
+# Минимальный правдоподобный размер. HTML-страница отказа весит порядка сотни
+# килобайт, поэтому одного размера мало — но как дополнительный сигнал полезно.
+MIN_VIDEO_BYTES = 1 << 20  # 1 МБ
+
+
+def _ensure_expected_content(response: httpx.Response, expect: str, url: str) -> None:
+    """Проверяет, что нам отдали файл, а не страницу с ошибкой.
+
+    Сайт умеет отвечать HTML со статусом 200 — например, если в ссылке нет
+    access_token. Без этой проверки страница сохранялась бы как .mp4.
+    """
+    content_type = response.headers.get("content-type", "").lower().split(";")[0].strip()
+    if not content_type:
+        return
+
+    allowed = EXPECTED_CONTENT.get(expect, ())
+    if any(content_type.startswith(prefix) for prefix in allowed):
+        return
+
+    if content_type.startswith("text/html"):
+        raise Anime365Error(
+            "Вместо файла пришла HTML-страница. Обычно это значит, что ссылка "
+            "требует access_token или подписка неактивна"
+        )
+    raise Anime365Error(f"Неожиданный тип содержимого {content_type!r} при скачивании {expect}")
+
+
 class Downloader:
     def __init__(self) -> None:
         self._client: httpx.AsyncClient | None = None
@@ -103,6 +136,7 @@ class Downloader:
         destination: Path,
         on_progress: ProgressCallback | None = None,
         should_stop: Callable[[], bool] | None = None,
+        expect: str = "video",
     ) -> int:
         """Качает файл, продолжая с уже скачанного места.
 
@@ -138,6 +172,12 @@ class Downloader:
                 raise Anime365Error(f"Неожиданный ответ на докачку: {response.status_code}")
             elif not existing and response.status_code != 200:
                 raise Anime365Error(f"HTTP {response.status_code} при скачивании")
+
+            # ⚠️ Обязательная проверка: сайт умеет отвечать HTML-страницей со
+            # статусом 200 вместо файла (например, без access_token). Без этой
+            # проверки страница молча сохранялась бы как .mp4 — битый файл,
+            # который выглядит скачанным и попадает в библиотеку.
+            _ensure_expected_content(response, expect, url)
 
             total = existing + int(response.headers.get("content-length", 0))
             mode = "ab" if existing else "wb"
