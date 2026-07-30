@@ -1,16 +1,25 @@
 import { Badge, Button, Group, Menu, Table, Text, Tooltip } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
-import { IconCheck, IconChevronDown, IconDownload, IconExternalLink } from '@tabler/icons-react'
+import {
+  IconCheck,
+  IconChevronDown,
+  IconDownload,
+  IconExternalLink,
+  IconLink,
+} from '@tabler/icons-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 
 import { downloadsApi } from '../api/downloads'
 import { LANG_COLORS, LANG_LABELS, type EpisodeItem, type EpisodeTranslation } from '../api/title'
+import { BindEpisodeModal } from './BindEpisodeModal'
 
 interface Props {
   episode: EpisodeItem
   langs: string[]
   kinds: string[]
   seriesUrl: string | null
+  seriesId: number
 }
 
 /** Что показываем как «есть локально». Порядок фиксирован для читаемости. */
@@ -23,8 +32,9 @@ const ROLE_BADGES: Array<{ role: string; label: string; color: string }> = [
 
 const ROLE_BY_LANG: Record<string, string> = { ru: 'sub_ru', ja: 'sub_ja', en: 'sub_en' }
 
-export function EpisodeRow({ episode, langs, kinds, seriesUrl }: Props) {
+export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props) {
   const queryClient = useQueryClient()
+  const [binding, setBinding] = useState(false)
 
   const enqueue = useMutation({
     mutationFn: ({ id, kind }: { id: number; kind: 'video' | 'subtitle' }) =>
@@ -165,7 +175,33 @@ export function EpisodeRow({ episode, langs, kinds, seriesUrl }: Props) {
               </Button>
             </Tooltip>
           )}
+
+          {/* Разбор имени ошибается на сдвинутой нумерации и на файлах без
+              номера — тогда серию привязывают к файлу руками. */}
+          {episode.episode_num != null && (
+            <Tooltip label="Привязать локальный файл к этой серии">
+              <Button
+                size="compact-xs"
+                variant="subtle"
+                color="gray"
+                px={6}
+                onClick={() => setBinding(true)}
+              >
+                <IconLink size={12} />
+              </Button>
+            </Tooltip>
+          )}
         </Group>
+
+        {episode.episode_num != null && (
+          <BindEpisodeModal
+            opened={binding}
+            onClose={() => setBinding(false)}
+            seriesId={seriesId}
+            episode={episode.episode_num}
+            episodeLabel={episode.episode_full || episode.episode_int}
+          />
+        )}
       </Table.Td>
     </Table.Tr>
   )

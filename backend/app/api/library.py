@@ -7,13 +7,19 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.core.db import session_scope
 from app.models.catalog import ScanRun, Series
-from app.models.library import LibraryFile, LibraryFolder, LibraryRoot, TitleMapping
+from app.models.library import (
+    EpisodeMapping,
+    LibraryFile,
+    LibraryFolder,
+    LibraryRoot,
+    TitleMapping,
+)
 from app.services.filename_rules import get_rules, parse_filename, reload_rules
-from app.services.library_service import library_scanner
+from app.services.library_service import SUB_ROLE, library_scanner
 from app.services.library_watcher import library_watcher
 from app.services.mapping_info import set_primary_mapping
 
@@ -335,3 +341,114 @@ def reload_parsing_rules() -> dict[str, Any]:
     """Перечитывает config/filename_rules.yaml без перезапуска сервиса."""
     rules = reload_rules()
     return {"rules": len(rules.rules), "exclude_patterns": len(rules.exclude)}
+
+
+@router.get("/series/{series_id}/files")
+def series_files(series_id: int) -> list[dict[str, Any]]:
+    """Локальные файлы всех папок тайтла — кандидаты для ручной привязки серии.
+
+    Показываем не только нераспознанные: перепривязать бывает нужно и файл,
+    который разобрался, но не в ту серию (сдвиг нумерации у релиз-группы —
+    обычное дело).
+    """
+    with session_scope() as session:
+        folder_ids = select(TitleMapping.folder_id).where(TitleMapping.series_id == series_id)
+        rows = session.execute(
+            select(LibraryFile, LibraryFolder)
+            .join(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
+            .where(
+                LibraryFile.folder_id.in_(folder_ids),
+                LibraryFile.kind.in_(("video", "subtitle")),
+            )
+            .order_by(LibraryFile.filename)
+        ).all()
+
+        manual = {
+            m.file_id: m
+            for m in session.execute(
+                select(EpisodeMapping).where(
+                    EpisodeMapping.series_id == series_id, EpisodeMapping.is_manual.is_(True)
+                )
+            ).scalars()
+        }
+
+        return [
+            {
+                "file_id": file.id,
+                "filename": file.filename,
+                "folder": folder.rel_path,
+                "kind": file.kind,
+                "lang": file.lang,
+                "size_bytes": file.size_bytes,
+                "episode": file.episode,
+                "matched_rule_id": file.matched_rule_id,
+                "is_unmatched": file.is_unmatched,
+                # Ручная привязка помечена отдельно: её автоскан не перетирает.
+                "manual_episode": manual[file.id].episode if file.id in manual else None,
+            }
+            for file, folder in rows
+        ]
+
+
+class ManualEpisodeMapping(BaseModel):
+    series_id: int
+    episode: float
+    file_id: int
+    # Роль определяется по файлу, но её можно задать явно: у субтитров без
+    # языкового суффикса автоопределение даёт sub_unknown.
+    role: str | None = Field(None, pattern="^(video|sub_ru|sub_ja|sub_en|sub_unknown)$")
+
+
+@router.post("/episode-mappings")
+def create_episode_mapping(payload: ManualEpisodeMapping) -> dict[str, Any]:
+    """Привязывает конкретный файл к конкретной серии вручную.
+
+    Нужно, когда разбор имени ошибся: у релиз-группы сдвинута нумерация, файл
+    назван без номера или серия склеена из двух. Помечается `is_manual`, и
+    сканирование её больше не трогает.
+    """
+    with session_scope() as session:
+        file = session.get(LibraryFile, payload.file_id)
+        if file is None:
+            raise HTTPException(404, "Файл не найден")
+        if session.get(Series, payload.series_id) is None:
+            raise HTTPException(404, "Тайтл не найден")
+
+        role = payload.role
+        if role is None:
+            if file.kind == "video":
+                role = "video"
+            elif file.kind == "subtitle":
+                role = SUB_ROLE.get(file.lang or "", "sub_unknown")
+            else:
+                raise HTTPException(400, "Привязывать можно только видео и субтитры")
+
+        # Прежние связи этого файла с этим тайтлом убираем целиком: файл — это
+        # одна серия в одной роли, а не несколько сразу.
+        session.execute(
+            delete(EpisodeMapping).where(
+                EpisodeMapping.series_id == payload.series_id,
+                EpisodeMapping.file_id == payload.file_id,
+            )
+        )
+        mapping = EpisodeMapping(
+            series_id=payload.series_id,
+            episode=payload.episode,
+            file_id=payload.file_id,
+            role=role,
+            is_manual=True,
+        )
+        session.add(mapping)
+        session.flush()
+        return {"id": mapping.id, "episode": payload.episode, "role": role}
+
+
+@router.delete("/episode-mappings/{mapping_id}")
+def delete_episode_mapping(mapping_id: int) -> dict[str, Any]:
+    """Снимает ручную привязку. Автоматическая вернётся на следующем скане."""
+    with session_scope() as session:
+        mapping = session.get(EpisodeMapping, mapping_id)
+        if mapping is None:
+            raise HTTPException(404, "Связь не найдена")
+        session.delete(mapping)
+    return {"deleted": mapping_id}

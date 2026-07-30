@@ -91,29 +91,50 @@ def _persist_folder(
     existing.mtime = folder.mtime
     session.flush()
 
-    # Файлы пересобираем целиком: они дешёвые, а отслеживать удаления по одному
-    # сложнее, чем переписать список.
-    session.execute(delete(LibraryFile).where(LibraryFile.folder_id == existing.id))
+    # ⚠️ Файлы обновляются НА МЕСТЕ, по имени, а не пересоздаются.
+    #
+    # Раньше здесь был `delete(...)` + вставка заново. Это выглядело безобидно,
+    # но `episode_mapping.file_id` объявлен с ondelete=CASCADE, поэтому удаление
+    # строк файла молча уносило все связи серий с файлами — включая ручные.
+    # Проверка `is_manual` в _map_episodes при этом ничего не спасала: она
+    # работала уже по пустой таблице. То есть ручная привязка серии не
+    # переживала ни одного сканирования.
+    #
+    # Стабильный file_id нужен всему, что ссылается на файл, поэтому строки
+    # переиспользуются, а исчезнувшие удаляются точечно.
+    existing_files = {
+        f.filename: f
+        for f in session.execute(
+            select(LibraryFile).where(LibraryFile.folder_id == existing.id)
+        ).scalars()
+    }
+    seen: set[str] = set()
+
     for file in folder.files:
-        session.add(
-            LibraryFile(
-                folder_id=existing.id,
-                filename=file.filename,
-                kind=file.kind,
-                lang=file.lang,
-                season_number=file.season_number,
-                episode=file.episode,
-                episode_end=file.episode_end,
-                matched_rule_id=file.matched_rule_id,
-                release_group=file.release_group,
-                anime365_translation_id=file.anime365_translation_id,
-                streams=file.streams,
-                size_bytes=file.size_bytes,
-                mtime=file.mtime,
-                is_unmatched=file.is_unmatched,
-                excluded_reason=file.excluded_reason,
-            )
-        )
+        seen.add(file.filename)
+        row = existing_files.get(file.filename)
+        if row is None:
+            row = LibraryFile(folder_id=existing.id, filename=file.filename)
+            session.add(row)
+
+        row.kind = file.kind
+        row.lang = file.lang
+        row.season_number = file.season_number
+        row.episode = file.episode
+        row.episode_end = file.episode_end
+        row.matched_rule_id = file.matched_rule_id
+        row.release_group = file.release_group
+        row.anime365_translation_id = file.anime365_translation_id
+        row.streams = file.streams
+        row.size_bytes = file.size_bytes
+        row.mtime = file.mtime
+        row.is_unmatched = file.is_unmatched
+        row.excluded_reason = file.excluded_reason
+
+    vanished = [row.id for name, row in existing_files.items() if name not in seen]
+    if vanished:
+        # Файла больше нет на диске — вот здесь каскад как раз уместен.
+        session.execute(delete(LibraryFile).where(LibraryFile.id.in_(vanished)))
 
     for child in folder.children:
         _persist_folder(session, root_id, child, parent_id=existing.id)
@@ -278,16 +299,36 @@ def _map_episodes(root_id: int) -> int:
                 .scalars()
                 .all()
             )
+            file_ids = [f.id for f in files]
+            if not file_ids:
+                continue
+
             session.execute(
                 delete(EpisodeMapping).where(
                     EpisodeMapping.series_id == mapping.series_id,
                     EpisodeMapping.is_manual.is_(False),
-                    EpisodeMapping.file_id.in_([f.id for f in files]) if files else False,
+                    EpisodeMapping.file_id.in_(file_ids),
                 )
             )
 
+            # Файлы, которые пользователь привязал руками. Автоматическую связь
+            # им ставить нельзя: она не заменит ручную, а ляжет рядом, и файл
+            # начнёт засчитываться сразу за две серии.
+            manual_files = {
+                row[0]
+                for row in session.execute(
+                    select(EpisodeMapping.file_id).where(
+                        EpisodeMapping.series_id == mapping.series_id,
+                        EpisodeMapping.is_manual.is_(True),
+                        EpisodeMapping.file_id.in_(file_ids),
+                    )
+                ).all()
+            }
+
             for file in files:
                 if file.episode is None or file.excluded_reason:
+                    continue
+                if file.id in manual_files:
                     continue
                 if file.kind == "video":
                     role = "video"

@@ -279,6 +279,7 @@ export function TitlePage() {
                   langs={prefs.langs}
                   kinds={prefs.kinds}
                   seriesUrl={series.url}
+                  seriesId={series.id}
                 />
               ))}
             </Table.Tbody>
