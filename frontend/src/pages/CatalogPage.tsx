@@ -19,12 +19,9 @@ export function CatalogPage({ onlyAiring = false }: Props) {
   // Каждый символ не должен порождать запрос: список id считается по всей выборке.
   const [debouncedSearch] = useDebouncedValue(searchInput, 350)
 
-  // На вкладке онгоингов по умолчанию сортируем по оценке: там всего три сотни
-  // тайтлов, и интересны прежде всего лучшие, а не самые новые по id.
-  const [filters, setFilters] = useState<Filters>({
-    sort: onlyAiring ? 'score' : 'id',
-    sortDir: 'desc',
-  })
+  // По умолчанию сортируем по оценке: в каталоге 29 тысяч тайтлов, и первым
+  // экраном полезнее видеть лучшее, а не самое свежедобавленное.
+  const [filters, setFilters] = useState<Filters>({ sort: 'score', sortDir: 'desc' })
 
   const effectiveFilters = useMemo<Filters>(
     () => ({

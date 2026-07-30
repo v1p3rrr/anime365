@@ -1,4 +1,4 @@
-import { Button, Group, Menu, Select, Stack, Switch, Text, Tooltip } from '@mantine/core'
+import { Button, Menu, Select, Stack, Switch, Text, Tooltip } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
 import { IconChevronDown, IconDownload } from '@tabler/icons-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -12,6 +12,8 @@ interface Props {
   kind: 'voice' | 'sub' | 'raw'
   /** Номера серий, которые считаются контентом (без трейлеров и рекламы). */
   contentEpisodes: Set<number>
+  /** Есть ли у тайтла спешлы или OVA — от этого зависит показ тумблера. */
+  hasExtras?: boolean
   disabled?: boolean
   disabledReason?: string
 }
@@ -34,6 +36,7 @@ export function BatchDownload({
   group,
   kind,
   contentEpisodes,
+  hasExtras = false,
   disabled,
   disabledReason,
 }: Props) {
@@ -107,30 +110,41 @@ export function BatchDownload({
             />
           )}
 
-          <Switch
-            size="xs"
-            label="Включая спешлы и OVA"
-            description="По умолчанию только основные серии"
-            checked={includeExtras}
-            onChange={(event) => setIncludeExtras(event.currentTarget.checked)}
-          />
+          {/* Тумблер показываем только если спешлы и OVA реально есть:
+              иначе он предлагает несуществующий выбор. */}
+          {hasExtras && (
+            <Switch
+              size="xs"
+              label="Включая спешлы и OVA"
+              description="По умолчанию только основные серии"
+              checked={includeExtras}
+              onChange={(event) => setIncludeExtras(event.currentTarget.checked)}
+            />
+          )}
 
-          <Group gap={4} grow>
+          <Stack gap={4}>
             {kind === 'sub' ? (
-              <Button size="compact-xs" onClick={() => run.mutate('subtitle')}>
-                Все субтитры
-              </Button>
-            ) : (
+              // У субтитров есть и своё видео, поэтому предлагаем оба варианта:
+              // только файлы субтитров либо видео вместе с ними.
               <>
-                <Button size="compact-xs" onClick={() => run.mutate('video')}>
-                  Все видео
+                <Button size="compact-xs" onClick={() => run.mutate('subtitle')}>
+                  Только субтитры
+                </Button>
+                <Button size="compact-xs" variant="light" onClick={() => run.mutate('video')}>
+                  Только видео
                 </Button>
                 <Button size="compact-xs" variant="light" onClick={() => run.mutate('both')}>
-                  Видео и сабы
+                  Видео и субтитры
                 </Button>
               </>
+            ) : (
+              // Озвучка и RAW — это видеодорожка, отдельного файла субтитров
+              // у такого перевода не бывает, поэтому вариант один.
+              <Button size="compact-xs" onClick={() => run.mutate('video')}>
+                Все видео
+              </Button>
             )}
-          </Group>
+          </Stack>
         </Stack>
       </Menu.Dropdown>
     </Menu>

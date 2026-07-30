@@ -13,7 +13,6 @@ import {
   type SummarySection,
 } from '../api/title'
 import { BatchDownload } from './BatchDownload'
-import { DownloadButton } from './DownloadButton'
 import { ErrorState } from './ErrorState'
 
 interface Props {
@@ -23,6 +22,8 @@ interface Props {
   seriesUrl: string | null
   /** Номера серий, считающихся контентом: нужны батч-загрузке. */
   contentEpisodes: Set<number>
+  /** Есть ли спешлы или OVA — тумблер показываем только тогда. */
+  hasExtras: boolean
 }
 
 /**
@@ -37,6 +38,7 @@ export function TranslationGroups({
   kinds,
   seriesUrl,
   contentEpisodes,
+  hasExtras,
 }: Props) {
   const visible = sections.filter((s) => langs.includes(s.lang) && kinds.includes(s.kind))
 
@@ -90,6 +92,7 @@ export function TranslationGroups({
                   kind={section.kind}
                   seriesUrl={seriesUrl}
                   contentEpisodes={contentEpisodes}
+                  hasExtras={hasExtras}
                 />
               ) : null}
             </Accordion.Panel>
@@ -105,11 +108,13 @@ function AuthorTable({
   kind,
   seriesUrl,
   contentEpisodes,
+  hasExtras,
 }: {
   groups: AuthorGroup[]
   kind: string
   seriesUrl: string | null
   contentEpisodes: Set<number>
+  hasExtras: boolean
 }) {
   return (
     <Table.ScrollContainer minWidth={560}>
@@ -130,6 +135,7 @@ function AuthorTable({
               kind={kind}
               seriesUrl={seriesUrl}
               contentEpisodes={contentEpisodes}
+              hasExtras={hasExtras}
             />
           ))}
         </Table.Tbody>
@@ -143,11 +149,13 @@ function AuthorRow({
   kind,
   seriesUrl,
   contentEpisodes,
+  hasExtras,
 }: {
   group: AuthorGroup
   kind: string
   seriesUrl: string | null
   contentEpisodes: Set<number>
+  hasExtras: boolean
 }) {
   // Признак вшитых субтитров и точные ступени качества доступны только через embed —
   // один запрос на перевод. Поэтому тянем по требованию и только для одного
@@ -230,28 +238,17 @@ function AuthorRow({
 
       <Table.Td>
         <Stack gap={4}>
-          {/* Ставим в очередь первый перевод группы: остальные серии добираются
-              батч-кнопками в сводке. */}
-          <DownloadButton
-            translationId={sample}
-            kind={kind === 'sub' ? 'subtitle' : 'video'}
-            estimatedHeight={group.max_height_estimate}
+          {/* В сводке за весь тайтл конкретная серия не выбрана, поэтому кнопка
+              одиночной загрузки здесь бессмысленна — она живёт в списке серий.
+              Здесь только батч по всем сериям автора. */}
+          <BatchDownload
+            group={group}
+            kind={kind as 'voice' | 'sub' | 'raw'}
+            contentEpisodes={contentEpisodes}
+            hasExtras={hasExtras}
             disabled={hardsub === true}
-            disabledReason={
-              hardsub ? 'Субтитры вшиты в видео, отдельного файла нет' : undefined
-            }
+            disabledReason={hardsub ? 'Субтитры вшиты в видео, отдельного файла нет' : undefined}
           />
-          {group.translation_ids.length > 1 && (
-            <BatchDownload
-              group={group}
-              kind={kind as 'voice' | 'sub' | 'raw'}
-              contentEpisodes={contentEpisodes}
-              disabled={hardsub === true}
-              disabledReason={
-                hardsub ? 'Субтитры вшиты в видео, отдельного файла нет' : undefined
-              }
-            />
-          )}
           {/* Ведём на страницу конкретного перевода конкретной серии, а не на общую
               страницу тайтла: у строки со сводкой это самая ранняя серия автора. */}
           {(group.first_url || seriesUrl) && (
