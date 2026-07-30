@@ -110,14 +110,22 @@ export const en: Dictionary = {
   },
 
   sort: {
-    'id.desc': 'Newest first',
-    'id.asc': 'Oldest first',
-    'year.desc': 'Year: newest',
-    'year.asc': 'Year: oldest',
-    'score.desc': 'Score: highest',
-    'score.asc': 'Score: lowest',
-    'title.desc': 'Title: Z–A',
-    'title.asc': 'Title: A–Z',
+    id: {
+      desc: 'Newest first',
+      asc: 'Oldest first',
+    },
+    year: {
+      desc: 'Year: newest',
+      asc: 'Year: oldest',
+    },
+    score: {
+      desc: 'Score: highest',
+      asc: 'Score: lowest',
+    },
+    title: {
+      desc: 'Title: Z–A',
+      asc: 'Title: A–Z',
+    },
   },
 
   onlineSearch: {

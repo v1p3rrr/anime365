@@ -109,14 +109,22 @@ export const ja: Dictionary = {
   },
 
   sort: {
-    'id.desc': '新着順',
-    'id.asc': '古い順',
-    'year.desc': '年：新しい順',
-    'year.asc': '年：古い順',
-    'score.desc': '評価：高い順',
-    'score.asc': '評価：低い順',
-    'title.desc': '名称：Z→A',
-    'title.asc': '名称：A→Z',
+    id: {
+      desc: '新着順',
+      asc: '古い順',
+    },
+    year: {
+      desc: '年：新しい順',
+      asc: '年：古い順',
+    },
+    score: {
+      desc: '評価：高い順',
+      asc: '評価：低い順',
+    },
+    title: {
+      desc: '名称：Z→A',
+      asc: '名称：A→Z',
+    },
   },
 
   onlineSearch: {

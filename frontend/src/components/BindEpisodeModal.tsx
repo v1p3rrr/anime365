@@ -7,6 +7,7 @@ import { useState } from 'react'
 import { api } from '../api/client'
 import { formatBytes } from '../api/library'
 import { ErrorState } from './ErrorState'
+import { useT } from '../i18n'
 
 interface LocalFile {
   file_id: number
@@ -40,6 +41,7 @@ interface Props {
  * переживает последующие сканирования.
  */
 export function BindEpisodeModal({ opened, onClose, seriesId, episode, episodeLabel }: Props) {
+  const { t } = useT()
   const queryClient = useQueryClient()
   const [filter, setFilter] = useState('')
 
@@ -57,13 +59,13 @@ export function BindEpisodeModal({ opened, onClose, seriesId, episode, episodeLa
         file_id: fileId,
       }),
     onSuccess: () => {
-      notifications.show({ color: 'teal', message: `Файл привязан к серии ${episodeLabel}` })
+      notifications.show({ color: 'teal', message: t('bindEpisode.bound', { episode: episodeLabel }) })
       queryClient.invalidateQueries({ queryKey: ['title', seriesId] })
       queryClient.invalidateQueries({ queryKey: ['series-files', seriesId] })
       onClose()
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: 'Не удалось привязать', message: error.message }),
+      notifications.show({ color: 'red', title: t('bindEpisode.failed'), message: error.message }),
   })
 
   const visible = (files.data ?? []).filter((f) =>
@@ -71,20 +73,19 @@ export function BindEpisodeModal({ opened, onClose, seriesId, episode, episodeLa
   )
 
   return (
-    <Modal opened={opened} onClose={onClose} title={`Привязать файл к серии ${episodeLabel}`} size="lg">
+    <Modal opened={opened} onClose={onClose} title={t('bindEpisode.title', { episode: episodeLabel })} size="lg">
       <Stack gap="sm">
         <Text size="xs" c="dimmed">
-          Файлы из папок, привязанных к этому тайтлу. Ручная привязка помечается и не
-          перетирается сканированием — в отличие от разбора имени.
+          {t('bindEpisode.hint')}
         </Text>
 
         {files.isError && (
-          <ErrorState error={files.error} title="Не удалось получить файлы" onRetry={() => files.refetch()} />
+          <ErrorState error={files.error} title={t('bindEpisode.filesFailed')} onRetry={() => files.refetch()} />
         )}
 
         <TextInput
           size="xs"
-          placeholder="Фильтр по имени файла"
+          placeholder={t('bindEpisode.filter')}
           value={filter}
           onChange={(event) => setFilter(event.currentTarget.value)}
         />
@@ -92,8 +93,8 @@ export function BindEpisodeModal({ opened, onClose, seriesId, episode, episodeLa
         {files.isSuccess && visible.length === 0 && (
           <Text size="sm" c="dimmed">
             {files.data.length === 0
-              ? 'В папках этого тайтла нет файлов. Сначала привяжите папку и запустите сканирование.'
-              : 'Под фильтр ничего не подошло.'}
+              ? t('bindEpisode.noFiles')
+              : t('bindEpisode.noMatch')}
           </Text>
         )}
 
@@ -113,26 +114,26 @@ export function BindEpisodeModal({ opened, onClose, seriesId, episode, episodeLa
                   </Text>
                   <Text size="xs" c="dimmed" truncate>
                     {file.folder} · {formatBytes(file.size_bytes)}
-                    {file.matched_rule_id && ` · правило ${file.matched_rule_id}`}
+                    {file.matched_rule_id && t('bindEpisode.rule', { id: file.matched_rule_id })}
                   </Text>
                 </Stack>
                 <Group gap={4} wrap="nowrap">
                   {file.kind === 'subtitle' && (
                     <Badge size="xs" variant="light" color="blue">
-                      сабы {file.lang ?? '?'}
+                      {t('bindEpisode.subtitleLang', { lang: file.lang ?? '?' })}
                     </Badge>
                   )}
                   {file.manual_episode != null ? (
                     <Badge size="xs" color="teal" leftSection={<IconLink size={9} />}>
-                      вручную: {file.manual_episode}
+                      {t('bindEpisode.manualEpisode', { n: file.manual_episode })}
                     </Badge>
                   ) : file.episode != null ? (
                     <Badge size="xs" variant="light" color="gray">
-                      серия {file.episode}
+                      {t('bindEpisode.parsedEpisode', { n: file.episode })}
                     </Badge>
                   ) : (
                     <Badge size="xs" color="orange" leftSection={<IconUnlink size={9} />}>
-                      номер не определён
+                      {t('bindEpisode.noNumber')}
                     </Badge>
                   )}
                 </Group>
@@ -143,7 +144,7 @@ export function BindEpisodeModal({ opened, onClose, seriesId, episode, episodeLa
 
         <Group justify="flex-end">
           <Button size="xs" variant="subtle" color="gray" onClick={onClose}>
-            Закрыть
+            {t('common.close')}
           </Button>
         </Group>
       </Stack>

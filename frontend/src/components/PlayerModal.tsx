@@ -3,6 +3,7 @@ import { IconAlertTriangle } from '@tabler/icons-react'
 import { useEffect, useRef, useState } from 'react'
 
 import { LANG_COLORS, type EpisodeTranslation } from '../api/title'
+import { useT } from '../i18n'
 
 interface Props {
   opened: boolean
@@ -25,16 +26,17 @@ interface Props {
  * поэтому подгружается лениво: при открытии плеера, а не вместе со страницей.
  */
 export function PlayerModal({ opened, onClose, translations, episodeLabel, seriesUrl }: Props) {
+  const { t } = useT()
   const videoRef = useRef<HTMLVideoElement>(null)
   const rendererRef = useRef<{ destroy: () => void } | null>(null)
 
-  const playable = translations.filter((t) => t.kind !== 'sub')
+  const playable = translations.filter((item) => item.kind !== 'sub')
   const [videoId, setVideoId] = useState<string | null>(null)
   const [subId, setSubId] = useState<string | null>(null)
   const [subsError, setSubsError] = useState<string | null>(null)
   const [subsLoading, setSubsLoading] = useState(false)
 
-  const subtitleOptions = translations.filter((t) => t.kind === 'sub')
+  const subtitleOptions = translations.filter((item) => item.kind === 'sub')
 
   // Выбор по умолчанию делаем при открытии, а не в useState: список переводов
   // приходит асинхронно вместе со страницей тайтла.
@@ -95,15 +97,18 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel, serie
     }
   }, [opened, subId])
 
-  const describe = (t: EpisodeTranslation) =>
-    `${t.lang.toUpperCase()} · ${t.authors}${t.height ? ` · ${Math.min(t.height, 1080)}p` : ''}`
+  // Параметр намеренно не `t`: так называется функция перевода, и затенение
+  // её внутри JSX читается как ошибка, даже когда работает.
+  const describe = (item: EpisodeTranslation) =>
+    `${item.lang.toUpperCase()} · ${item.authors}` +
+    (item.height ? ` · ${Math.min(item.height, 1080)}p` : '')
 
   return (
-    <Modal opened={opened} onClose={onClose} title={`Просмотр — ${episodeLabel}`} size="xl">
+    <Modal opened={opened} onClose={onClose} title={t('player.title', { episode: episodeLabel })} size="xl">
       <Stack gap="sm">
         {playable.length === 0 ? (
           <Alert color="yellow" icon={<IconAlertTriangle size={18} />}>
-            У этой серии нет переводов с видеодорожкой на выбранных языках.
+            {t('player.noPlayable')}
           </Alert>
         ) : (
           <>
@@ -121,18 +126,18 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel, serie
             <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
               <Select
                 size="xs"
-                label="Дорожка"
-                data={playable.map((t) => ({ value: String(t.id), label: describe(t) }))}
+                label={t('player.track')}
+                data={playable.map((item) => ({ value: String(item.id), label: describe(item) }))}
                 value={videoId}
                 onChange={setVideoId}
                 allowDeselect={false}
               />
               <Select
                 size="xs"
-                label="Субтитры"
-                placeholder="без субтитров"
+                label={t('player.subtitles')}
+                placeholder={t('player.noSubtitles')}
                 clearable
-                data={subtitleOptions.map((t) => ({ value: String(t.id), label: describe(t) }))}
+                data={subtitleOptions.map((item) => ({ value: String(item.id), label: describe(item) }))}
                 value={subId}
                 onChange={setSubId}
               />
@@ -142,7 +147,7 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel, serie
               <Group gap="xs">
                 <Loader size="xs" />
                 <Text size="xs" c="dimmed">
-                  Загружаем субтитры и рендерер…
+                  {t('player.loadingSubs')}
                 </Text>
               </Group>
             )}
@@ -150,19 +155,18 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel, serie
             {subsError && (
               <Alert color="red" p="xs">
                 <Text size="xs">
-                  Субтитры не подключились: {subsError}. Видео это не мешает — выберите
-                  другой перевод или смотрите без них.
+                  {t('player.subsFailed', { reason: subsError })}
                 </Text>
               </Alert>
             )}
 
             <Group gap="xs" wrap="wrap">
               <Badge size="xs" variant="light" color={LANG_COLORS[playable[0]?.lang] ?? 'gray'}>
-                воспроизведение через сервис
+                {t('player.viaService')}
               </Badge>
               <Text size="xs" c="dimmed">
-                Если дорожка не играет — кодек может не поддерживаться браузером.
-                {seriesUrl && ' Тогда откройте серию на сайте.'}
+                {t('player.codecHint')}
+                {seriesUrl && t('player.codecHintSite')}
               </Text>
             </Group>
           </>

@@ -102,7 +102,7 @@ export function App() {
 
   return (
     <AppShell
-      header={{ height: 52 }}
+      header={{ height: 60 }}
       // На узкой ширине боковая панель полностью убирается, а меню открывается
       // отдельным Drawer с затемнением. Штатный мобильный режим AppShell выезжает
       // панелью без подложки, и рядом с ней остаётся виден каталог — выглядит так,
@@ -130,7 +130,7 @@ export function App() {
                 <IconLayoutSidebar size={18} />
               </ActionIcon>
             </Tooltip>
-            <Logo height={30} />
+            <Logo height={40} />
           </Group>
           <Group gap="xs" wrap="nowrap">
             <Badge variant="light" color="gray" visibleFrom="xs">
@@ -172,7 +172,7 @@ export function App() {
         padding={4}
         withCloseButton={false}
         title={
-          <Logo height={24} />
+          <Logo height={30} />
         }
         // Затемнение обязательно: без него сквозь меню видно каталог.
         overlayProps={{ backgroundOpacity: 0.55, blur: 2 }}
