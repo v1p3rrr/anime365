@@ -7,7 +7,7 @@
  * Бесконечная догрузка этого не даёт и приносит дубли на границах страниц.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 
 import { catalogApi, type CatalogCard } from '../api/client'
 
@@ -17,12 +17,19 @@ export function useVirtualCatalog(ids: number[]) {
   const [cards, setCards] = useState<Map<number, CatalogCard>>(new Map())
   // Окна, которые уже запрошены: иначе быстрый скролл выстрелит десяток одинаковых запросов.
   const requested = useRef<Set<number>>(new Set())
+  const currentIds = useRef<number[]>(ids)
 
-  // Смена фильтров means новый список id — весь накопленный кэш и пометки сбрасываем.
-  useEffect(() => {
-    setCards(new Map())
+  // ⚠️ Сброс делается во время рендера, а НЕ в эффекте.
+  // Эффекты дочерних компонентов выполняются раньше родительских, поэтому сетка
+  // успевала запросить окно по новому списку, а эффект очистки затирал и пометку
+  // «окно запрошено», и пришедший результат. Карточки оставались пустыми до тех
+  // пор, пока прокрутка не вызывала запрос заново.
+  if (currentIds.current !== ids) {
+    currentIds.current = ids
     requested.current = new Set()
-  }, [ids])
+    // Синхронный сброс: к моменту работы ensureRange состояние уже чистое.
+    setCards(new Map())
+  }
 
   const ensureRange = useCallback(
     (startIndex: number, endIndex: number) => {
@@ -38,6 +45,8 @@ export function useVirtualCatalog(ids: number[]) {
         catalogApi
           .cards(slice)
           .then((loaded) => {
+            // Пока запрос летел, фильтры могли смениться — результат уже не нужен.
+            if (currentIds.current !== ids) return
             setCards((prev) => {
               const next = new Map(prev)
               for (const card of loaded) next.set(card.id, card)

@@ -18,7 +18,7 @@ from app.services.coverage import (
     build_summary,
     effective_episode_total,
 )
-from app.services.mapping_info import get_local_coverage, get_title_mappings
+from app.services.mapping_info import get_local_coverage, get_local_files, get_title_mappings
 
 log = logging.getLogger(__name__)
 
@@ -257,6 +257,29 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
     mappings = get_title_mappings(series_id)
     local = get_local_coverage(series_id, total)
 
+    # Что из ролей уже лежит локально по каждой серии — чтобы в списке серий было
+    # видно, чего не хватает, и не приходилось качать уже имеющееся.
+    have_by_episode: dict[float, list[str]] = {}
+    for item in get_local_files(series_id):
+        have_by_episode.setdefault(item["episode"], []).append(item["role"])
+
+    # Переводы, сгруппированные по серии: из них строится выбор при загрузке
+    # конкретной серии.
+    by_episode: dict[float, list[dict[str, Any]]] = {}
+    for item in normalized:
+        episode_num = item.get("episode_num")
+        if episode_num is None or item.get("type_lang") not in ("ru", "en", "ja"):
+            continue
+        by_episode.setdefault(episode_num, []).append(
+            {
+                "id": item["id"],
+                "lang": item.get("type_lang"),
+                "kind": item.get("type_kind"),
+                "authors": item.get("authors_summary") or "без автора",
+                "height": item.get("height"),
+            }
+        )
+
     return {
         "series": series_data,
         "mappings": mappings,
@@ -275,6 +298,10 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
                 "episode_title": e.episode_title,
                 "episode_type": e.episode_type,
                 "is_content": e.episode_type not in NON_CONTENT_EPISODE_TYPES,
+                # Что уже есть локально: video, sub_ru, sub_ja, sub_en.
+                "have": sorted(set(have_by_episode.get(e.episode_num, []))),
+                # Доступные переводы этой серии — для выбора при загрузке.
+                "translations": by_episode.get(e.episode_num, []),
             }
             for e in episodes
         ],

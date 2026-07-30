@@ -1,5 +1,13 @@
 import { api } from './client'
 
+export interface EpisodeTranslation {
+  id: number
+  lang: string
+  kind: string
+  authors: string
+  height: number | null
+}
+
 export interface EpisodeItem {
   id: number
   episode_int: string
@@ -8,6 +16,10 @@ export interface EpisodeItem {
   episode_title: string
   episode_type: string
   is_content: boolean
+  /** Что уже лежит локально: video, sub_ru, sub_ja, sub_en. */
+  have: string[]
+  /** Переводы этой серии — из них выбирается, что скачать. */
+  translations: EpisodeTranslation[]
 }
 
 export interface AuthorGroup {

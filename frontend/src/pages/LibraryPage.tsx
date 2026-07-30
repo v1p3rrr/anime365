@@ -303,9 +303,17 @@ export function LibraryPage() {
                     </Text>
                   </Table.Td>
                   <Table.Td>
-                    <Tooltip label={row.matched_on ?? ''} multiline w={280}>
+                    <Tooltip
+                      multiline
+                      w={300}
+                      label={
+                        `Уверенность алгоритма: ${row.confidence.toFixed(0)} из 100. ` +
+                        (row.matched_on ? `Совпало по: ${row.matched_on}` : '')
+                      }
+                    >
                       <Badge size="sm" variant="light" color={SOURCE_COLORS[row.source] ?? 'gray'}>
-                        {SOURCE_LABELS[row.source] ?? row.source} · {row.confidence.toFixed(0)}
+                        {SOURCE_LABELS[row.source] ?? row.source}
+                        {!row.is_manual && ` · ${row.confidence.toFixed(0)}%`}
                       </Badge>
                     </Tooltip>
                   </Table.Td>

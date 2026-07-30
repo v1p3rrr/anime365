@@ -21,6 +21,7 @@ import { useParams } from 'react-router-dom'
 import { ALL_LANGS, usePreferences, type Lang } from '../stores/preferences'
 import { KIND_LABELS, LANG_COLORS, LANG_LABELS, titleApi } from '../api/title'
 import { BindFolderModal } from '../components/BindFolderModal'
+import { EpisodeRow } from '../components/EpisodeRow'
 import { ErrorState } from '../components/ErrorState'
 import { MappingPanel } from '../components/MappingPanel'
 import { TranslationGroups } from '../components/TranslationGroups'
@@ -261,26 +262,26 @@ export function TitlePage() {
 
         {/* На узком экране колонки с фиксированной шириной схлопываются до одного
             символа в строке, поэтому таблица прокручивается внутри контейнера. */}
-        <Table.ScrollContainer minWidth={420}>
+        {/* Колонка с названием эпизода убрана: Anime365 отдаёт episodeTitle
+            пустым почти всегда, а место нужнее под отметки наличия и кнопки. */}
+        <Table.ScrollContainer minWidth={460}>
           <Table striped highlightOnHover verticalSpacing="xs">
             <Table.Thead>
               <Table.Tr>
-                <Table.Th w={100}>№</Table.Th>
-                <Table.Th>Название</Table.Th>
-                <Table.Th w={110}>Тип</Table.Th>
+                <Table.Th w={120}>Серия</Table.Th>
+                <Table.Th w={180}>Есть локально</Table.Th>
+                <Table.Th>Действия</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
               {episodes.map((e) => (
-                <Table.Tr key={e.id}>
-                  <Table.Td>{e.episode_full || e.episode_int}</Table.Td>
-                  <Table.Td style={{ wordBreak: 'break-word' }}>{e.episode_title || '—'}</Table.Td>
-                  <Table.Td>
-                    <Badge size="xs" variant="light" color={e.is_content ? 'gray' : 'orange'}>
-                      {e.episode_type}
-                    </Badge>
-                  </Table.Td>
-                </Table.Tr>
+                <EpisodeRow
+                  key={e.id}
+                  episode={e}
+                  langs={prefs.langs}
+                  kinds={prefs.kinds}
+                  seriesUrl={series.url}
+                />
               ))}
             </Table.Tbody>
           </Table>

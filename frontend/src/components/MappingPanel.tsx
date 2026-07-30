@@ -132,14 +132,19 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
                 </Group>
 
                 <Group gap={6} mt={4} wrap="wrap">
+                  {/* Голая цифра рядом с источником читалась непонятно —
+                      выносим смысл в подпись и подсказку. */}
                   <Tooltip
                     multiline
-                    w={300}
-                    label={mapping.matched_on ?? 'нет подробностей'}
+                    w={320}
+                    label={
+                      `Насколько алгоритм уверен в этой связи: ${mapping.confidence.toFixed(0)} из 100. ` +
+                      (mapping.matched_on ? `Совпало по: ${mapping.matched_on}` : '')
+                    }
                   >
                     <Badge size="sm" variant="light" color={SOURCE_COLORS[mapping.source] ?? 'gray'}>
-                      {SOURCE_LABELS[mapping.source] ?? mapping.source} ·{' '}
-                      {mapping.confidence.toFixed(0)}
+                      {SOURCE_LABELS[mapping.source] ?? mapping.source}
+                      {!mapping.is_manual && ` · точность ${mapping.confidence.toFixed(0)}%`}
                     </Badge>
                   </Tooltip>
                   {mapping.needs_confirmation && (
