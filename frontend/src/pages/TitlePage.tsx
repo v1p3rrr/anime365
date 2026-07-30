@@ -60,7 +60,9 @@ export function TitlePage() {
   const hiddenCount = data.episodes.length - data.episodes.filter((e) => e.is_content).length
 
   return (
-    <Stack gap="md">
+    // Страница длинная: описание, сводка переводов и список серий. Прокрутка
+    // должна быть у неё самой, иначе нижние блоки обрезаются.
+    <Stack gap="md" style={{ overflowY: 'auto', minHeight: 0 }}>
       <Group align="flex-start" wrap="nowrap" gap="md">
         {series.poster_url && (
           <Image
@@ -233,28 +235,32 @@ export function TitlePage() {
           )}
         </Group>
 
-        <Table striped highlightOnHover verticalSpacing="xs" style={{ tableLayout: 'fixed' }}>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th style={{ width: 90 }}>№</Table.Th>
-              <Table.Th>Название</Table.Th>
-              <Table.Th style={{ width: 110 }}>Тип</Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {episodes.map((e) => (
-              <Table.Tr key={e.id}>
-                <Table.Td>{e.episode_full || e.episode_int}</Table.Td>
-                <Table.Td style={{ wordBreak: 'break-word' }}>{e.episode_title || '—'}</Table.Td>
-                <Table.Td>
-                  <Badge size="xs" variant="light" color={e.is_content ? 'gray' : 'orange'}>
-                    {e.episode_type}
-                  </Badge>
-                </Table.Td>
+        {/* На узком экране колонки с фиксированной шириной схлопываются до одного
+            символа в строке, поэтому таблица прокручивается внутри контейнера. */}
+        <Table.ScrollContainer minWidth={420}>
+          <Table striped highlightOnHover verticalSpacing="xs">
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th w={100}>№</Table.Th>
+                <Table.Th>Название</Table.Th>
+                <Table.Th w={110}>Тип</Table.Th>
               </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
+            </Table.Thead>
+            <Table.Tbody>
+              {episodes.map((e) => (
+                <Table.Tr key={e.id}>
+                  <Table.Td>{e.episode_full || e.episode_int}</Table.Td>
+                  <Table.Td style={{ wordBreak: 'break-word' }}>{e.episode_title || '—'}</Table.Td>
+                  <Table.Td>
+                    <Badge size="xs" variant="light" color={e.is_content ? 'gray' : 'orange'}>
+                      {e.episode_type}
+                    </Badge>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        </Table.ScrollContainer>
       </div>
     </Stack>
   )

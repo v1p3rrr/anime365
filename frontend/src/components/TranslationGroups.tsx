@@ -95,26 +95,23 @@ function AuthorTable({
   seriesUrl: string | null
 }) {
   return (
-    <Table striped highlightOnHover verticalSpacing="xs" style={{ tableLayout: 'fixed' }}>
-      <Table.Thead>
-        <Table.Tr>
-          <Table.Th style={{ width: '38%' }}>Автор</Table.Th>
-          <Table.Th style={{ width: '32%' }}>Покрытие</Table.Th>
-          <Table.Th style={{ width: '12%' }}>Качество</Table.Th>
-          <Table.Th style={{ width: '18%' }}>Действия</Table.Th>
-        </Table.Tr>
-      </Table.Thead>
-      <Table.Tbody>
-        {groups.map((group) => (
-          <AuthorRow
-            key={group.authors}
-            group={group}
-            kind={kind}
-            seriesUrl={seriesUrl}
-          />
-        ))}
-      </Table.Tbody>
-    </Table>
+    <Table.ScrollContainer minWidth={560}>
+      <Table striped highlightOnHover verticalSpacing="xs">
+        <Table.Thead>
+          <Table.Tr>
+            <Table.Th>Автор</Table.Th>
+            <Table.Th w={190}>Покрытие</Table.Th>
+            <Table.Th w={90}>Качество</Table.Th>
+            <Table.Th w={120}>Действия</Table.Th>
+          </Table.Tr>
+        </Table.Thead>
+        <Table.Tbody>
+          {groups.map((group) => (
+            <AuthorRow key={group.authors} group={group} kind={kind} seriesUrl={seriesUrl} />
+          ))}
+        </Table.Tbody>
+      </Table>
+    </Table.ScrollContainer>
   )
 }
 
