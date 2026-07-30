@@ -59,7 +59,13 @@ export interface TitleMappingInfo {
   confidence: number
   matched_on: string | null
   is_manual: boolean
+  /** Куда складываются загрузки, когда папок несколько. */
+  is_primary: boolean
+  /** true — выбрано пользователем, автовыбор больше не вмешивается. */
+  primary_is_manual: boolean
   needs_confirmation: boolean
+  /** Сколько серий каждой роли лежит именно в этой папке. */
+  counts: Record<string, number>
   /** На какое название из .nfo сматчилось — главное для проверки глазами. */
   nfo_title: string | null
   nfo_original_title: string | null
@@ -68,10 +74,13 @@ export interface TitleMappingInfo {
 
 export interface RoleCoverage {
   label: string
+  /** Различные номера серий, а не файлы: одна серия может лежать в двух копиях. */
   have: number
   total: number
   complete: boolean
   missing_ranges: string
+  duplicate_count: number
+  duplicate_ranges: string
 }
 
 export interface LocalCoverage {
@@ -120,6 +129,8 @@ export const titleApi = {
     api.get<TitlePageData>(`/series/${id}${refresh ? '?refresh=true' : ''}`),
   embed: (translationId: number) => api.get<EmbedInfo>(`/translations/${translationId}/embed`),
   unbind: (mappingId: number) => api.del<{ deleted: number }>(`/library/mappings/${mappingId}`),
+  makePrimary: (mappingId: number, seriesId: number) =>
+    api.post<unknown>(`/library/mappings/${mappingId}/primary`, { series_id: seriesId }),
 }
 
 export const LANG_LABELS: Record<string, string> = {

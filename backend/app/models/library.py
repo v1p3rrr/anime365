@@ -139,6 +139,14 @@ class TitleMapping(Base):
     # Найдено нечётко и ждёт подтверждения пользователя.
     needs_confirmation: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
+    # Куда складывать скачанное, если у тайтла несколько папок. Такое бывает
+    # реально: один и тот же сезон лежит и разложенным под Jellyfin, и исходным
+    # релизом в другом кодеке. Без явного признака загрузка была бы неоднозначной.
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Отличает выбор пользователя от автоматического. Без этого устаревший
+    # автовыбор нельзя пересмотреть: он выглядел бы как решение пользователя.
+    primary_is_manual: Mapped[bool] = mapped_column(Boolean, default=False)
+
     created_by_user_id: Mapped[int] = mapped_column(Integer, default=DEFAULT_USER_ID)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

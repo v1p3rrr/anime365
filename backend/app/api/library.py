@@ -15,6 +15,7 @@ from app.models.library import LibraryFile, LibraryFolder, LibraryRoot, TitleMap
 from app.services.filename_rules import get_rules, parse_filename, reload_rules
 from app.services.library_service import library_scanner
 from app.services.library_watcher import library_watcher
+from app.services.mapping_info import set_primary_mapping
 
 log = logging.getLogger(__name__)
 
@@ -246,6 +247,23 @@ def create_mapping(payload: ManualMapping) -> dict[str, Any]:
         session.add(mapping)
         session.flush()
         return {"id": mapping.id, "updated": False}
+
+
+class PrimaryRequest(BaseModel):
+    series_id: int
+
+
+@router.post("/mappings/{mapping_id}/primary")
+def make_primary(mapping_id: int, payload: PrimaryRequest) -> dict[str, Any]:
+    """Назначает папку основной — туда будут складываться загрузки.
+
+    Автоматически основной становится папка с наибольшим числом видео, но выбор
+    можно переопределить: у одного сезона бывают две копии в разных кодеках, и
+    какая из них «рабочая» — решает пользователь.
+    """
+    if not set_primary_mapping(payload.series_id, mapping_id):
+        raise HTTPException(404, "Связь не найдена у этого тайтла")
+    return {"id": mapping_id, "is_primary": True}
 
 
 @router.post("/mappings/{mapping_id}/confirm")

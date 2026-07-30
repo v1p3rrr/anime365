@@ -11,7 +11,7 @@ import {
   Tooltip,
 } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
-import { IconFolderOff, IconFolderPlus, IconLock, IconUnlink } from '@tabler/icons-react'
+import { IconFolderOff, IconFolderPlus, IconLock, IconStar, IconUnlink } from '@tabler/icons-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { formatBytes, SOURCE_COLORS, SOURCE_LABELS } from '../api/library'
@@ -24,6 +24,14 @@ interface Props {
   onRebind: () => void
 }
 
+/** Короткие подписи для разбивки по папкам — там места мало. */
+const ROLE_SHORT: Record<string, string> = {
+  video: 'видео',
+  sub_ru: 'RU',
+  sub_ja: 'JA',
+  sub_en: 'EN',
+}
+
 /**
  * Плашка привязки к локальным папкам.
  *
@@ -34,16 +42,30 @@ interface Props {
 export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
   const queryClient = useQueryClient()
 
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['title', seriesId] })
+    queryClient.invalidateQueries({ queryKey: ['library-status'] })
+    queryClient.invalidateQueries({ queryKey: ['library-unmapped'] })
+  }
+
   const unbind = useMutation({
     mutationFn: titleApi.unbind,
     onSuccess: () => {
       notifications.show({ color: 'teal', message: 'Привязка удалена' })
-      queryClient.invalidateQueries({ queryKey: ['title', seriesId] })
-      queryClient.invalidateQueries({ queryKey: ['library-status'] })
-      queryClient.invalidateQueries({ queryKey: ['library-unmapped'] })
+      refresh()
     },
     onError: (error: Error) =>
       notifications.show({ color: 'red', title: 'Не удалось отвязать', message: error.message }),
+  })
+
+  const makePrimary = useMutation({
+    mutationFn: (mappingId: number) => titleApi.makePrimary(mappingId, seriesId),
+    onSuccess: () => {
+      notifications.show({ color: 'teal', message: 'Основная папка изменена' })
+      refresh()
+    },
+    onError: (error: Error) =>
+      notifications.show({ color: 'red', title: 'Не удалось изменить', message: error.message }),
   })
 
   if (mappings.length === 0) {
@@ -61,16 +83,40 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
   }
 
   const coverageEntries = Object.entries(local.coverage)
+  const multiple = mappings.length > 1
 
   return (
     <Card withBorder padding="sm" style={{ flexShrink: 0 }}>
       <Stack gap="xs">
+        {/* Когда папок несколько, это надо сказать прямо: иначе непонятно,
+            почему счётчики не сходятся с содержимым конкретной папки. */}
+        {multiple && (
+          <Text size="xs" c="dimmed">
+            Тайтл лежит в {mappings.length} папках. Загрузки идут в основную,
+            остальные учитываются при подсчёте того, что уже есть.
+          </Text>
+        )}
         {mappings.map((mapping) => (
           <div key={mapping.mapping_id}>
             <Group justify="space-between" wrap="nowrap" align="flex-start">
               <div style={{ minWidth: 0 }}>
                 <Group gap={6} wrap="wrap">
                   <Code style={{ wordBreak: 'break-all' }}>{mapping.rel_path}</Code>
+                  {/* Метку показываем только когда папок несколько: при одной
+                      она ничего не сообщает и лишь засоряет плашку. */}
+                  {multiple && mapping.is_primary && (
+                    <Tooltip
+                      label={
+                        mapping.primary_is_manual
+                          ? 'Сюда складываются загрузки. Выбрано вручную'
+                          : 'Сюда складываются загрузки. Выбрано автоматически — по числу серий этого тайтла в папке'
+                      }
+                    >
+                      <Badge size="xs" color="blue" leftSection={<IconStar size={10} />}>
+                        основная{mapping.primary_is_manual ? '' : ' (авто)'}
+                      </Badge>
+                    </Tooltip>
+                  )}
                   {mapping.season_number != null && (
                     <Badge size="xs" variant="light">
                       сезон {mapping.season_number}
@@ -106,6 +152,17 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
                   </Text>
                 </Group>
 
+                {/* Что лежит именно в этой папке — иначе при нескольких папках
+                    непонятно, откуда взялись суммарные цифры. */}
+                {multiple && Object.keys(mapping.counts).length > 0 && (
+                  <Text size="xs" c="dimmed" mt={2}>
+                    здесь:{' '}
+                    {Object.entries(mapping.counts)
+                      .map(([role, count]) => `${ROLE_SHORT[role] ?? role} ${count}`)
+                      .join(' · ')}
+                  </Text>
+                )}
+
                 {/* Название из .nfo — то, по чему пользователь глазами проверит,
                     что привязка верная. */}
                 {mapping.nfo_title && (
@@ -116,7 +173,20 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
                 )}
               </div>
 
-              <Group gap={4} wrap="nowrap">
+              <Stack gap={2} align="flex-end" style={{ flexShrink: 0 }}>
+                {multiple && !mapping.is_primary && (
+                  <Tooltip label="Складывать загрузки в эту папку">
+                    <Button
+                      size="compact-xs"
+                      variant="subtle"
+                      leftSection={<IconStar size={12} />}
+                      onClick={() => makePrimary.mutate(mapping.mapping_id)}
+                      loading={makePrimary.isPending}
+                    >
+                      Сделать основной
+                    </Button>
+                  </Tooltip>
+                )}
                 <Tooltip label="Убрать связь с этой папкой">
                   <Button
                     size="compact-xs"
@@ -129,7 +199,7 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
                     Отвязать
                   </Button>
                 </Tooltip>
-              </Group>
+              </Stack>
             </Group>
           </div>
         ))}
@@ -163,6 +233,13 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
                 {!info.complete && info.missing_ranges && (
                   <Text size="xs" c="dimmed">
                     нет: {info.missing_ranges}
+                  </Text>
+                )}
+                {/* Счётчик считает различные серии, а не файлы. Если серия лежит
+                    в двух копиях, об этом надо сказать, а не молча схлопнуть. */}
+                {info.duplicate_count > 0 && (
+                  <Text size="xs" c="dimmed">
+                    в двух копиях: {info.duplicate_ranges}
                   </Text>
                 )}
               </div>
