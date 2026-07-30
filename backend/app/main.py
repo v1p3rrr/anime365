@@ -13,10 +13,11 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import catalog, health, library, maintenance, title
+from app.api import catalog, downloads, health, library, maintenance, title
 from app.core.bootstrap import bootstrap
 from app.core.db import check_connection
 from app.core.logging_setup import setup_logging
+from app.services.download_queue import download_queue
 from app.workers.scheduler import start_scheduler, stop_scheduler
 
 log = logging.getLogger(__name__)
@@ -34,11 +35,13 @@ async def lifespan(_app: FastAPI):
 
     bootstrap()
     start_scheduler()
-
-    # Воркеры загрузок и слежение за файловой системой добавятся на этапах 4-5.
+    # Воркеры очереди живут в том же событийном цикле: отдельный процесс не нужен,
+    # загрузка это чистый ввод-вывод.
+    download_queue.start()
 
     yield
 
+    await download_queue.stop()
     stop_scheduler()
     log.info("Anime365 Downloader останавливается")
 
@@ -56,6 +59,7 @@ app.include_router(health.router, prefix="/api")
 app.include_router(catalog.router, prefix="/api")
 app.include_router(title.router, prefix="/api")
 app.include_router(library.router, prefix="/api")
+app.include_router(downloads.router, prefix="/api")
 app.include_router(maintenance.router, prefix="/api")
 
 

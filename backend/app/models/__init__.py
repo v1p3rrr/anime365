@@ -9,6 +9,12 @@ from app.models.catalog import (
     Translation,
     TranslationEmbed,
 )
+from app.models.downloads import (
+    ACTIVE_STATUSES,
+    TERMINAL_STATUSES,
+    DownloadTask,
+    TaskStatus,
+)
 from app.models.library import (
     EpisodeMapping,
     LibraryFile,
@@ -19,9 +25,12 @@ from app.models.library import (
 from app.models.settings import DEFAULT_USER_ID, AppSetting, AppUser
 
 __all__ = [
+    "ACTIVE_STATUSES",
     "DEFAULT_USER_ID",
+    "TERMINAL_STATUSES",
     "AppSetting",
     "AppUser",
+    "DownloadTask",
     "Episode",
     "EpisodeMapping",
     "Genre",
@@ -31,6 +40,7 @@ __all__ = [
     "ScanRun",
     "Series",
     "SeriesGenre",
+    "TaskStatus",
     "TitleMapping",
     "Translation",
     "TranslationEmbed",
