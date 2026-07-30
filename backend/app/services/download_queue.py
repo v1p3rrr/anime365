@@ -343,10 +343,17 @@ class DownloadQueue:
         # берём разумный потолок, иначе сотня параллельных загрузок положит сеть.
         workers = 8 if count == 0 else count
 
+        self._recover_interrupted()
+
         self._stop.clear()
         for index in range(workers):
             self._workers.append(asyncio.create_task(self._worker(index)))
-        log.info("Очередь загрузок запущена: воркеров %d", workers)
+
+        # Постобработка идёт своим воркером и в одном экземпляре: параллельное
+        # перемещение файлов на один диск только отнимает у него головки, а
+        # выигрыша не даёт.
+        self._workers.append(asyncio.create_task(self._postprocess_worker()))
+        log.info("Очередь загрузок запущена: воркеров %d + постобработка", workers)
 
     async def stop(self) -> None:
         self._stop.set()
@@ -532,8 +539,16 @@ class DownloadQueue:
                 _finish(task_id, TaskStatus.FAILED, str(exc))
                 return
 
-        target_dir = resolve_within(root.path, Path(folder.rel_path))
-        await self._postprocess(task_id, tmp_path, target_dir, filename)
+        # Загрузка на этом закончена. Перемещение делает отдельный воркер:
+        # между дисками shutil.move копирует байты, и держать на этом воркер
+        # загрузки означало бы простой сети на всё время копирования.
+        # Всё нужное для перемещения уже лежит в задаче (tmp_path, target_path).
+        with session_scope() as session:
+            db_task = session.get(DownloadTask, task_id)
+            if db_task is not None:
+                db_task.status = TaskStatus.DOWNLOADED
+                db_task.speed_bps = 0.0
+        bus.publish("download.status", task_id=task_id, status=TaskStatus.DOWNLOADED)
 
     def _build_name(
         self, snapshot: dict, folder: LibraryFolder, height: int, extension: str
@@ -564,15 +579,95 @@ class DownloadQueue:
         name = build_target_name(ctx, neighbour=neighbour, existing_video=existing_video)
         return unique_path(folder.rel_path, name, set(_folder_filenames(folder.id)))
 
+    @staticmethod
+    def _recover_interrupted() -> None:
+        """Возвращает в работу задачи, застрявшие из-за остановки процесса.
+
+        Статусы `downloading` и `postprocessing` означают «этим прямо сейчас
+        занят воркер». После падения или рестарта контейнера воркеров нет, а
+        метки остаются — и такие задачи не забирал никто: `_claim_next` берёт
+        только `queued`. То есть загрузка, прерванная перезапуском, зависала
+        навсегда, хотя обещано, что она продолжится с того же места.
+
+        Недокачанный `.part` при этом сохраняется, поэтому возврат в очередь
+        означает докачку по Range, а не загрузку заново.
+        """
+        with session_scope() as session:
+            downloading = session.execute(
+                select(DownloadTask).where(DownloadTask.status == TaskStatus.DOWNLOADING)
+            ).scalars().all()
+            for task in downloading:
+                task.status = TaskStatus.QUEUED
+                task.speed_bps = 0.0
+
+            postprocessing = session.execute(
+                select(DownloadTask).where(DownloadTask.status == TaskStatus.POSTPROCESSING)
+            ).scalars().all()
+            for task in postprocessing:
+                # Файл уже скачан целиком — возвращаем на перемещение, не на загрузку.
+                task.status = TaskStatus.DOWNLOADED
+
+        if downloading or postprocessing:
+            log.info(
+                "Возобновлено после перезапуска: загрузок %d, перемещений %d",
+                len(downloading),
+                len(postprocessing),
+            )
+
+    def _claim_next_postprocess(self) -> tuple[int, Path, Path] | None:
+        """Забирает скачанную задачу под перемещение.
+
+        Отдельная очередь и отдельная метка статуса нужны, чтобы перемещение
+        между дисками не занимало воркер загрузки: `shutil.move` там копирует
+        байты, и на большом файле это минуты простоя сети.
+        """
+        with session_scope() as session:
+            task = session.execute(
+                select(DownloadTask)
+                .where(DownloadTask.status == TaskStatus.DOWNLOADED)
+                .order_by(DownloadTask.updated_at)
+                .limit(1)
+            ).scalar_one_or_none()
+            if task is None:
+                return None
+            if not task.tmp_path or not task.target_path:
+                # Такого быть не должно: пути пишутся до начала загрузки.
+                # Но если задача пережила рестарт в странном состоянии, лучше
+                # честно её провалить, чем молча оставить висеть в очереди.
+                task.status = TaskStatus.FAILED
+                task.last_error = "Потеряны пути файла — перезапустите загрузку"
+                return None
+            task.status = TaskStatus.POSTPROCESSING
+            return task.id, Path(task.tmp_path), Path(task.target_path)
+
+    async def _postprocess_worker(self) -> None:
+        while not self._stop.is_set():
+            if self._paused:
+                # «Пауза» для пользователя означает «ничего не происходит».
+                # Скачанное подождёт: файл целый, метка downloaded сохранена,
+                # после возобновления он переедет.
+                await asyncio.sleep(2)
+                continue
+
+            claimed = self._claim_next_postprocess()
+            if claimed is None:
+                await asyncio.sleep(2)
+                continue
+
+            task_id, tmp_path, target_path = claimed
+            bus.publish("download.status", task_id=task_id, status=TaskStatus.POSTPROCESSING)
+            try:
+                await self._postprocess(task_id, tmp_path, target_path.parent, target_path.name)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.exception("Постобработка задачи %s упала", task_id)
+                _fail_with_backoff(task_id, str(exc))
+
     async def _postprocess(
         self, task_id: int, tmp_path: Path, target_dir: Path, filename: str
     ) -> None:
         """Перемещение в библиотеку и выставление прав."""
-        with session_scope() as session:
-            db_task = session.get(DownloadTask, task_id)
-            if db_task is not None:
-                db_task.status = TaskStatus.POSTPROCESSING
-
         try:
             # Последний рубеж перед записью. Имя автора перевода приходит из
             # внешнего API и попадает в имя файла, а корень и rel_path — из БД:
