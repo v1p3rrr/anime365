@@ -82,9 +82,15 @@ export function CatalogCard({ card, visibleBadges = DEFAULT_BADGES }: Props) {
           </Badge>
         )}
 
-        {local && (
+        {(local || card.mapping_problem) && (
           <div className={classes.badgeStrip}>
+            {card.mapping_problem && (
+              <Badge size="xs" color="orange" variant="filled">
+                проверить привязку
+              </Badge>
+            )}
             {visibleBadges.map((key) => {
+              if (!local) return null
               const have = local[key] ?? 0
               // Знаменатель приходит с сервера уже по правилу
               // «максимум из плана, эпизодов в API и локального номера».

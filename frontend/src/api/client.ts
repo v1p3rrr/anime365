@@ -18,15 +18,27 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...init?.headers,
-    },
-    // Сессионная кука нужна для всех запросов, включая GET.
-    credentials: 'same-origin',
-  })
+  let response: Response
+  try {
+    response = await fetch(`/api${path}`, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...init?.headers,
+      },
+      // Сессионная кука нужна для всех запросов, включая GET.
+      credentials: 'same-origin',
+    })
+  } catch (cause) {
+    // fetch бросает голое «Failed to fetch» на любой сетевой проблеме и не
+    // говорит ни какой запрос упал, ни почему. Для домашнего сервиса причина
+    // почти всегда одна и та же — сервер не отвечает, — и её стоит назвать.
+    throw new ApiError(
+      0,
+      `Сервер не ответил на запрос ${path}. Проверьте, что контейнер запущен ` +
+        `и доступен по этому адресу. Причина: ${(cause as Error).message}`,
+    )
+  }
 
   if (!response.ok) {
     let detail = response.statusText
@@ -82,6 +94,8 @@ export interface CatalogCard {
   is_airing: boolean
   /** null — тайтла нет в библиотеке. Это не то же самое, что «есть, но пусто». */
   local: LocalBadges | null
+  /** Привязка нечёткая и ждёт подтверждения — стоит проверить глазами. */
+  mapping_problem: boolean
 }
 
 export interface CatalogIdsResponse {
@@ -124,6 +138,8 @@ export interface CatalogFilters {
   scoreFrom?: number
   /** only — только то, что есть в библиотеке; missing — только чего нет. */
   local?: 'only' | 'missing'
+  /** Только нечёткие привязки, ждущие подтверждения. */
+  mappingProblem?: boolean
   sort?: SortField
   sortDir?: 'asc' | 'desc'
 }
@@ -154,6 +170,7 @@ function buildParams(filters: CatalogFilters): string {
   if (filters.isAiring !== undefined) params.set('is_airing', String(filters.isAiring))
   if (filters.scoreFrom !== undefined) params.set('score_from', String(filters.scoreFrom))
   if (filters.local) params.set('local', filters.local)
+  if (filters.mappingProblem) params.set('mapping_problem', 'true')
   if (filters.sort) params.set('sort', filters.sort)
   if (filters.sortDir) params.set('sort_dir', filters.sortDir)
   return params.toString()

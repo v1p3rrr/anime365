@@ -207,35 +207,56 @@ def reset_setting(key: str, request: Request, response: Response) -> dict[str, A
     return {"key": key, "source": resolved.source}
 
 
+class TokenCheckRequest(BaseModel):
+    # Значение прямо из формы, ещё не сохранённое. Иначе пришлось бы сохранять
+    # непроверенный токен, чтобы узнать, рабочий ли он.
+    token: str | None = None
+
+
 @router.post("/test-token")
-async def test_token() -> dict[str, Any]:
+async def test_token(payload: TokenCheckRequest | None = None) -> dict[str, Any]:
     """Проверка токена и подписки — единственный способ узнать это заранее.
 
     Без активной подписки скачивание вернёт HTML-страницу вместо файла, поэтому
     лучше выяснить проблему здесь, а не на первой загрузке.
     """
-    if not settings.get_str("access_token"):
-        return {"ok": False, "reason": "Токен не задан"}
+    candidate = (payload.token if payload else None) or settings.get_str("access_token")
+    checking_unsaved = bool(payload and payload.token)
+
+    if not candidate:
+        return {"ok": False, "reason": "Токен не задан", "checked_unsaved": False}
 
     try:
         async with Anime365Client() as client:
-            me = await client.me()
+            me = await client.me(token=candidate)
     except Anime365Error as exc:
-        return {"ok": False, "reason": f"Anime365 недоступен: {exc}"}
+        return {
+            "ok": False,
+            "reason": f"Anime365 недоступен: {exc}",
+            "checked_unsaved": checking_unsaved,
+        }
 
     logged_in = bool(me.get("isLogined"))
     premium = bool(me.get("isPremium"))
+
+    if not logged_in:
+        reason = (
+            "Anime365 не опознал токен. Проверьте, что скопировано значение целиком "
+            "и без пробелов по краям."
+        )
+    elif not premium:
+        reason = "Токен рабочий, но премиум-подписка неактивна — скачивание будет недоступно."
+    else:
+        reason = None
+
     return {
         "ok": logged_in and premium,
         "logged_in": logged_in,
         "premium": premium,
         "name": me.get("name"),
         "premium_until": me.get("premiumUntil"),
-        "reason": (
-            None
-            if logged_in and premium
-            else "Токен не опознан" if not logged_in else "Подписка неактивна"
-        ),
+        "checked_unsaved": checking_unsaved,
+        "reason": reason,
     }
 
 

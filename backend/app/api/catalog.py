@@ -55,9 +55,14 @@ class CatalogCard(BaseModel):
     is_airing: bool
     # None означает «тайтла нет в библиотеке» — это не то же самое, что «есть, но пусто».
     local: LocalBadges | None = None
+    # Привязка есть, но она нечёткая и ждёт подтверждения. Ошибка привязки должна
+    # быть видна в каталоге, а не обнаруживаться после того, как файлы уехали не туда.
+    mapping_problem: bool = False
 
 
-def _card(series: Series, badges: dict[str, Any] | None) -> CatalogCard:
+def _card(
+    series: Series, badges: dict[str, Any] | None, problem: bool = False
+) -> CatalogCard:
     titles = series.titles or {}
     return CatalogCard(
         id=series.id,
@@ -72,6 +77,7 @@ def _card(series: Series, badges: dict[str, Any] | None) -> CatalogCard:
         mal_score=series.mal_score,
         is_airing=series.is_airing,
         local=LocalBadges(**badges) if badges else None,
+        mapping_problem=problem,
     )
 
 
@@ -95,6 +101,9 @@ def catalog_ids(
         str | None,
         Query(pattern="^(only|missing)$", description="only — есть в библиотеке, missing — нет"),
     ] = None,
+    mapping_problem: Annotated[
+        bool, Query(description="Только нечёткие привязки, ждущие подтверждения")
+    ] = False,
     sort: Annotated[str, Query(pattern="^(id|year|score|title)$")] = "id",
     sort_dir: Annotated[str, Query(pattern="^(asc|desc)$")] = "desc",
 ) -> dict[str, Any]:
@@ -106,6 +115,17 @@ def catalog_ids(
         # подставляем его как подзапрос, а не тянем в память.
         mapped = select(func.distinct(TitleMapping.series_id))
         stmt = stmt.where(Series.id.in_(mapped) if local == "only" else Series.id.not_in(mapped))
+
+    if mapping_problem:
+        # Нечёткие привязки, которые пользователь ещё не подтвердил. Их важно
+        # уметь показать отдельным списком: это очередь на ручную проверку.
+        stmt = stmt.where(
+            Series.id.in_(
+                select(func.distinct(TitleMapping.series_id)).where(
+                    TitleMapping.needs_confirmation.is_(True)
+                )
+            )
+        )
 
     if not include_hentai:
         stmt = stmt.where(Series.is_hentai.is_(False))
@@ -175,8 +195,17 @@ def catalog_cards(ids: Annotated[list[int], Body(embed=True)]) -> list[CatalogCa
     badges = series_badges(ids)
 
     with session_scope() as session:
+        problems = {
+            row[0]
+            for row in session.execute(
+                select(func.distinct(TitleMapping.series_id)).where(
+                    TitleMapping.series_id.in_(ids),
+                    TitleMapping.needs_confirmation.is_(True),
+                )
+            ).all()
+        }
         rows = session.execute(select(Series).where(Series.id.in_(ids))).scalars().all()
-        by_id = {s.id: _card(s, badges.get(s.id)) for s in rows}
+        by_id = {s.id: _card(s, badges.get(s.id), s.id in problems) for s in rows}
 
     return [by_id[i] for i in ids if i in by_id]
 

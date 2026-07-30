@@ -20,9 +20,26 @@ import yaml
 
 log = logging.getLogger(__name__)
 
+# Пользовательский override: примонтированный ./config в docker-compose.
 CONFIG_PATH = Path("/config/filename_rules.yaml")
-# Запасной путь для запуска из исходников без контейнера.
-FALLBACK_PATH = Path(__file__).resolve().parents[3] / "config" / "filename_rules.yaml"
+
+# Копия правил внутри образа. Без неё контейнер, запущенный без bind-mount
+# на ./config, падал при сканировании: `parents[3]` в контейнере разворачивается
+# в тот же /config, то есть «запасного» пути фактически не было.
+PACKAGED_PATH = Path(__file__).resolve().parents[1] / "defaults" / "filename_rules.yaml"
+
+# Запуск из исходников без контейнера.
+REPO_PATH = Path(__file__).resolve().parents[3] / "config" / "filename_rules.yaml"
+
+
+def _resolve_source() -> Path:
+    for candidate in (CONFIG_PATH, PACKAGED_PATH, REPO_PATH):
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(
+        "Не найден filename_rules.yaml. Ожидался в одном из мест: "
+        + ", ".join(str(p) for p in (CONFIG_PATH, PACKAGED_PATH, REPO_PATH))
+    )
 
 
 @dataclass(frozen=True)
@@ -98,7 +115,7 @@ def _compile(patterns: list[str], where: str) -> list[re.Pattern[str]]:
 
 
 def load_rules(path: Path | None = None) -> RuleSet:
-    source = path or (CONFIG_PATH if CONFIG_PATH.is_file() else FALLBACK_PATH)
+    source = path or _resolve_source()
     data = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
 
     rules: list[Rule] = []

@@ -132,8 +132,12 @@ class Anime365Client:
         assert self._client is not None, "используйте клиент через async with"
 
         params = dict(params or {})
-        token = settings.get_str("access_token")
-        if token and path.startswith("/api/translations/embed"):
+        token = params.pop("_token_override", None) or settings.get_str("access_token")
+        if token:
+            # Токен идёт со ВСЕМИ запросами к API, а не только с embed.
+            # Раньше он подставлялся лишь для /api/translations/embed, из-за чего
+            # /api/me отвечал isLogined: false, и проверка токена в настройках
+            # всегда говорила «токен не опознан» даже на рабочем токене.
             params["access_token"] = token
 
         origins = self._ordered_origins()
@@ -145,8 +149,12 @@ class Anime365Client:
             try:
                 response = await self._client.get(url, params=params)
             except httpx.HTTPError as exc:
-                log.warning("Зеркало %s недоступно: %s", origin, exc)
-                last_error = exc
+                # Текст httpx часто пустой (например, у ConnectTimeout), поэтому
+                # к сообщению обязательно добавляем класс исключения — без него
+                # в UI приходило бы просто «Все зеркала недоступны: ».
+                detail = str(exc) or exc.__class__.__name__
+                log.warning("Зеркало %s недоступно: %s (%s)", origin, detail, type(exc).__name__)
+                last_error = Anime365Error(f"{type(exc).__name__}: {detail}")
                 continue
 
             if response.status_code == 403:
@@ -167,7 +175,11 @@ class Anime365Client:
                 raise Anime365Error(f"API вернул ошибку: {payload['error']}")
             return payload.get("data")
 
-        raise Anime365Error(f"Все зеркала недоступны для {path}: {last_error}")
+        tried = ", ".join(o.replace("https://", "") for o in origins)
+        raise Anime365Error(
+            f"Ни одно зеркало не ответило на {path}. Пробовали: {tried}. "
+            f"Последняя ошибка — {last_error}"
+        )
 
     def _ordered_origins(self) -> list[str]:
         primary = settings.base_url()
@@ -214,14 +226,18 @@ class Anime365Client:
     # Аккаунт
     # ------------------------------------------------------------------ #
 
-    async def me(self) -> dict[str, Any]:
+    async def me(self, token: str | None = None) -> dict[str, Any]:
         """Проверка токена и подписки.
+
+        `token` позволяет проверить ещё не сохранённое значение из формы: иначе
+        пользователю пришлось бы сначала сохранить непроверенный токен.
 
         Единственный эндпоинт с пользовательскими данными: списков просмотренного,
         избранного и синка с Shikimori/AniList в API нет — все /api/me/* возвращают
         ровно этот же объект.
         """
-        return await self._request("/api/me") or {}
+        params = {"_token_override": token} if token else None
+        return await self._request("/api/me", params) or {}
 
     # ------------------------------------------------------------------ #
     # Каталог

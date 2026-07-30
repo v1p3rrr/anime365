@@ -109,7 +109,8 @@ export function CatalogFilters({
     (filters.yearTo !== undefined ? 1 : 0) +
     (filters.season ? 1 : 0) +
     (filters.scoreFrom !== undefined ? 1 : 0) +
-    (filters.local ? 1 : 0)
+    (filters.local ? 1 : 0) +
+    (filters.mappingProblem ? 1 : 0)
 
   return (
     <>
@@ -288,6 +289,18 @@ export function CatalogFilters({
             color="orange"
           >
             Нет в библиотеке
+          </Chip>
+
+          {/* Очередь на ручную проверку: привязка нашлась нечётким совпадением
+              и ещё не подтверждена. Такую ошибку лучше увидеть здесь, чем
+              после того, как файлы уедут не в ту папку. */}
+          <Chip
+            checked={filters.mappingProblem === true}
+            onChange={(checked) => patch({ mappingProblem: checked ? true : undefined })}
+            size="xs"
+            color="yellow"
+          >
+            Привязка под вопросом
           </Chip>
           {activeCount > 0 && (
             <Button

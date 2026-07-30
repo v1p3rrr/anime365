@@ -44,6 +44,10 @@ RUN pip install --no-cache-dir \
         "python-multipart==0.0.20"
 
 COPY backend/app ./app
+# Правила разбора имён кладём внутрь образа. Том ./config — необязательный
+# override: без этой копии контейнер, запущенный без bind-mount, падал при
+# сканировании библиотеки.
+COPY config/filename_rules.yaml ./app/defaults/filename_rules.yaml
 COPY --from=frontend /backend/app/static ./app/static
 
 # Непривилегированный пользователь. UID/GID перекрываются через PUID/PGID в compose.

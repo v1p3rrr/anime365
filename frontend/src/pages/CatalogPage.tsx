@@ -65,7 +65,13 @@ export function CatalogPage({ onlyAiring = false }: Props) {
   // слишком узком фильтре это отправляло пользователя не туда.
   const catalogIsEmpty = (statusQuery.data?.total_series ?? 0) === 0
   const hasFilters =
-    Boolean(filters.type || filters.season || filters.genres?.length || filters.local) ||
+    Boolean(
+      filters.type ||
+        filters.season ||
+        filters.genres?.length ||
+        filters.local ||
+        filters.mappingProblem,
+    ) ||
     filters.yearFrom !== undefined ||
     filters.yearTo !== undefined ||
     filters.scoreFrom !== undefined

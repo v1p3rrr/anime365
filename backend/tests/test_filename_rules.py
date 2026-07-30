@@ -105,3 +105,33 @@ class TestNormalization:
     def test_technical_noise_is_stripped(self) -> None:
         norm, _ = normalize_for_match("Watashi wo Tabetai, Hitodenashi (AT-X 1920x1080 x265 AAC)")
         assert norm == "watashi wo tabetai hitodenashi"
+
+
+class TestRulesAreShippedWithImage:
+    """Правила разбора имён обязаны быть доступны без bind-mount на ./config.
+
+    Контейнер, запущенный `docker run` без монтирования конфига, падал при
+    сканировании: запасной путь `parents[3]` внутри образа разворачивается
+    в тот же /config, которого там нет.
+    """
+
+    def test_source_resolves_without_config_mount(self) -> None:
+        from app.services.filename_rules import _resolve_source
+
+        # В разработке это репозиторный config, в образе — копия внутри пакета.
+        assert _resolve_source().is_file()
+
+    def test_candidates_include_packaged_copy(self) -> None:
+        from app.services import filename_rules as fr
+
+        # Порядок важен: пользовательский override перекрывает копию в образе.
+        assert fr.CONFIG_PATH == Path("/config/filename_rules.yaml")
+        assert fr.PACKAGED_PATH.name == "filename_rules.yaml"
+        assert "defaults" in fr.PACKAGED_PATH.parts
+
+    def test_rules_actually_load(self) -> None:
+        from app.services.filename_rules import load_rules
+
+        rules = load_rules()
+        assert rules.rules, "без правил разбор имён не работает вовсе"
+        assert ".mkv" in rules.video_ext

@@ -323,3 +323,84 @@ class TestSettingsHelpIsNotStale:
         for setting in reg.SETTINGS:
             for marker in stale:
                 assert marker not in setting.help_ru, f"{setting.key}: устаревающее число {marker!r}"
+
+
+class TestTokenIsSentWithEveryRequest:
+    """Токен обязан уходить со всеми запросами к API, а не только с embed.
+
+    Пока он подставлялся лишь для /api/translations/embed, `/api/me` отвечал
+    isLogined: false, и проверка в настройках говорила «токен не опознан»
+    даже на полностью рабочем токене.
+    """
+
+    def test_token_attached_to_plain_api_call(self, monkeypatch) -> None:
+        import httpx
+
+        from app.services import anime365
+
+        seen: list[dict] = []
+
+        class FakeResponse:
+            status_code = 200
+
+            @staticmethod
+            def json() -> dict:
+                return {"data": {"isLogined": True, "isPremium": True, "name": "vpr"}}
+
+        class FakeClient:
+            async def get(self, url, params=None):
+                seen.append(dict(params or {}))
+                return FakeResponse()
+
+            async def aclose(self) -> None:
+                pass
+
+        monkeypatch.setattr(settings, "get_str", lambda key: {
+            "access_token": "секретное-значение",
+            "user_agent": "test",
+        }.get(key, ""))
+
+        client = anime365.Anime365Client()
+        client._client = FakeClient()  # noqa: SLF001
+
+        import asyncio
+
+        result = asyncio.run(client.me())
+
+        assert result["isLogined"] is True
+        assert seen[0]["access_token"] == "секретное-значение"
+        assert isinstance(httpx.HTTPError, type)
+
+    def test_explicit_token_overrides_saved_one(self, monkeypatch) -> None:
+        from app.services import anime365
+
+        seen: list[dict] = []
+
+        class FakeResponse:
+            status_code = 200
+
+            @staticmethod
+            def json() -> dict:
+                return {"data": {}}
+
+        class FakeClient:
+            async def get(self, url, params=None):
+                seen.append(dict(params or {}))
+                return FakeResponse()
+
+        monkeypatch.setattr(settings, "get_str", lambda key: {
+            "access_token": "сохранённый",
+            "user_agent": "test",
+        }.get(key, ""))
+
+        client = anime365.Anime365Client()
+        client._client = FakeClient()  # noqa: SLF001
+
+        import asyncio
+
+        asyncio.run(client.me(token="из-формы"))
+
+        # Проверка кнопкой должна тестировать введённое значение, а не сохранённое.
+        assert seen[0]["access_token"] == "из-формы"
+        # Служебный ключ наружу уходить не должен.
+        assert "_token_override" not in seen[0]

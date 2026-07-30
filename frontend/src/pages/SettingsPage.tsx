@@ -54,6 +54,8 @@ interface TokenCheck {
   premium?: boolean
   name?: string
   premium_until?: string
+  /** Проверяли значение из формы, а не сохранённое на сервере. */
+  checked_unsaved?: boolean
   reason: string | null
 }
 
@@ -113,18 +115,30 @@ export function SettingsPage() {
   })
 
   const checkToken = useMutation({
-    mutationFn: () => api.post<TokenCheck>('/settings/test-token'),
+    // Проверяем то, что сейчас в поле, а не только сохранённое: иначе
+    // непроверенный токен пришлось бы сначала сохранить.
+    mutationFn: () =>
+      api.post<TokenCheck>('/settings/test-token', {
+        token: draft.access_token?.trim() || null,
+      }),
     onSuccess: (result) => {
+      const suffix = result.checked_unsaved ? ' (проверено значение из поля, оно ещё не сохранено)' : ''
       notifications.show({
         color: result.ok ? 'teal' : 'red',
         title: result.ok ? 'Токен рабочий' : 'Проблема с токеном',
         message: result.ok
-          ? `${result.name}, подписка до ${result.premium_until}`
-          : (result.reason ?? 'неизвестная причина'),
+          ? `${result.name}, подписка до ${result.premium_until}${suffix}`
+          : (result.reason ?? 'неизвестная причина') + suffix,
+        autoClose: result.ok ? 5000 : 12000,
       })
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: 'Проверка не удалась', message: error.message }),
+      notifications.show({
+        color: 'red',
+        title: 'Проверка не удалась',
+        message: error.message,
+        autoClose: 12000,
+      }),
   })
 
   if (query.isLoading) {
@@ -238,6 +252,19 @@ function SettingField({ item, draftValue, onChange, onReset }: FieldProps) {
           только на сервере
         </Badge>
       )}
+      {/* Индикатор «значение задано» живёт в подписи, а не в rightSection поля:
+          там его держит сам Mantine под кнопку показать/скрыть, и подменять её
+          нельзя — иначе секретное поле остаётся в последнем состоянии навсегда. */}
+      {item.secret && (
+        <Badge
+          size="xs"
+          variant="light"
+          color={item.is_set ? 'teal' : 'gray'}
+          leftSection={item.is_set ? <IconCheck size={10} /> : undefined}
+        >
+          {item.is_set ? 'задано' : 'не задано'}
+        </Badge>
+      )}
       {item.source === 'ui' && (
         <Tooltip label="Вернуть значение из переменной окружения или по умолчанию">
           <Button size="compact-xs" variant="subtle" color="gray" onClick={onReset}>
@@ -285,11 +312,14 @@ function SettingField({ item, draftValue, onChange, onReset }: FieldProps) {
       <PasswordInput
         label={label}
         description={description}
-        placeholder={item.is_set ? 'задано, введите новое чтобы изменить' : 'не задано'}
+        // Плейсхолдер обязан различать «на сервере пусто» и «значение есть,
+        // но показать его нельзя»: иначе непонятно, надо ли вообще что-то вводить.
+        placeholder={
+          item.is_set ? 'значение задано — введите новое, чтобы заменить' : 'не задано'
+        }
         value={draftValue ?? ''}
         disabled={locked}
         onChange={(event) => onChange(event.currentTarget.value)}
-        rightSection={item.is_set ? <IconCheck size={14} color="teal" /> : undefined}
       />
     )
   }
