@@ -21,6 +21,7 @@ import {
 } from '@tabler/icons-react'
 import { Link, Route, Routes, useLocation } from 'react-router-dom'
 
+import { Logo } from './components/Logo'
 import { useAuth } from './hooks/useAuth'
 import { LOCALES, useT, type Locale } from './i18n'
 import { CatalogPage } from './pages/CatalogPage'
@@ -129,9 +130,7 @@ export function App() {
                 <IconLayoutSidebar size={18} />
               </ActionIcon>
             </Tooltip>
-            <Text fw={600} size="sm" truncate>
-              Anime365 Downloader
-            </Text>
+            <Logo height={30} />
           </Group>
           <Group gap="xs" wrap="nowrap">
             <Badge variant="light" color="gray" visibleFrom="xs">
@@ -173,9 +172,7 @@ export function App() {
         padding={4}
         withCloseButton={false}
         title={
-          <Text fw={600} size="sm" px={6}>
-            Anime365 Downloader
-          </Text>
+          <Logo height={24} />
         }
         // Затемнение обязательно: без него сквозь меню видно каталог.
         overlayProps={{ backgroundOpacity: 0.55, blur: 2 }}
