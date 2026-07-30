@@ -20,7 +20,9 @@ import { useParams } from 'react-router-dom'
 
 import { ALL_LANGS, usePreferences, type Lang } from '../stores/preferences'
 import { KIND_LABELS, LANG_COLORS, LANG_LABELS, titleApi } from '../api/title'
+import { BindFolderModal } from '../components/BindFolderModal'
 import { ErrorState } from '../components/ErrorState'
+import { MappingPanel } from '../components/MappingPanel'
 import { TranslationGroups } from '../components/TranslationGroups'
 
 export function TitlePage() {
@@ -28,6 +30,7 @@ export function TitlePage() {
   const seriesId = Number(id)
   const { prefs, toggleLang, toggleKind } = usePreferences()
   const [showNonContent, setShowNonContent] = useState(false)
+  const [binding, setBinding] = useState(false)
 
   const query = useQuery({
     queryKey: ['title', seriesId],
@@ -134,6 +137,15 @@ export function TitlePage() {
           ))}
         </Spoiler>
       )}
+
+      {/* Плашка привязки идёт до сводки качества: пользователь должен сначала
+          убедиться, что тайтл сопоставлен с верной папкой. */}
+      <MappingPanel
+        seriesId={series.id}
+        mappings={data.mappings ?? []}
+        local={data.local ?? { coverage: {}, episodes_expected: 0, local_max_episode: 0, has_local_files: false }}
+        onRebind={() => setBinding(true)}
+      />
 
       {data.links.length > 0 && (
         <Group gap="xs">
@@ -262,6 +274,13 @@ export function TitlePage() {
           </Table>
         </Table.ScrollContainer>
       </div>
+
+      <BindFolderModal
+        opened={binding}
+        seriesId={series.id}
+        seriesTitle={primary}
+        onClose={() => setBinding(false)}
+      />
     </Stack>
   )
 }

@@ -18,6 +18,7 @@ from app.services.coverage import (
     build_summary,
     effective_episode_total,
 )
+from app.services.mapping_info import get_local_coverage, get_title_mappings
 
 log = logging.getLogger(__name__)
 
@@ -250,8 +251,16 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
         for t in translations
     ]
 
+    # Плашка привязки: пользователь должен видеть не только «смаплено», но и чем
+    # именно и на какое название — иначе ошибка вскроется только после загрузки
+    # файлов не в ту папку.
+    mappings = get_title_mappings(series_id)
+    local = get_local_coverage(series_id, total)
+
     return {
         "series": series_data,
+        "mappings": mappings,
+        "local": local,
         "titles": titles,
         "all_titles": all_titles,
         "descriptions": descriptions,

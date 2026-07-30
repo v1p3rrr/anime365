@@ -44,7 +44,46 @@ export interface QualitySummary {
   capped_from_4k: boolean
 }
 
+export interface TitleMappingInfo {
+  mapping_id: number
+  folder_id: number
+  rel_path: string
+  root_path: string
+  root_kind: string
+  /** false — том смонтирован только для чтения, загрузки в него невозможны. */
+  writable: boolean
+  season_number: number | null
+  video_count: number
+  size_bytes: number
+  source: string
+  confidence: number
+  matched_on: string | null
+  is_manual: boolean
+  needs_confirmation: boolean
+  /** На какое название из .nfo сматчилось — главное для проверки глазами. */
+  nfo_title: string | null
+  nfo_original_title: string | null
+  nfo_premiered: string | null
+}
+
+export interface RoleCoverage {
+  label: string
+  have: number
+  total: number
+  complete: boolean
+  missing_ranges: string
+}
+
+export interface LocalCoverage {
+  coverage: Record<string, RoleCoverage>
+  episodes_expected: number
+  local_max_episode: number
+  has_local_files: boolean
+}
+
 export interface TitlePageData {
+  mappings: TitleMappingInfo[]
+  local: LocalCoverage
   series: {
     id: number
     type: string
@@ -80,6 +119,7 @@ export const titleApi = {
   page: (id: number, refresh = false) =>
     api.get<TitlePageData>(`/series/${id}${refresh ? '?refresh=true' : ''}`),
   embed: (translationId: number) => api.get<EmbedInfo>(`/translations/${translationId}/embed`),
+  unbind: (mappingId: number) => api.del<{ deleted: number }>(`/library/mappings/${mappingId}`),
 }
 
 export const LANG_LABELS: Record<string, string> = {
