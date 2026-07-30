@@ -25,6 +25,7 @@ import {
   IconRefresh,
 } from '@tabler/icons-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import {
@@ -32,11 +33,14 @@ import {
   libraryApi,
   SOURCE_COLORS,
   SOURCE_LABELS,
+  type UnmappedFolder,
 } from '../api/library'
 import { ErrorState } from '../components/ErrorState'
+import { MapFolderModal } from '../components/MapFolderModal'
 
 export function LibraryPage() {
   const queryClient = useQueryClient()
+  const [mappingFolder, setMappingFolder] = useState<UnmappedFolder | null>(null)
 
   const status = useQuery({
     queryKey: ['library-status'],
@@ -97,7 +101,7 @@ export function LibraryPage() {
                 идёт сканирование
               </Text>
             </Group>
-          ) : data?.watcher.state === 'active' ? (
+          ) : data?.watcher?.state === 'active' ? (
             <Tooltip
               label={`Отслеживается ${data.watcher.directories} каталогов, событий: ${data.watcher.events_seen}`}
             >
@@ -124,7 +128,7 @@ export function LibraryPage() {
 
       {/* Молчаливый откат на расписание — худший вариант: пользователь будет
           думать, что изменения подхватываются сразу, а они не подхватываются. */}
-      {data?.watcher.state === 'fallback' && (
+      {data?.watcher?.state === 'fallback' && (
         <Alert color="yellow" title="Изменения отслеживаются по расписанию" icon={<IconClock size={18} />}>
           {data.watcher.reason}. Библиотека всё равно обновляется, но не мгновенно —
           по расписанию сверочного сканирования. Уменьшите интервал в настройках либо
@@ -236,6 +240,7 @@ export function LibraryPage() {
                   <Table.Th w={200}>Название из .nfo</Table.Th>
                   <Table.Th w={80}>Видео</Table.Th>
                   <Table.Th w={90}>Размер</Table.Th>
+                  <Table.Th w={120}>Действие</Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -258,6 +263,11 @@ export function LibraryPage() {
                     </Table.Td>
                     <Table.Td>{folder.video_count || '—'}</Table.Td>
                     <Table.Td>{formatBytes(folder.size_bytes)}</Table.Td>
+                    <Table.Td>
+                      <Button size="compact-xs" onClick={() => setMappingFolder(folder)}>
+                        Привязать
+                      </Button>
+                    </Table.Td>
                   </Table.Tr>
                 ))}
               </Table.Tbody>
@@ -352,6 +362,8 @@ export function LibraryPage() {
           )}
         </Tabs.Panel>
       </Tabs>
+
+      <MapFolderModal folder={mappingFolder} onClose={() => setMappingFolder(null)} />
     </Stack>
   )
 }

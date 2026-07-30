@@ -106,21 +106,48 @@ def unmapped_folders(
 
         rows = session.execute(stmt.order_by(LibraryFolder.video_count.desc()).limit(limit)).all()
 
-        return [
-            {
-                "folder_id": folder.id,
-                "name": folder.name,
-                "rel_path": folder.rel_path,
-                "root_kind": root.kind,
-                "season_number": folder.season_number,
-                "video_count": folder.video_count,
-                "size_bytes": folder.size_bytes,
-                "nfo_title": (folder.nfo or {}).get("title"),
-                "nfo_year": (folder.nfo or {}).get("year"),
-                "has_nfo": bool(folder.nfo),
+        # Названия родительских папок нужны, чтобы подсказать поиск для сезонных
+        # подпапок: искать по «Season 1» бессмысленно, искать надо по тайтлу.
+        parent_ids = {f.parent_id for f, _ in rows if f.parent_id}
+        parents: dict[int, LibraryFolder] = {}
+        if parent_ids:
+            parents = {
+                p.id: p
+                for p in session.execute(
+                    select(LibraryFolder).where(LibraryFolder.id.in_(parent_ids))
+                ).scalars()
             }
-            for folder, root in rows
-        ]
+
+        result = []
+        for folder, root in rows:
+            parent = parents.get(folder.parent_id) if folder.parent_id else None
+            own_title = (folder.nfo or {}).get("title")
+            parent_title = (parent.nfo or {}).get("title") if parent and parent.nfo else None
+
+            # Для сезонной подпапки собственное название — это «Season 2»,
+            # поэтому в подсказку идёт название родителя.
+            if parent is not None:
+                hint = parent_title or parent.name
+            else:
+                hint = own_title or folder.name
+
+            result.append(
+                {
+                    "folder_id": folder.id,
+                    "name": folder.name,
+                    "rel_path": folder.rel_path,
+                    "root_kind": root.kind,
+                    "season_number": folder.season_number,
+                    "video_count": folder.video_count,
+                    "size_bytes": folder.size_bytes,
+                    "nfo_title": own_title,
+                    "nfo_year": (folder.nfo or {}).get("year"),
+                    "has_nfo": bool(folder.nfo),
+                    "parent_name": parent.name if parent else None,
+                    "search_hint": hint,
+                }
+            )
+        return result
 
 
 @router.get("/unmatched-files")

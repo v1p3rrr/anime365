@@ -25,7 +25,8 @@ export interface WatcherStatus {
 
 export interface LibraryStatus {
   scanning: boolean
-  watcher: WatcherStatus
+  /** Может отсутствовать, если сервер старее фронтенда — обращаться только через ?. */
+  watcher?: WatcherStatus
   roots: LibraryRootInfo[]
   folders_total: number
   folders_mapped: number
@@ -51,6 +52,10 @@ export interface UnmappedFolder {
   nfo_title: string | null
   nfo_year: number | null
   has_nfo: boolean
+  parent_name: string | null
+  /** Чем осмысленно заполнить поиск: для сезонной подпапки — название тайтла,
+   *  а не «Season 2». */
+  search_hint: string | null
 }
 
 export interface MappingRow {

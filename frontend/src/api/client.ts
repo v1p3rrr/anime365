@@ -54,6 +54,7 @@ export interface CatalogCard {
   type: string
   type_title: string
   year: number | null
+  /** Строка вида «Осень 2015» — она же используется при разведении сезонов. */
   season: string | null
   number_of_episodes: number
   poster_url_small: string | null
