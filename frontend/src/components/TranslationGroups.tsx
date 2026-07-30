@@ -111,15 +111,17 @@ function AuthorTable({
   seriesUrl: string | null
   contentEpisodes: Set<number>
 }) {
+  const { t } = useT()
+
   return (
     <Table.ScrollContainer minWidth={560}>
       <Table striped highlightOnHover verticalSpacing="xs">
         <Table.Thead>
           <Table.Tr>
-            <Table.Th>Автор</Table.Th>
-            <Table.Th w={190}>Покрытие</Table.Th>
-            <Table.Th w={90}>Качество</Table.Th>
-            <Table.Th w={120}>Действия</Table.Th>
+            <Table.Th>{t('groups.columnAuthor')}</Table.Th>
+            <Table.Th w={190}>{t('groups.columnCoverage')}</Table.Th>
+            <Table.Th w={90}>{t('groups.columnQuality')}</Table.Th>
+            <Table.Th w={120}>{t('groups.columnActions')}</Table.Th>
           </Table.Tr>
         </Table.Thead>
         <Table.Tbody>
@@ -149,6 +151,7 @@ function AuthorRow({
   seriesUrl: string | null
   contentEpisodes: Set<number>
 }) {
+  const { t } = useT()
   // Признак вшитых субтитров и точные ступени качества доступны только через embed —
   // один запрос на перевод. Поэтому тянем по требованию и только для одного
   // представителя группы: у всех переводов автора набор ступеней практически одинаков.
@@ -182,7 +185,7 @@ function AuthorRow({
             )}
             {embedQuery.data && (
               <Badge size="xs" mt={4} color={hardsub ? 'orange' : 'teal'} variant="light">
-                {hardsub ? 'вшитые в видео' : 'отдельный файл'}
+                {hardsub ? t('groups.hardsub') : t('groups.softsub')}
               </Badge>
             )}
             {embedQuery.isError && (
@@ -196,7 +199,7 @@ function AuthorRow({
               <Tooltip
                 multiline
                 w={260}
-                label="Узнать, вшиты ли субтитры в видео или скачиваются отдельным файлом. В каталоге этого признака нет, нужен отдельный запрос — требуется премиум-токен."
+                label={t('groups.checkHardsub')}
               >
                 <Button size="compact-xs" variant="subtle" mt={2} onClick={() => setProbe(true)}>
                   вшитые или файлом?
@@ -218,7 +221,7 @@ function AuthorRow({
 
       <Table.Td>
         {group.max_height_estimate ? (
-          <Tooltip label="Оценка по разрешению исходника. Точные варианты — при загрузке.">
+          <Tooltip label={t('groups.qualityHint')}>
             <Text size="sm">до {Math.min(group.max_height_estimate, 1080)}p</Text>
           </Tooltip>
         ) : (
@@ -238,7 +241,7 @@ function AuthorRow({
             kind={kind as 'voice' | 'sub' | 'raw'}
             contentEpisodes={contentEpisodes}
             disabled={hardsub === true}
-            disabledReason={hardsub ? 'Субтитры вшиты в видео, отдельного файла нет' : undefined}
+            disabledReason={hardsub ? t('groups.hardsubNoFile') : undefined}
           />
           {/* Ведём на страницу конкретного перевода конкретной серии, а не на общую
               страницу тайтла: у строки со сводкой это самая ранняя серия автора. */}
@@ -246,14 +249,16 @@ function AuthorRow({
             <Tooltip
               label={
                 group.first_url
-                  ? `Открыть серию ${group.first_episode ?? ''} этого перевода на сайте`
-                  : 'Открыть страницу тайтла на сайте'
+                  ? t('groups.openEpisode', { episode: group.first_episode ?? '' })
+                  : t('groups.openTitle')
               }
             >
               <Button
                 size="compact-xs"
                 variant="subtle"
-                leftSection={<IconPlayerPlay size={12} />}
+                leftSection={
+                  <IconPlayerPlay size={12} />
+                }
                 component="a"
                 href={group.first_url ?? seriesUrl ?? undefined}
                 target="_blank"

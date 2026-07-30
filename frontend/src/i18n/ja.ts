@@ -201,6 +201,21 @@ export const ja: Dictionary = {
     columnActions: '操作',
   },
 
+  groups: {
+    columnAuthor: '翻訳者',
+    columnCoverage: '収録範囲',
+    columnQuality: '画質',
+    columnActions: '操作',
+    hardsub: '映像に焼き込み',
+    softsub: '別ファイル',
+    checkHardsub:
+      '字幕が映像に焼き込まれているか、別ファイルとして取得できるかを調べます。カタログにこの情報は無く、別途リクエストが必要で、プレミアムトークンが要ります。',
+    qualityHint: 'ソース解像度からの推定です。正確な選択肢はダウンロード時に表示されます。',
+    hardsubNoFile: '字幕は映像に焼き込まれており、別ファイルはありません',
+    openEpisode: 'この翻訳の第 {episode} 話をサイトで開く',
+    openTitle: '作品ページをサイトで開く',
+  },
+
   episode: {
     download: 'ダウンロード',
     noTranslations: '選択した言語の翻訳がありません',
@@ -341,6 +356,10 @@ export const ja: Dictionary = {
     auto: '自動',
     manual: '手動',
     videosCount: '映像 {count} 件',
+    columnNfoTitle: '.nfo の名称',
+    columnVideos: '映像',
+    columnSize: 'サイズ',
+    noNfo: '.nfo なし',
   },
 
   report: {

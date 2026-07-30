@@ -70,13 +70,13 @@ export function LibraryPage() {
   const scan = useMutation({
     mutationFn: libraryApi.scan,
     onSuccess: () => {
-      notifications.show({ color: 'teal', message: 'Сканирование завершено' })
+      notifications.show({ color: 'teal', message: t('library.scanDone') })
       for (const key of ['library-status', 'library-unmapped', 'library-mappings', 'library-unmatched-files']) {
         queryClient.invalidateQueries({ queryKey: [key] })
       }
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: 'Сканирование не удалось', message: error.message }),
+      notifications.show({ color: 'red', title: t('library.scanFailed'), message: error.message }),
   })
 
   const confirm = useMutation({
@@ -88,7 +88,7 @@ export function LibraryPage() {
   })
 
   if (status.isError) {
-    return <ErrorState error={status.error} title="Не удалось получить состояние библиотеки" onRetry={() => status.refetch()} />
+    return <ErrorState error={status.error} title={t('library.statusFailed')} onRetry={() => status.refetch()} />
   }
 
   const data = status.data
@@ -104,20 +104,23 @@ export function LibraryPage() {
     <Stack gap="md" className={scrollClasses.scrollPage}>
       <Group justify="space-between">
         <Group gap="sm" align="center">
-          <Title order={3}>Библиотека</Title>
+          <Title order={3}>{t('library.title')}</Title>
           {data?.scanning ? (
             <Group gap={6}>
               <Loader size="xs" />
               <Text size="xs" c="dimmed">
-                идёт сканирование
+                {t('library.scanning')}
               </Text>
             </Group>
           ) : data?.watcher?.state === 'active' ? (
             <Tooltip
-              label={`Отслеживается ${data.watcher.directories} каталогов, событий: ${data.watcher.events_seen}`}
+              label={t('library.watcherActiveHint', {
+                dirs: data.watcher.directories,
+                events: data.watcher.events_seen,
+              })}
             >
               <Badge size="sm" color="teal" variant="light" leftSection={<IconEye size={12} />}>
-                изменения видны сразу
+                {t('library.watcherActive')}
               </Badge>
             </Tooltip>
           ) : null}
@@ -127,33 +130,29 @@ export function LibraryPage() {
           onClick={() => scan.mutate()}
           loading={scan.isPending || data?.scanning}
         >
-          Сканировать
+          {t('library.scan')}
         </Button>
       </Group>
 
       {missingRoots.map((root) => (
-        <Alert key={root.id} color="red" title="Папка недоступна" icon={<IconAlertTriangle size={18} />}>
-          {root.path} — проверьте, что том примонтирован в контейнер.
+        <Alert key={root.id} color="red" title={t('library.rootMissing')} icon={<IconAlertTriangle size={18} />}>
+          {t('library.rootMissingHint', { path: root.path })}
         </Alert>
       ))}
 
       {/* Молчаливый откат на расписание — худший вариант: пользователь будет
           думать, что изменения подхватываются сразу, а они не подхватываются. */}
       {data?.watcher?.state === 'fallback' && (
-        <Alert color="yellow" title="Изменения отслеживаются по расписанию" icon={<IconClock size={18} />}>
+        <Alert color="yellow" title={t('library.watcherFallback')} icon={<IconClock size={18} />}>
           {/* Причина приходит с сервера строчной: там она — часть строки лога.
               В начале предложения её надо поднять, иначе выглядит как обрывок. */}
-          {capitalize(data.watcher.reason)}. Библиотека всё равно обновляется, но не мгновенно —
-          по расписанию сверочного сканирования. Уменьшите интервал в настройках либо
-          устраните причину.
+          {capitalize(data.watcher.reason)}. {t('library.watcherFallbackHint')}
         </Alert>
       )}
 
       {readOnlyRoots.length > 0 && (
-        <Alert color="yellow" title="Только для чтения" icon={<IconLock size={18} />}>
-          {readOnlyRoots.map((r) => r.path).join(', ')} смонтированы без права записи.
-          Каталог, маппинг и просмотр работают полностью, но загрузка файлов будет недоступна,
-          пока том не перемонтирован на запись.
+        <Alert color="yellow" title={t('library.readOnly')} icon={<IconLock size={18} />}>
+          {t('library.readOnlyHint', { paths: readOnlyRoots.map((r) => r.path).join(', ') })}
         </Alert>
       )}
 
@@ -163,11 +162,11 @@ export function LibraryPage() {
             <Group gap={6} mb={4}>
               <IconFolders size={16} />
               <Text size="sm" fw={600}>
-                {root.kind === 'series' ? 'Сериалы' : 'Фильмы'}
+                {root.kind === 'series' ? t('library.rootSeries') : t('library.rootMovies')}
               </Text>
               {!root.writable && root.available && (
                 <Badge size="xs" color="yellow">
-                  только чтение
+                  {t('library.rootReadOnly')}
                 </Badge>
               )}
             </Group>
@@ -175,7 +174,7 @@ export function LibraryPage() {
               {root.path}
             </Text>
             <Text size="sm" mt={4}>
-              {root.folder_count} папок · {size(root.total_bytes)}
+              {t('library.rootFolders', { count: root.folder_count, size: size(root.total_bytes) })}
             </Text>
           </Card>
         ))}
@@ -187,10 +186,12 @@ export function LibraryPage() {
         <Card withBorder padding="sm" style={{ flexShrink: 0 }}>
           <Group justify="space-between" mb={4}>
             <Text size="sm" fw={600}>
-              Смаплено {data.folders_mapped} из {data.folders_total}
+              {t('library.mapped', { mapped: data.folders_mapped, total: data.folders_total })}
             </Text>
             <Text size="sm" c={data.folders_unmapped > 0 ? 'orange' : 'teal'}>
-              {data.folders_unmapped > 0 ? `без маппинга: ${data.folders_unmapped}` : 'все папки распознаны'}
+              {data.folders_unmapped > 0
+                ? t('library.unmappedCount', { count: data.folders_unmapped })
+                : t('library.allMapped')}
             </Text>
           </Group>
           <Progress value={mappedPercent} color={data.folders_unmapped > 0 ? 'orange' : 'teal'} />
@@ -210,7 +211,7 @@ export function LibraryPage() {
               ) : null
             }
           >
-            Без маппинга
+            {t('library.tabUnmapped')}
           </Tabs.Tab>
           <Tabs.Tab
             value="mappings"
@@ -222,7 +223,7 @@ export function LibraryPage() {
               ) : null
             }
           >
-            Связи
+            {t('library.tabMappings')}
           </Tabs.Tab>
           <Tabs.Tab
             value="files"
@@ -235,16 +236,16 @@ export function LibraryPage() {
               ) : null
             }
           >
-            Файлы без серии
+            {t('library.tabFiles')}
           </Tabs.Tab>
           <Tabs.Tab value="report" leftSection={<IconChartBar size={14} />}>
-            Качество привязок
+            {t('library.tabReport')}
           </Tabs.Tab>
         </Tabs.List>
 
         <Tabs.Panel value="unmapped" pt="sm">
           {unmapped.data?.length === 0 ? (
-            <Alert color="teal">Все папки нашли свой тайтл в каталоге.</Alert>
+            <Alert color="teal">{t('library.allFoldersMapped')}</Alert>
           ) : (
             // На узком экране колонки с фиксированной шириной схлопывались до
             // одного символа. Таблица прокручивается внутри своего контейнера.
@@ -252,11 +253,11 @@ export function LibraryPage() {
             <Table striped highlightOnHover verticalSpacing="xs">
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th>Папка</Table.Th>
-                  <Table.Th w={200}>Название из .nfo</Table.Th>
-                  <Table.Th w={80}>Видео</Table.Th>
-                  <Table.Th w={90}>Размер</Table.Th>
-                  <Table.Th w={120}>Действие</Table.Th>
+                  <Table.Th>{t('library.columnFolder')}</Table.Th>
+                  <Table.Th w={200}>{t('library.columnNfoTitle')}</Table.Th>
+                  <Table.Th w={80}>{t('library.columnVideos')}</Table.Th>
+                  <Table.Th w={90}>{t('library.columnSize')}</Table.Th>
+                  <Table.Th w={120}>{t('library.columnAction')}</Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -266,14 +267,14 @@ export function LibraryPage() {
                       {folder.rel_path}
                       {folder.season_number != null && (
                         <Badge size="xs" ml={6} variant="light">
-                          сезон {folder.season_number}
+                          {t('mapping.seasonNumber', { n: folder.season_number })}
                         </Badge>
                       )}
                     </Table.Td>
                     <Table.Td style={{ wordBreak: 'break-word' }}>
                       {folder.nfo_title ?? (
                         <Text size="xs" c="dimmed">
-                          нет .nfo
+                          {t('library.noNfo')}
                         </Text>
                       )}
                     </Table.Td>
@@ -281,7 +282,7 @@ export function LibraryPage() {
                     <Table.Td>{size(folder.size_bytes)}</Table.Td>
                     <Table.Td>
                       <Button size="compact-xs" onClick={() => setMappingFolder(folder)}>
-                        Привязать
+                        {t('library.bind')}
                       </Button>
                     </Table.Td>
                   </Table.Tr>
@@ -297,10 +298,10 @@ export function LibraryPage() {
           <Table striped highlightOnHover verticalSpacing="xs">
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>Папка</Table.Th>
-                <Table.Th w={240}>Тайтл</Table.Th>
-                <Table.Th w={190}>Чем определено</Table.Th>
-                <Table.Th w={110}>Действие</Table.Th>
+                <Table.Th>{t('library.columnFolder')}</Table.Th>
+                <Table.Th w={240}>{t('library.columnTitle')}</Table.Th>
+                <Table.Th w={190}>{t('library.columnSource')}</Table.Th>
+                <Table.Th w={110}>{t('library.columnAction')}</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -340,11 +341,11 @@ export function LibraryPage() {
                         onClick={() => confirm.mutate(row.id)}
                         loading={confirm.isPending}
                       >
-                        Подтвердить
+                        {t('library.confirm')}
                       </Button>
                     ) : (
                       <Text size="xs" c="dimmed">
-                        {row.is_manual ? 'вручную' : 'авто'}
+                        {row.is_manual ? t('library.manual') : t('library.auto')}
                       </Text>
                     )}
                   </Table.Td>
@@ -357,7 +358,7 @@ export function LibraryPage() {
 
         <Tabs.Panel value="files" pt="sm">
           {unmatchedFiles.data?.length === 0 ? (
-            <Alert color="teal">У всех видеофайлов определён номер серии.</Alert>
+            <Alert color="teal">{t('library.noUnmatchedFiles')}</Alert>
           ) : (
             <>
               <Text size="xs" c="dimmed" mb="xs">
@@ -368,8 +369,8 @@ export function LibraryPage() {
                 <Table striped verticalSpacing="xs">
                   <Table.Thead>
                     <Table.Tr>
-                      <Table.Th>Файл</Table.Th>
-                      <Table.Th w={220}>Папка</Table.Th>
+                      <Table.Th>{t('library.columnFile')}</Table.Th>
+                      <Table.Th w={220}>{t('library.columnFolder')}</Table.Th>
                     </Table.Tr>
                   </Table.Thead>
                   <Table.Tbody>

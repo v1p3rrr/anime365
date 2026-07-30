@@ -55,10 +55,10 @@ export function TitlePage() {
       api.put<unknown>(`/series/${seriesId}/treat-as-movie`, { treat_as_movie: asMovie }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['title', seriesId] })
-      notifications.show({ color: 'teal', message: 'Трактовка тайтла изменена' })
+      notifications.show({ color: 'teal', message: t('title.treatChanged') })
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: 'Не удалось изменить', message: error.message }),
+      notifications.show({ color: 'red', title: t('title.treatFailed'), message: error.message }),
   })
 
   // ffprobe открывает каждый файл, поэтому только по кнопке и только для
@@ -71,19 +71,19 @@ export function TitlePage() {
     onSuccess: (result) => {
       notifications.show({
         color: result.probed ? 'teal' : 'yellow',
-        title: 'Дорожки определены',
+        title: t('title.probeDone'),
         message:
           result.candidates === 0
-            ? 'У всех файлов данные о дорожках уже есть — из .nfo.'
-            : `Обработано ${result.probed} из ${result.candidates}` +
-              (result.failed ? `, не вышло: ${result.failed}` : ''),
+            ? t('title.probeNoCandidates')
+            : t('title.probeResult', { probed: result.probed, total: result.candidates }) +
+              (result.failed ? t('title.probeFailedCount', { count: result.failed }) : ''),
       })
       queryClient.invalidateQueries({ queryKey: ['title', seriesId] })
     },
     onError: (error: Error) =>
       notifications.show({
         color: 'red',
-        title: 'Не удалось определить дорожки',
+        title: t('title.probeFailed'),
         message: error.message,
         autoClose: 12000,
       }),
@@ -100,12 +100,11 @@ export function TitlePage() {
       const allFailed = result.refined === 0 && result.failed > 0
       notifications.show({
         color: allFailed ? 'red' : result.failed ? 'yellow' : 'teal',
-        title: allFailed ? 'Уточнить качество не удалось' : 'Качество уточнено',
+        title: allFailed ? t('title.refineFailed') : t('title.refineDone'),
         message: allFailed
-          ? (result.reason ?? 'Ни одна серия не ответила.') +
-            ' Чаще всего дело в токене: точные ступени отдаются только с активной подпиской.'
-          : `Серий обработано: ${result.refined} из ${result.episodes}` +
-            (result.failed ? `, не удалось: ${result.failed}` : ''),
+          ? (result.reason ?? t('title.refineNoAnswer')) + t('title.refineNoneReason')
+          : t('title.refineResult', { refined: result.refined, total: result.episodes }) +
+            (result.failed ? t('title.refineFailedCount', { count: result.failed }) : ''),
         autoClose: allFailed ? 12000 : 5000,
       })
       queryClient.invalidateQueries({ queryKey: ['title', seriesId] })
@@ -113,7 +112,7 @@ export function TitlePage() {
     onError: (error: Error) =>
       notifications.show({
         color: 'red',
-        title: 'Не удалось уточнить качество',
+        title: t('title.refineFailed'),
         message: error.message,
         autoClose: 12000,
       }),
@@ -130,8 +129,8 @@ export function TitlePage() {
   if (query.isError || !query.data) {
     return (
       <ErrorState
-        error={query.error ?? new Error('Тайтл не найден')}
-        title="Не удалось загрузить тайтл"
+        error={query.error ?? new Error(t('title.notFound'))}
+        title={t('title.loadFailed')}
         onRetry={() => query.refetch()}
       />
     )
@@ -184,8 +183,8 @@ export function TitlePage() {
             <Tooltip
               label={
                 series.effective_is_movie
-                  ? 'Загрузки уйдут в корень фильмов'
-                  : 'Загрузки уйдут в корень сериалов'
+                  ? t('title.asMovieHint')
+                  : t('title.asSeriesHint')
               }
             >
               <Badge
@@ -194,17 +193,17 @@ export function TitlePage() {
                 style={{ cursor: 'pointer' }}
                 onClick={() => treatAs.mutate(!series.effective_is_movie)}
               >
-                {series.effective_is_movie ? 'как фильм' : 'как сериал'}
-                {series.treat_as_movie != null && ' ·  вручную'}
+                {series.effective_is_movie ? t('title.asMovie') : t('title.asSeries')}
+                {series.treat_as_movie != null && ` · ${t('title.manualMark')}`}
               </Badge>
             </Tooltip>
             <Badge variant="light">{series.type_title}</Badge>
             {series.year && <Badge variant="light">{series.year}</Badge>}
             {series.season && <Badge variant="light">{series.season}</Badge>}
-            {series.is_airing && <Badge color="red">онгоинг</Badge>}
+            {series.is_airing && <Badge color="red">{t('catalog.cardOngoing')}</Badge>}
             {series.mal_score != null && <Badge color="yellow">MAL {series.mal_score}</Badge>}
             <Badge color="gray" variant="outline">
-              серий: {data.total_episodes}
+              {t('title.episodesTotal', { count: data.total_episodes })}
             </Badge>
           </Group>
 
@@ -217,7 +216,7 @@ export function TitlePage() {
           </Group>
 
           {data.all_titles.length > 0 && (
-            <Spoiler maxHeight={0} showLabel="Все названия" hideLabel="Свернуть" mt={4}>
+            <Spoiler maxHeight={0} showLabel={t('title.allTitles')} hideLabel={t('title.collapse')} mt={4}>
               <Text size="xs" c="dimmed">
                 {data.all_titles.join(' · ')}
               </Text>
@@ -229,7 +228,7 @@ export function TitlePage() {
       {data.descriptions.length > 0 && (
         // Высота задана кратной строке (4 × 22px) при явном line-height: иначе
         // обрезка приходится на середину пятой строки и выглядит как поломка.
-        <Spoiler maxHeight={88} showLabel="Читать полностью" hideLabel="Свернуть">
+        <Spoiler maxHeight={88} showLabel={t('title.readMore')} hideLabel={t('title.collapse')}>
           {data.descriptions.map((d, i) => (
             <Text key={i} size="sm" lh="22px" style={{ whiteSpace: 'pre-line' }}>
               {d.value}
@@ -268,9 +267,9 @@ export function TitlePage() {
       <Card withBorder padding="sm">
         <Group justify="space-between" mb={4} wrap="wrap" gap="xs">
           <Text size="sm" fw={600}>
-            Доступное качество
+            {t('title.quality')}
           </Text>
-          <Tooltip label="Определить языки дорожек через ffprobe — для файлов без данных в .nfo">
+          <Tooltip label={t('title.probeHint')}>
             <Button
               size="compact-xs"
               variant="subtle"
@@ -278,55 +277,55 @@ export function TitlePage() {
               onClick={() => probe.mutate()}
               loading={probe.isPending}
             >
-              Дорожки файлов
+              {t('title.probeStreams')}
             </Button>
           </Tooltip>
           {quality.buckets.length > 0 && quality.is_estimate && (
-            <Tooltip label="Запросит точные ступени по одному переводу на серию">
+            <Tooltip label={t('title.refineHint')}>
               <Button
                 size="compact-xs"
                 variant="light"
                 onClick={() => refine.mutate()}
                 loading={refine.isPending}
               >
-                Уточнить качество
+                {t('title.refine')}
               </Button>
             </Tooltip>
           )}
         </Group>
         {quality.buckets.length === 0 ? (
           <Text size="sm" c="dimmed">
-            Нет данных о разрешении.
+            {t('title.qualityNone')}
           </Text>
         ) : quality.uniform ? (
           <Text size="sm">
-            Все серии доступны до <b>{quality.uniform}p</b>
+            {t('title.qualityUniform', { height: quality.uniform })}
           </Text>
         ) : (
           <Stack gap={2}>
             {quality.buckets.map((b) => (
               <Text key={b.height} size="sm">
-                <b>{b.height}p</b> — серии {b.episodes}
+                {t('title.qualityBucket', { height: b.height, episodes: b.episodes })}
               </Text>
             ))}
           </Stack>
         )}
         <Text size="xs" c="dimmed" mt={4}>
           {quality.is_estimate
-            ? 'Оценка по разрешению исходников, без обращения к каждому переводу.'
-            : 'Точные ступени скачивания, полученные по каждой серии.'}
+            ? t('title.qualityEstimate')
+            : t('title.qualityExact')}
           {quality.is_estimate &&
             quality.refined_episodes > 0 &&
-            ` Уточнено серий: ${quality.refined_episodes}.`}
-          {quality.capped_from_4k && ' Исходники есть в 4K, но скачивание ограничено 1080p.'}
-          {quality.unknown_episodes > 0 && ` Без данных: ${quality.unknown_episodes} серий.`}
+            t('title.qualityRefined', { count: quality.refined_episodes })}
+          {quality.capped_from_4k && t('title.qualityCapped4k')}
+          {quality.unknown_episodes > 0 && t('title.qualityUnknown', { count: quality.unknown_episodes })}
         </Text>
       </Card>
 
       <Group gap="md" wrap="wrap">
         <Group gap={6}>
           <Text size="sm" fw={500}>
-            Языки:
+            {t('title.languages')}
           </Text>
           {ALL_LANGS.map((lang: Lang) => (
             <Chip
@@ -343,7 +342,7 @@ export function TitlePage() {
 
         <Group gap={6}>
           <Text size="sm" fw={500}>
-            Типы:
+            {t('title.kinds')}
           </Text>
           {['voice', 'sub', 'raw'].map((kind) => (
             <Chip
@@ -360,7 +359,7 @@ export function TitlePage() {
 
       <div>
         <Title order={5} mb="xs">
-          Переводы за весь тайтл
+          {t('title.translationsAll')}
         </Title>
         <TranslationGroups
           sections={data.summary}
@@ -373,11 +372,11 @@ export function TitlePage() {
 
       <div>
         <Group justify="space-between" align="center" mb="xs">
-          <Title order={5}>Серии</Title>
+          <Title order={5}>{t('title.episodes')}</Title>
           {hiddenCount > 0 && (
             <Switch
               size="xs"
-              label={`Показать трейлеры и рекламу (${hiddenCount})`}
+              label={t('title.showNonContent', { count: hiddenCount })}
               checked={showNonContent}
               onChange={(e) => setShowNonContent(e.currentTarget.checked)}
             />
@@ -392,9 +391,9 @@ export function TitlePage() {
           <Table striped highlightOnHover verticalSpacing="xs">
             <Table.Thead>
               <Table.Tr>
-                <Table.Th w={120}>Серия</Table.Th>
-                <Table.Th w={180}>Есть локально</Table.Th>
-                <Table.Th>Действия</Table.Th>
+                <Table.Th w={120}>{t('title.columnEpisode')}</Table.Th>
+                <Table.Th w={180}>{t('title.columnLocal')}</Table.Th>
+                <Table.Th>{t('title.columnActions')}</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>

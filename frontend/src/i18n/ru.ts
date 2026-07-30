@@ -201,6 +201,21 @@ export const ru = {
     columnActions: 'Действия',
   },
 
+  groups: {
+    columnAuthor: 'Автор',
+    columnCoverage: 'Покрытие',
+    columnQuality: 'Качество',
+    columnActions: 'Действия',
+    hardsub: 'вшитые в видео',
+    softsub: 'отдельный файл',
+    checkHardsub:
+      'Узнать, вшиты ли субтитры в видео или скачиваются отдельным файлом. В каталоге этого признака нет, нужен отдельный запрос — требуется премиум-токен.',
+    qualityHint: 'Оценка по разрешению исходника. Точные варианты — при загрузке.',
+    hardsubNoFile: 'Субтитры вшиты в видео, отдельного файла нет',
+    openEpisode: 'Открыть серию {episode} этого перевода на сайте',
+    openTitle: 'Открыть страницу тайтла на сайте',
+  },
+
   episode: {
     download: 'Скачать',
     noTranslations: 'нет переводов на выбранных языках',
@@ -341,6 +356,10 @@ export const ru = {
     auto: 'авто',
     manual: 'вручную',
     videosCount: '{count} видео',
+    columnNfoTitle: 'Название из .nfo',
+    columnVideos: 'Видео',
+    columnSize: 'Размер',
+    noNfo: 'нет .nfo',
   },
 
   report: {

@@ -8,7 +8,15 @@
  * забытый ключ в переводе становится ошибкой сборки, а не пустотой в интерфейсе.
  */
 
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react'
 
 import { ru } from './ru'
 import { en } from './en'
@@ -95,10 +103,14 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     } catch {
       // Не сохранилось — язык продержится до перезагрузки, это не повод падать.
     }
-    // Атрибут нужен не только для порядка: от него зависят переносы строк
-    // и подбор шрифта, а у японского они заметно отличаются.
-    document.documentElement.lang = next
   }, [])
+
+  // Атрибут нужно выставить и при загрузке страницы, а не только при смене
+  // языка: сохранённый японский иначе рисовался бы с правилами переносов
+  // для русского.
+  useEffect(() => {
+    document.documentElement.lang = locale
+  }, [locale])
 
   const value = useMemo<I18nValue>(() => {
     const dict = DICTIONARIES[locale]

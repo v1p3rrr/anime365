@@ -202,6 +202,21 @@ export const en: Dictionary = {
     columnActions: 'Actions',
   },
 
+  groups: {
+    columnAuthor: 'Author',
+    columnCoverage: 'Coverage',
+    columnQuality: 'Quality',
+    columnActions: 'Actions',
+    hardsub: 'burned into the video',
+    softsub: 'separate file',
+    checkHardsub:
+      'Find out whether the subtitles are burned into the video or downloaded as a separate file. The catalog does not carry this flag — it needs a separate request, which requires a premium token.',
+    qualityHint: 'Estimated from the source resolution. Exact options appear on download.',
+    hardsubNoFile: 'The subtitles are burned into the video, there is no separate file',
+    openEpisode: 'Open episode {episode} of this translation on the site',
+    openTitle: 'Open the title page on the site',
+  },
+
   episode: {
     download: 'Download',
     noTranslations: 'no translations in the selected languages',
@@ -342,6 +357,10 @@ export const en: Dictionary = {
     auto: 'auto',
     manual: 'manual',
     videosCount: '{count} videos',
+    columnNfoTitle: 'Title from .nfo',
+    columnVideos: 'Videos',
+    columnSize: 'Size',
+    noNfo: 'no .nfo',
   },
 
   report: {

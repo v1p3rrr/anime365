@@ -22,6 +22,7 @@ import { useEffect, useState } from 'react'
 
 import { api } from '../api/client'
 import { ErrorState } from '../components/ErrorState'
+import { useT, type TranslationKey } from '../i18n'
 import scrollClasses from './ScrollPage.module.css'
 
 interface SettingItem {
@@ -59,12 +60,6 @@ interface TokenCheck {
   reason: string | null
 }
 
-const SOURCE_LABELS: Record<SettingItem['source'], string> = {
-  default: 'по умолчанию',
-  env: 'из переменной окружения',
-  ui: 'изменено здесь',
-}
-
 const SOURCE_COLORS: Record<SettingItem['source'], string> = {
   default: 'gray',
   env: 'blue',
@@ -73,6 +68,7 @@ const SOURCE_COLORS: Record<SettingItem['source'], string> = {
 
 export function SettingsPage() {
   const queryClient = useQueryClient()
+  const { t } = useT()
   const [draft, setDraft] = useState<Record<string, string>>({})
 
   const query = useQuery({
@@ -94,22 +90,22 @@ export function SettingsPage() {
       if (result.errors.length > 0) {
         notifications.show({
           color: 'red',
-          title: 'Часть настроек не сохранена',
+          title: t('settings.savePartial'),
           message: result.errors.join('; '),
         })
       } else {
-        notifications.show({ color: 'teal', message: 'Настройки сохранены' })
+        notifications.show({ color: 'teal', message: t('settings.saved') })
       }
       queryClient.invalidateQueries({ queryKey: ['settings'] })
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: 'Не удалось сохранить', message: error.message }),
+      notifications.show({ color: 'red', title: t('settings.saveFailed'), message: error.message }),
   })
 
   const reset = useMutation({
     mutationFn: (key: string) => api.post<unknown>(`/settings/reset/${key}`),
     onSuccess: () => {
-      notifications.show({ color: 'teal', message: 'Значение сброшено' })
+      notifications.show({ color: 'teal', message: t('settings.resetDone') })
       queryClient.invalidateQueries({ queryKey: ['settings'] })
     },
   })
@@ -122,20 +118,23 @@ export function SettingsPage() {
         token: draft.access_token?.trim() || null,
       }),
     onSuccess: (result) => {
-      const suffix = result.checked_unsaved ? ' (проверено значение из поля, оно ещё не сохранено)' : ''
+      const suffix = result.checked_unsaved ? t('settings.tokenUnsaved') : ''
       notifications.show({
         color: result.ok ? 'teal' : 'red',
-        title: result.ok ? 'Токен рабочий' : 'Проблема с токеном',
+        title: result.ok ? t('settings.tokenOk') : t('settings.tokenBad'),
         message: result.ok
-          ? `${result.name}, подписка до ${result.premium_until}${suffix}`
-          : (result.reason ?? 'неизвестная причина') + suffix,
+          ? t('settings.tokenOkMessage', {
+              name: result.name ?? '',
+              until: result.premium_until ?? '',
+            }) + suffix
+          : (result.reason ?? t('common.unknown')) + suffix,
         autoClose: result.ok ? 5000 : 12000,
       })
     },
     onError: (error: Error) =>
       notifications.show({
         color: 'red',
-        title: 'Проверка не удалась',
+        title: t('settings.checkFailed'),
         message: error.message,
         autoClose: 12000,
       }),
@@ -148,14 +147,14 @@ export function SettingsPage() {
     onSuccess: (result) =>
       notifications.show({
         color: result.ok ? 'teal' : 'red',
-        title: result.ok ? 'Jellyfin отвечает' : 'Jellyfin не отвечает',
-        message: result.ok ? (result.message ?? '') : (result.reason ?? 'неизвестная причина'),
+        title: result.ok ? t('settings.jellyfinOk') : t('settings.jellyfinBad'),
+        message: result.ok ? (result.message ?? '') : (result.reason ?? t('common.unknown')),
         autoClose: result.ok ? 5000 : 12000,
       }),
     onError: (error: Error) =>
       notifications.show({
         color: 'red',
-        title: 'Проверка не удалась',
+        title: t('settings.checkFailed'),
         message: error.message,
         autoClose: 12000,
       }),
@@ -173,7 +172,7 @@ export function SettingsPage() {
     return (
       <ErrorState
         error={query.error}
-        title="Не удалось загрузить настройки"
+        title={t('settings.loadFailed')}
         onRetry={() => query.refetch()}
       />
     )
@@ -189,30 +188,26 @@ export function SettingsPage() {
       {/* wrap обязателен: на 375px заголовок и кнопка в одну строку не влезают,
           и кнопка уезжала за правый край. */}
       <Group justify="space-between" wrap="wrap" gap="xs">
-        <Title order={3}>Настройки</Title>
+        <Title order={3}>{t('settings.title')}</Title>
         <Button
           leftSection={<IconDeviceFloppy size={16} />}
           onClick={() => save.mutate()}
           loading={save.isPending}
           disabled={!hasChanges}
         >
-          Сохранить{hasChanges ? ` (${Object.keys(draft).length})` : ''}
+          {hasChanges ? t('settings.saveCount', { count: Object.keys(draft).length }) : t('common.save')}
         </Button>
       </Group>
 
       {passwordItem && !passwordItem.is_set && (
-        <Alert color="red" title="Пароль не задан" icon={<IconAlertTriangle size={18} />}>
-          Вход открыт всем, у кого есть доступ к порту. Через интерфейс доступен ваш
-          премиум-токен и запись в файловую систему сервера — задайте пароль, прежде чем
-          выставлять сервис в сеть.
+        <Alert color="red" title={t('settings.noPassword')} icon={<IconAlertTriangle size={18} />}>
+          {t('settings.noPasswordHint')}
         </Alert>
       )}
 
       <Alert color="gray" p="xs">
         <Text size="xs">
-          Значение берётся из первого доступного источника: изменённое здесь, затем переменная
-          окружения из docker-compose, затем значение по умолчанию. У каждой настройки видно,
-          откуда взято действующее значение, и есть сброс.
+          {t('settings.layersHint')}
         </Text>
       </Alert>
 
@@ -227,7 +222,7 @@ export function SettingsPage() {
                 onClick={() => checkJellyfin.mutate()}
                 loading={checkJellyfin.isPending}
               >
-                Проверить Jellyfin
+                {t('settings.testJellyfin')}
               </Button>
             )}
             {group.key === 'api' && (
@@ -237,7 +232,7 @@ export function SettingsPage() {
                 onClick={() => checkToken.mutate()}
                 loading={checkToken.isPending}
               >
-                Проверить токен
+                {t('settings.testToken')}
               </Button>
             )}
           </Group>
@@ -266,20 +261,26 @@ interface FieldProps {
   onReset: () => void
 }
 
+/** «default» → «Default»: ключи словаря именованы sourceDefault/sourceEnv/sourceUi. */
+function sourceSuffix(source: SettingItem['source']): string {
+  return source.charAt(0).toUpperCase() + source.slice(1)
+}
+
 function SettingField({ item, draftValue, onChange, onReset }: FieldProps) {
+  const { t } = useT()
   const label = (
     // wrap, а не nowrap: на узком экране бейджи сжимались до «ПО УМОЛЧА…»
     // и переставали что-либо сообщать. Пусть лучше переносятся на строку ниже.
     <Group gap={6} wrap="wrap">
       <Text size="sm">{item.label}</Text>
-      <Tooltip label={`Переменная окружения: ${item.env}`}>
+      <Tooltip label={t('settings.envVar', { name: item.env })}>
         <Badge size="xs" variant="light" color={SOURCE_COLORS[item.source]}>
-          {SOURCE_LABELS[item.source]}
+          {t(`settings.source${sourceSuffix(item.source)}` as TranslationKey)}
         </Badge>
       </Tooltip>
       {item.server_only && (
         <Badge size="xs" variant="light" color="orange">
-          только на сервере
+          {t('settings.serverOnly')}
         </Badge>
       )}
       {/* Индикатор «значение задано» живёт в подписи, а не в rightSection поля:
@@ -292,11 +293,11 @@ function SettingField({ item, draftValue, onChange, onReset }: FieldProps) {
           color={item.is_set ? 'teal' : 'gray'}
           leftSection={item.is_set ? <IconCheck size={10} /> : undefined}
         >
-          {item.is_set ? 'задано' : 'не задано'}
+          {item.is_set ? t('settings.isSet') : t('settings.notSet')}
         </Badge>
       )}
       {item.source === 'ui' && (
-        <Tooltip label="Вернуть значение из переменной окружения или по умолчанию">
+        <Tooltip label={t('settings.resetHint')}>
           <Button size="compact-xs" variant="subtle" color="gray" onClick={onReset}>
             <IconRotate size={12} />
           </Button>
@@ -345,7 +346,9 @@ function SettingField({ item, draftValue, onChange, onReset }: FieldProps) {
         // Плейсхолдер обязан различать «на сервере пусто» и «значение есть,
         // но показать его нельзя»: иначе непонятно, надо ли вообще что-то вводить.
         placeholder={
-          item.is_set ? 'значение задано — введите новое, чтобы заменить' : 'не задано'
+          item.is_set
+            ? t('settings.secretPlaceholderSet')
+            : t('settings.secretPlaceholderEmpty')
         }
         value={draftValue ?? ''}
         disabled={locked}
