@@ -22,6 +22,7 @@ from app.api import (
     library,
     maintenance,
     settings as settings_api,
+    stream,
     title,
 )
 from app.core import middleware
@@ -76,6 +77,7 @@ app.include_router(library.router, prefix="/api")
 app.include_router(downloads.router, prefix="/api")
 app.include_router(events.router, prefix="/api")
 app.include_router(settings_api.router, prefix="/api")
+app.include_router(stream.router, prefix="/api")
 app.include_router(maintenance.router, prefix="/api")
 
 

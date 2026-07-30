@@ -36,11 +36,20 @@ SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 # всё-таки случится, `img-src` расширен под постеры Anime365.
 CSP = (
     "default-src 'self'; "
-    "script-src 'self'; "
+    # 'wasm-unsafe-eval' нужен рендереру субтитров: ASS отрисовывает libass,
+    # собранный в WebAssembly. Это НЕ 'unsafe-eval' — разрешается только
+    # компиляция wasm, выполнение произвольного JS по-прежнему запрещено.
+    "script-src 'self' 'wasm-unsafe-eval'; "
+    # Рендерер работает в отдельном воркере, чтобы не морозить интерфейс
+    # на тяжёлых кадрах с караоке и надписями.
+    "worker-src 'self' blob:; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: https://smotret-anime.app https://smotret-anime.org "
     "https://smotret-anime.online https://smotret-anime.net; "
     "connect-src 'self'; "
+    # Видео идёт только через наш прокси: прямые ссылки CDN в браузер не
+    # попадают, потому что содержат токен.
+    "media-src 'self' blob:; "
     "font-src 'self' data:; "
     "object-src 'none'; "
     "base-uri 'none'; "

@@ -7,40 +7,14 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
-from pathlib import Path
-
 import pytest
-from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.core.paths import UnsafePathError, resolve_within
 from app.core.security import hash_password, sessions, verify_password
 from app.core.settings_registry import get
 
-# Тестовая БД в отдельном файле: боевую трогать нельзя, а bootstrap создаёт таблицы.
-_tmp_db = Path(tempfile.gettempdir()) / "a365-tests.sqlite3"
-os.environ.setdefault("A365_DB_PATH", str(_tmp_db))
-
-
-@pytest.fixture
-def client():
-    from app.main import app
-
-    with TestClient(app) as test_client:
-        yield test_client
-    settings.set_db_override("ui_password", None)
-    sessions.drop_all()
-
-
-@pytest.fixture
-def with_password():
-    """Включает пароль на время теста, не трогая БД."""
-    settings.set_db_override("ui_password", hash_password("правильный-пароль"))
-    yield
-    settings.set_db_override("ui_password", None)
-    sessions.drop_all()
+# Фикстуры client и with_password — в conftest.py, они нужны нескольким файлам.
 
 
 class TestPasswordStorage:
@@ -142,6 +116,22 @@ class TestSecurityHeaders:
         # Именно этого сочетания быть не должно: с ним CSP не защищает от XSS.
         assert "script-src 'self' 'unsafe-inline'" not in csp
         assert "frame-ancestors 'none'" in csp
+
+    def test_wasm_is_allowed_but_eval_is_not(self, client) -> None:
+        """Рендереру субтитров нужен wasm — но не произвольный eval.
+
+        `'wasm-unsafe-eval'` разрешает только компиляцию WebAssembly. Легко
+        по невнимательности заменить его на `'unsafe-eval'`, и тогда CSP
+        перестанет мешать выполнению произвольного JS.
+        """
+        csp = client.get("/api/health").headers["content-security-policy"]
+        assert "'wasm-unsafe-eval'" in csp
+        assert "'unsafe-eval'" not in csp.replace("'wasm-unsafe-eval'", "")
+
+    def test_media_comes_only_from_us(self, client) -> None:
+        # Прямые ссылки CDN в браузер не попадают: они содержат токен.
+        csp = client.get("/api/health").headers["content-security-policy"]
+        assert "media-src 'self' blob:" in csp
 
     def test_nosniff_and_referrer(self, client) -> None:
         headers = client.get("/api/health").headers

@@ -7,6 +7,7 @@ import {
   IconExternalLink,
   IconLink,
   IconMusic,
+  IconPlayerPlay,
 } from '@tabler/icons-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
@@ -14,6 +15,7 @@ import { useState } from 'react'
 import { downloadsApi, type DownloadKind } from '../api/downloads'
 import { LANG_COLORS, LANG_LABELS, type EpisodeItem, type EpisodeTranslation } from '../api/title'
 import { BindEpisodeModal } from './BindEpisodeModal'
+import { PlayerModal } from './PlayerModal'
 
 interface Props {
   episode: EpisodeItem
@@ -36,6 +38,7 @@ const ROLE_BY_LANG: Record<string, string> = { ru: 'sub_ru', ja: 'sub_ja', en: '
 export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props) {
   const queryClient = useQueryClient()
   const [binding, setBinding] = useState(false)
+  const [playing, setPlaying] = useState(false)
 
   const enqueue = useMutation({
     mutationFn: ({ id, kind }: { id: number; kind: DownloadKind }) =>
@@ -164,6 +167,22 @@ export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props
             </Menu.Dropdown>
           </Menu>
 
+          {/* Плеер идёт до ссылки на сайт: смотреть у себя — основной путь,
+              а сайт остаётся запасным, если браузер не тянет кодек. */}
+          {available.length > 0 && (
+            <Tooltip label="Смотреть здесь">
+              <Button
+                size="compact-xs"
+                variant="light"
+                color="teal"
+                px={6}
+                onClick={() => setPlaying(true)}
+              >
+                <IconPlayerPlay size={12} />
+              </Button>
+            </Tooltip>
+          )}
+
           {/* Отдельная кнопка, а не пункт в общем меню: звук нужен редко, но
               искать его правым кликом или в конце длинного списка переводов
               никто не станет. */}
@@ -229,6 +248,14 @@ export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props
             </Tooltip>
           )}
         </Group>
+
+        <PlayerModal
+          opened={playing}
+          onClose={() => setPlaying(false)}
+          translations={available}
+          episodeLabel={episode.episode_full || episode.episode_int}
+          seriesUrl={seriesUrl}
+        />
 
         {episode.episode_num != null && (
           <BindEpisodeModal
