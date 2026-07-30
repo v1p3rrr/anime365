@@ -66,10 +66,6 @@ export function TitlePage() {
   const contentEpisodes = new Set(
     data.episodes.filter((e) => e.is_content && e.episode_num != null).map((e) => e.episode_num!),
   )
-  // Спешлы и OVA у тайтла есть не всегда — тумблер про них показываем только тогда.
-  const hasExtras = data.episodes.some(
-    (e) => e.is_content && (e.episode_type === 'special' || e.episode_type === 'ova'),
-  )
   const hiddenCount = data.episodes.length - data.episodes.filter((e) => e.is_content).length
 
   return (
@@ -246,7 +242,6 @@ export function TitlePage() {
           kinds={prefs.kinds}
           seriesUrl={series.url}
           contentEpisodes={contentEpisodes}
-          hasExtras={hasExtras}
         />
       </div>
 

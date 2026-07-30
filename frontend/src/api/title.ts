@@ -25,7 +25,9 @@ export interface EpisodeItem {
 export interface AuthorGroup {
   authors: string
   count: number
+  /** Основные серии. Спешлы и OVA лежат отдельно — их берём только по запросу. */
   translation_ids: number[]
+  extra_translation_ids: number[]
   coverage: string
   is_complete: boolean
   max_height_estimate: number | null

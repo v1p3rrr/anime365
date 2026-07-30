@@ -68,10 +68,22 @@ class ScannedFolder:
     mtime: float | None = None
     files: list[ScannedFile] = field(default_factory=list)
     children: list[ScannedFolder] = field(default_factory=list)
+    # Содержимое совпало с тем, что уже лежит в БД: файлы не разбирались повторно,
+    # и переписывать их записи не нужно. Дети при этом всё равно обойдены —
+    # изменение внутри подпапки не меняет mtime родителя.
+    unchanged: bool = False
 
     @property
     def video_count(self) -> int:
         return sum(1 for f in self.files if f.kind == "video" and not f.excluded_reason)
+
+
+@dataclass(frozen=True)
+class FolderState:
+    """Слепок папки из прошлого скана — по нему решаем, изменилась ли она."""
+
+    mtime: float | None
+    file_count: int
 
 
 @dataclass
@@ -142,8 +154,20 @@ def scan_folder(
     rules: RuleSet,
     season_number: int | None = None,
     depth: int = 0,
+    known: dict[str, FolderState] | None = None,
 ) -> ScannedFolder:
-    """Рекурсивно обходит папку тайтла."""
+    """Рекурсивно обходит папку тайтла.
+
+    `known` включает инкрементальный режим: папка, у которой совпали mtime и
+    число файлов, не разбирается повторно. Экономия именно на разборе — XML
+    каждого `.nfo` и цепочка регэкспов на каждое имя; обход каталогов остаётся,
+    иначе изменение в подпапке осталось бы незамеченным (mtime родителя от него
+    не меняется).
+
+    ⚠️ Замена файла на месте под тем же именем mtime папки не меняет и здесь
+    не ловится. Для этого есть сверочный полный скан по расписанию — он ходит
+    без `known`.
+    """
     rel = folder.relative_to(root).as_posix()
     nfo_data: NfoData | None = None
     files: list[ScannedFile] = []
@@ -158,6 +182,26 @@ def scan_folder(
         log.warning("Не удалось прочитать %s: %s", folder, exc)
         return ScannedFolder(rel_path=rel, name=folder.name, season_number=season_number, nfo=None)
 
+    try:
+        current_mtime: float | None = folder.stat().st_mtime
+    except OSError:
+        current_mtime = None
+
+    file_entries = [
+        e
+        for e in entries
+        if e.name not in SKIP_DIR_NAMES and not e.name.startswith(".") and not e.is_dir()
+    ]
+    relevant = [e for e in file_entries if _classify(e.suffix.lower(), rules) is not None]
+
+    previous = (known or {}).get(rel)
+    skip_files = (
+        previous is not None
+        and current_mtime is not None
+        and previous.mtime == current_mtime
+        and previous.file_count == len(relevant)
+    )
+
     for entry in entries:
         if entry.name in SKIP_DIR_NAMES or entry.name.startswith("."):
             continue
@@ -168,9 +212,18 @@ def scan_folder(
             if depth < 2:
                 children.append(
                     scan_folder(
-                        entry, root, scope, rules, _season_from_dir_name(entry.name), depth + 1
+                        entry,
+                        root,
+                        scope,
+                        rules,
+                        _season_from_dir_name(entry.name),
+                        depth + 1,
+                        known,
                     )
                 )
+            continue
+
+        if skip_files:
             continue
 
         try:
@@ -216,20 +269,16 @@ def scan_folder(
 
     _apply_episode_nfo(files, episode_nfo)
 
-    try:
-        mtime = folder.stat().st_mtime
-    except OSError:
-        mtime = None
-
     return ScannedFolder(
         rel_path=rel,
         name=folder.name,
         season_number=season_number,
         nfo=nfo_data,
         size_bytes=size,
-        mtime=mtime,
+        mtime=current_mtime,
         files=files,
         children=children,
+        unchanged=skip_files,
     )
 
 
@@ -279,8 +328,17 @@ def iter_title_folders(root: Path) -> Iterator[Path]:
         yield entry
 
 
-def scan_root(path_str: str, kind: str, rules: RuleSet | None = None) -> RootScanResult:
-    """Сканирует один корень библиотеки."""
+def scan_root(
+    path_str: str,
+    kind: str,
+    rules: RuleSet | None = None,
+    known: dict[str, FolderState] | None = None,
+) -> RootScanResult:
+    """Сканирует один корень библиотеки.
+
+    `known` — слепки папок из прошлого прохода. С ними скан инкрементальный:
+    неизменившиеся папки не разбираются заново. Без них — полный сверочный.
+    """
     rules = rules or get_rules()
     root = Path(path_str)
 
@@ -299,7 +357,7 @@ def scan_root(path_str: str, kind: str, rules: RuleSet | None = None) -> RootSca
 
     scope = "movie" if kind == "movie" else "series"
     folders = [
-        scan_folder(folder, folder.parent, scope, rules)
+        scan_folder(folder, folder.parent, scope, rules, known=known)
         for folder in iter_title_folders(root)
     ]
 

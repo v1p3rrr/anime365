@@ -16,6 +16,10 @@ INTERESTING_LANGS = ("ru", "en", "ja")
 # Типы эпизодов, которые не являются контентом: трейлеры, реклама, промо.
 NON_CONTENT_EPISODE_TYPES = frozenset({"preview", "pv", "cm"})
 
+# Контент, но не основной сезон. Обычно нужны именно основные серии, поэтому
+# в батч спешлы и OVA попадают только по явному согласию пользователя.
+EXTRA_EPISODE_TYPES = frozenset({"special", "ova"})
+
 # Потолок скачивания. Проверено: у источников 2160p ступени download всё равно
 # [1080, 720, 360] — 4K скачать нельзя. Поэтому оценку качества обрезаем здесь же,
 # иначе в сводке отображалось бы «2160p», которого пользователь никогда не получит.
@@ -61,6 +65,10 @@ class AuthorGroup:
 
     authors: str
     translation_ids: list[int] = field(default_factory=list)
+    # Переводы спешлов и OVA лежат отдельно: тумблер «включая спешлы» в батче
+    # обязан менять СОСТАВ задач, а не только своё положение. Разделение делаем
+    # здесь, потому что тип эпизода известен только на сервере.
+    extra_translation_ids: list[int] = field(default_factory=list)
     episode_numbers: list[float] = field(default_factory=list)
     # Максимальная высота исходников этого автора — ОЦЕНКА, не точные ступени.
     max_height: int | None = None
@@ -76,6 +84,7 @@ class AuthorGroup:
             "authors": self.authors,
             "count": len(self.translation_ids),
             "translation_ids": self.translation_ids,
+            "extra_translation_ids": self.extra_translation_ids,
             "coverage": "все серии" if complete else format_ranges(covered),
             "is_complete": complete,
             "max_height_estimate": self.max_height,
@@ -105,7 +114,13 @@ def build_summary(translations: list[dict], total_episodes: int) -> list[dict]:
             group = AuthorGroup(authors=authors)
             bucket[authors] = group
 
-        group.translation_ids.append(item["id"])
+        # Спешлы и OVA — тоже контент, но не основной сезон. Держим их в
+        # отдельном списке, чтобы тумблер в батче реально менял состав задач.
+        if (item.get("episode_type") or "") in EXTRA_EPISODE_TYPES:
+            group.extra_translation_ids.append(item["id"])
+        else:
+            group.translation_ids.append(item["id"])
+
         episode_num = item.get("episode_num")
         if episode_num is not None:
             group.episode_numbers.append(episode_num)

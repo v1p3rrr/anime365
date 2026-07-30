@@ -76,11 +76,15 @@ def library_status() -> dict[str, Any]:
 
 
 @router.post("/scan")
-def start_scan() -> dict[str, Any]:
+def start_scan(
+    full: Annotated[
+        bool, Query(description="Разобрать все папки заново, не полагаясь на mtime")
+    ] = False,
+) -> dict[str, Any]:
     if library_scanner.running:
         raise HTTPException(409, "Сканирование уже идёт")
     try:
-        return library_scanner.scan_all()
+        return library_scanner.scan_all(full=full)
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
 

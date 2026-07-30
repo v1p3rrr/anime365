@@ -178,3 +178,57 @@ class TestQualitySummary:
 )
 def test_resolve_height_table(preferred: int, available: list[int], expected: int) -> None:
     assert resolve_height(preferred, available) == expected
+
+
+class TestExtraEpisodeSplit:
+    """Спешлы и OVA лежат отдельно от основных серий.
+
+    Без разделения тумблер «включая спешлы» в батче был декоративным: он менял
+    своё положение, но в очередь всё равно уходил полный список переводов.
+    """
+
+    @staticmethod
+    def _translation(tid: int, episode_type: str, episode_num: float) -> dict:
+        return {
+            "id": tid,
+            "type_lang": "ru",
+            "type_kind": "voice",
+            "authors_summary": "Студия",
+            "episode_num": episode_num,
+            "episode_type": episode_type,
+        }
+
+    def test_specials_go_to_separate_list(self) -> None:
+        from app.services.coverage import build_summary
+
+        sections = build_summary(
+            [
+                self._translation(1, "tv", 1),
+                self._translation(2, "tv", 2),
+                self._translation(3, "special", 1),
+                self._translation(4, "ova", 1),
+            ],
+            total_episodes=2,
+        )
+        group = sections[0]["groups"][0]
+        assert group["translation_ids"] == [1, 2]
+        assert group["extra_translation_ids"] == [3, 4]
+
+    def test_count_reflects_main_episodes_only(self) -> None:
+        from app.services.coverage import build_summary
+
+        sections = build_summary(
+            [self._translation(1, "tv", 1), self._translation(2, "special", 1)],
+            total_episodes=1,
+        )
+        group = sections[0]["groups"][0]
+        # «Переводов у автора» в батче означает основные серии: спешлы
+        # добавляются только при включённом тумблере.
+        assert group["count"] == 1
+
+    def test_title_without_extras_has_empty_list(self) -> None:
+        from app.services.coverage import build_summary
+
+        sections = build_summary([self._translation(1, "tv", 1)], total_episodes=1)
+        # Пустой список — сигнал UI не показывать тумблер вовсе.
+        assert sections[0]["groups"][0]["extra_translation_ids"] == []

@@ -12,8 +12,6 @@ interface Props {
   kind: 'voice' | 'sub' | 'raw'
   /** Номера серий, которые считаются контентом (без трейлеров и рекламы). */
   contentEpisodes: Set<number>
-  /** Есть ли у тайтла спешлы или OVA — от этого зависит показ тумблера. */
-  hasExtras?: boolean
   disabled?: boolean
   disabledReason?: string
 }
@@ -36,7 +34,6 @@ export function BatchDownload({
   group,
   kind,
   contentEpisodes,
-  hasExtras = false,
   disabled,
   disabledReason,
 }: Props) {
@@ -44,7 +41,10 @@ export function BatchDownload({
   const [height, setHeight] = useState('1080')
   const [includeExtras, setIncludeExtras] = useState(false)
 
-  const ids = group.translation_ids
+  // Тумблер обязан менять состав задач, а не только своё положение: раньше
+  // includeExtras выставлялся, но в батч всё равно уходил полный список.
+  const extras = group.extra_translation_ids ?? []
+  const ids = includeExtras ? [...group.translation_ids, ...extras] : group.translation_ids
 
   const run = useMutation({
     mutationFn: (what: 'video' | 'subtitle' | 'both') =>
@@ -110,12 +110,13 @@ export function BatchDownload({
             />
           )}
 
-          {/* Тумблер показываем только если спешлы и OVA реально есть:
-              иначе он предлагает несуществующий выбор. */}
-          {hasExtras && (
+          {/* Показываем, только если спешлы есть У ЭТОГО автора: у тайтла они
+              могут быть, а у конкретной команды — нет, и тогда тумблер
+              предлагал бы выбор, ничего не меняющий. */}
+          {extras.length > 0 && (
             <Switch
               size="xs"
-              label="Включая спешлы и OVA"
+              label={`Включая спешлы и OVA (${extras.length})`}
               description="По умолчанию только основные серии"
               checked={includeExtras}
               onChange={(event) => setIncludeExtras(event.currentTarget.checked)}

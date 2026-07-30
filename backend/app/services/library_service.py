@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -20,7 +20,13 @@ from app.models.library import (
     TitleMapping,
 )
 from app.services.filename_rules import get_rules
-from app.services.library_scan import RootScanResult, ScannedFolder, scan_root, summarize
+from app.services.library_scan import (
+    FolderState,
+    RootScanResult,
+    ScannedFolder,
+    scan_root,
+    summarize,
+)
 from app.services.matcher import MatchContext, Matcher, SeriesCandidate, TitleIndex
 
 log = logging.getLogger(__name__)
@@ -65,14 +71,24 @@ def _persist_folder(
         existing = LibraryFolder(root_id=root_id, rel_path=folder.rel_path)
         session.add(existing)
 
-    existing.name = folder.name
     existing.parent_id = parent_id
+    existing.scanned_at = datetime.utcnow()
+
+    if folder.unchanged:
+        # Папка не менялась — её файлы уже лежат в БД разобранными. Перезаписать
+        # их пустым списком означало бы стереть библиотеку, поэтому выходим
+        # сразу, обойдя только детей: внутри них изменения возможны.
+        session.flush()
+        for child in folder.children:
+            _persist_folder(session, root_id, child, parent_id=existing.id)
+        return existing
+
+    existing.name = folder.name
     existing.season_number = folder.season_number
     existing.nfo = folder.nfo.to_dict() if folder.nfo else None
     existing.size_bytes = folder.size_bytes
     existing.video_count = folder.video_count
     existing.mtime = folder.mtime
-    existing.scanned_at = datetime.utcnow()
     session.flush()
 
     # Файлы пересобираем целиком: они дешёвые, а отслеживать удаления по одному
@@ -117,7 +133,6 @@ def _persist_root(result: RootScanResult) -> int:
         root.kind = result.kind
         root.is_available = result.is_available
         root.is_writable = result.is_writable
-        root.total_bytes = result.total_bytes
         root.folder_count = len(result.folders)
         root.scanned_at = datetime.utcnow()
         session.flush()
@@ -125,6 +140,16 @@ def _persist_root(result: RootScanResult) -> int:
 
         for folder in result.folders:
             _persist_folder(session, root_id, folder)
+
+        # Размер считаем по БД, а не по результату прохода: при инкрементальном
+        # скане у неизменившихся папок size_bytes в результате нулевой, и корень
+        # «похудел» бы до размера только тех папок, что реально пересканированы.
+        session.flush()
+        root.total_bytes = session.execute(
+            select(func.coalesce(func.sum(LibraryFolder.size_bytes), 0)).where(
+                LibraryFolder.root_id == root_id
+            )
+        ).scalar_one()
 
     return root_id
 
@@ -293,7 +318,13 @@ class LibraryScanner:
     def running(self) -> bool:
         return self._running
 
-    def scan_all(self) -> dict[str, Any]:
+    def scan_all(self, full: bool = False) -> dict[str, Any]:
+        """Сканирует оба корня.
+
+        `full=True` заставляет разобрать каждую папку заново. Инкрементальный
+        режим не видит замену файла на месте под тем же именем — mtime папки от
+        этого не меняется, — поэтому сверочный проход по расписанию идёт полным.
+        """
         if self._running:
             raise RuntimeError("Сканирование уже идёт")
 
@@ -312,20 +343,26 @@ class LibraryScanner:
 
             for kind, key in (("series", "series_root"), ("movie", "movies_root")):
                 path = settings.get_str(key)
-                result = scan_root(path, kind, rules)
-                summary = summarize(result)
+                known = None if full else _known_states(path)
+                result = scan_root(path, kind, rules, known=known)
 
                 if not result.is_available:
                     log.error("Корень %s недоступен: %s", path, result.error)
+                    summary = summarize(result)
                     summary["error"] = result.error
                     stats["roots"].append(summary)
                     continue
 
                 root_id = _persist_root(result)
+                # Сводку берём из БД: при инкременте разобранных файлов в
+                # результате прохода почти нет, а показывать надо всю библиотеку.
+                summary = summarize_from_db(root_id, result)
                 scope = "movie" if kind == "movie" else "series"
                 summary["mapping"] = _map_folders(root_id, index, scope)
                 summary["episode_links"] = _map_episodes(root_id)
                 stats["roots"].append(summary)
+
+            stats["mode"] = "full" if full else "incremental"
         except Exception as exc:
             log.exception("Сканирование библиотеки упало")
             status, error = "failed", str(exc)
@@ -344,3 +381,103 @@ class LibraryScanner:
 
 
 library_scanner = LibraryScanner()
+
+
+def load_folder_states(root_id: int) -> dict[str, FolderState]:
+    """Слепки папок из прошлого прохода — вход для инкрементального скана."""
+    with session_scope() as session:
+        rows = session.execute(
+            select(
+                LibraryFolder.rel_path,
+                LibraryFolder.mtime,
+                func.count(LibraryFile.id),
+            )
+            .join(LibraryFile, LibraryFile.folder_id == LibraryFolder.id, isouter=True)
+            .where(LibraryFolder.root_id == root_id)
+            .group_by(LibraryFolder.id)
+        ).all()
+    return {rel: FolderState(mtime=mtime, file_count=count) for rel, mtime, count in rows}
+
+
+def summarize_from_db(root_id: int, result: RootScanResult) -> dict[str, Any]:
+    """Сводка по содержимому БД, а не по результату прохода.
+
+    При инкрементальном скане неизменившиеся папки не разбираются, и их файлов
+    в результате прохода нет вовсе. Считать сводку по нему означало бы показать
+    «видео: 12» вместо «видео: 2284» сразу после того, как ничего не менялось.
+    БД же содержит полную картину независимо от режима.
+    """
+    with session_scope() as session:
+        folder_ids = select(LibraryFolder.id).where(LibraryFolder.root_id == root_id)
+
+        videos, unmatched, excluded, subs = session.execute(
+            select(
+                func.count().filter(
+                    LibraryFile.kind == "video", LibraryFile.excluded_reason.is_(None)
+                ),
+                func.count().filter(
+                    LibraryFile.kind == "video",
+                    LibraryFile.excluded_reason.is_(None),
+                    LibraryFile.is_unmatched.is_(True),
+                ),
+                func.count().filter(LibraryFile.excluded_reason.is_not(None)),
+                func.count().filter(
+                    LibraryFile.kind == "subtitle", LibraryFile.excluded_reason.is_(None)
+                ),
+            ).where(LibraryFile.folder_id.in_(folder_ids))
+        ).one()
+
+        lang_rows = session.execute(
+            select(LibraryFile.lang, func.count())
+            .where(
+                LibraryFile.folder_id.in_(folder_ids),
+                LibraryFile.kind == "subtitle",
+                LibraryFile.excluded_reason.is_(None),
+            )
+            .group_by(LibraryFile.lang)
+        ).all()
+
+        root = session.get(LibraryRoot, root_id)
+        total_bytes = root.total_bytes if root is not None else 0
+        title_folders = session.execute(
+            select(func.count())
+            .select_from(LibraryFolder)
+            .where(LibraryFolder.root_id == root_id, LibraryFolder.parent_id.is_(None))
+        ).scalar_one()
+
+    return {
+        "path": result.path,
+        "kind": result.kind,
+        "available": result.is_available,
+        "writable": result.is_writable,
+        "title_folders": title_folders,
+        "videos": videos,
+        "unmatched_videos": unmatched,
+        "excluded_files": excluded,
+        "subtitles": subs,
+        "subtitle_languages": {lang or "unknown": count for lang, count in lang_rows},
+        "total_bytes": total_bytes,
+        "rescanned_folders": _count_rescanned(result),
+        "scanned_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _count_rescanned(result: RootScanResult) -> int:
+    """Сколько папок пришлось разобрать заново — видно, работает ли инкремент."""
+
+    def walk(folder: ScannedFolder) -> int:
+        return (0 if folder.unchanged else 1) + sum(walk(c) for c in folder.children)
+
+    return sum(walk(f) for f in result.folders)
+
+
+def _known_states(root_path: str) -> dict[str, FolderState] | None:
+    """Слепки папок корня, если он уже сканировался. Иначе None — полный проход."""
+    with session_scope() as session:
+        root = session.execute(
+            select(LibraryRoot).where(LibraryRoot.path == root_path)
+        ).scalar_one_or_none()
+        if root is None:
+            return None
+        root_id = root.id
+    return load_folder_states(root_id)
