@@ -452,3 +452,76 @@ def delete_episode_mapping(mapping_id: int) -> dict[str, Any]:
             raise HTTPException(404, "Связь не найдена")
         session.delete(mapping)
     return {"deleted": mapping_id}
+
+
+@router.get("/mapping-report")
+def mapping_report() -> dict[str, Any]:
+    """Чем именно смапились папки и с какой уверенностью.
+
+    Нужен, чтобы подкручивать пороги по фактам, а не на глаз: если почти всё
+    легло нечётким совпадением у самой границы, порог стоит поднять; если
+    много неразобранного — опустить.
+    """
+    with session_scope() as session:
+        by_source = session.execute(
+            select(TitleMapping.source, func.count(TitleMapping.id))
+            .group_by(TitleMapping.source)
+            .order_by(func.count(TitleMapping.id).desc())
+        ).all()
+
+        # Гистограмма уверенности по десяткам — точнее здесь не нужно,
+        # а полоса из ста столбиков нечитаема.
+        buckets: dict[str, int] = {}
+        for confidence, count in session.execute(
+            select(TitleMapping.confidence, func.count(TitleMapping.id)).group_by(
+                TitleMapping.confidence
+            )
+        ).all():
+            low = int((confidence or 0) // 10 * 10)
+            key = f"{low}–{min(low + 9, 100)}"
+            buckets[key] = buckets.get(key, 0) + count
+
+        total_folders = session.execute(select(func.count(LibraryFolder.id))).scalar_one()
+        mapped_folders = session.execute(
+            select(func.count(func.distinct(TitleMapping.folder_id)))
+        ).scalar_one()
+        manual = session.execute(
+            select(func.count(TitleMapping.id)).where(TitleMapping.is_manual.is_(True))
+        ).scalar_one()
+        needs_confirmation = session.execute(
+            select(func.count(TitleMapping.id)).where(TitleMapping.needs_confirmation.is_(True))
+        ).scalar_one()
+
+        # Самые слабые связи — с них начинается ручная проверка.
+        weakest = session.execute(
+            select(TitleMapping, LibraryFolder, Series)
+            .join(LibraryFolder, TitleMapping.folder_id == LibraryFolder.id)
+            .join(Series, TitleMapping.series_id == Series.id)
+            .where(TitleMapping.is_manual.is_(False))
+            .order_by(TitleMapping.confidence)
+            .limit(10)
+        ).all()
+
+    return {
+        "by_source": [{"source": source, "count": count} for source, count in by_source],
+        "confidence_buckets": [
+            {"range": key, "count": buckets[key]} for key in sorted(buckets, key=lambda k: -int(k.split("–")[0]))
+        ],
+        "folders_total": total_folders,
+        "folders_mapped": mapped_folders,
+        "folders_unmapped": max(0, total_folders - mapped_folders),
+        "manual": manual,
+        "needs_confirmation": needs_confirmation,
+        "weakest": [
+            {
+                "mapping_id": m.id,
+                "folder": f.rel_path,
+                "series_id": s.id,
+                "series_title": (s.titles or {}).get("romaji") or s.title,
+                "source": m.source,
+                "confidence": m.confidence,
+                "matched_on": m.matched_on,
+            }
+            for m, f, s in weakest
+        ],
+    }

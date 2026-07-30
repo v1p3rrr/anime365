@@ -103,11 +103,32 @@ export const SOURCE_COLORS: Record<string, string> = {
   manual: 'grape',
 }
 
+export interface MappingReport {
+  by_source: Array<{ source: string; count: number }>
+  confidence_buckets: Array<{ range: string; count: number }>
+  folders_total: number
+  folders_mapped: number
+  folders_unmapped: number
+  manual: number
+  needs_confirmation: number
+  /** Самые слабые связи — с них начинается ручная проверка. */
+  weakest: Array<{
+    mapping_id: number
+    folder: string
+    series_id: number
+    series_title: string
+    source: string
+    confidence: number
+    matched_on: string | null
+  }>
+}
+
 export const libraryApi = {
   status: () => api.get<LibraryStatus>('/library/status'),
   scan: () => api.post<Record<string, unknown>>('/library/scan'),
   unmapped: () => api.get<UnmappedFolder[]>('/library/unmapped?only_with_video=false'),
   unmatchedFiles: () => api.get<UnmatchedFile[]>('/library/unmatched-files'),
+  mappingReport: () => api.get<MappingReport>('/library/mapping-report'),
   mappings: () => api.get<MappingRow[]>('/library/mappings'),
   createMapping: (folderId: number, seriesId: number) =>
     api.post<{ id: number }>('/library/mappings', { folder_id: folderId, series_id: seriesId }),

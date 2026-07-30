@@ -16,6 +16,7 @@ import {
 import { notifications } from '@mantine/notifications'
 import {
   IconAlertTriangle,
+  IconChartBar,
   IconClock,
   IconEye,
   IconFolderOff,
@@ -37,6 +38,7 @@ import {
 } from '../api/library'
 import { ErrorState } from '../components/ErrorState'
 import { MapFolderModal } from '../components/MapFolderModal'
+import { MappingReport } from '../components/MappingReport'
 import scrollClasses from './ScrollPage.module.css'
 import pathClasses from '../components/PathLine.module.css'
 
@@ -232,6 +234,9 @@ export function LibraryPage() {
           >
             Файлы без серии
           </Tabs.Tab>
+          <Tabs.Tab value="report" leftSection={<IconChartBar size={14} />}>
+            Качество привязок
+          </Tabs.Tab>
         </Tabs.List>
 
         <Tabs.Panel value="unmapped" pt="sm">
@@ -376,6 +381,10 @@ export function LibraryPage() {
               </Table.ScrollContainer>
             </>
           )}
+        </Tabs.Panel>
+
+        <Tabs.Panel value="report" pt="sm">
+          <MappingReport />
         </Tabs.Panel>
       </Tabs>
 
