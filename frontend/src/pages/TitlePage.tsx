@@ -1,6 +1,7 @@
 import {
   Anchor,
   Badge,
+  Button,
   Card,
   Chip,
   Group,
@@ -12,12 +13,15 @@ import {
   Table,
   Text,
   Title,
+  Tooltip,
 } from '@mantine/core'
 import { IconExternalLink } from '@tabler/icons-react'
-import { useQuery } from '@tanstack/react-query'
+import { notifications } from '@mantine/notifications'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useParams } from 'react-router-dom'
 
+import { api } from '../api/client'
 import { ALL_LANGS, usePreferences, type Lang } from '../stores/preferences'
 import { KIND_LABELS, LANG_COLORS, LANG_LABELS, titleApi } from '../api/title'
 import { BindFolderModal } from '../components/BindFolderModal'
@@ -31,6 +35,7 @@ export function TitlePage() {
   const { id } = useParams()
   const seriesId = Number(id)
   const { prefs, toggleLang, toggleKind } = usePreferences()
+  const queryClient = useQueryClient()
   const [showNonContent, setShowNonContent] = useState(false)
   const [binding, setBinding] = useState(false)
 
@@ -38,6 +43,36 @@ export function TitlePage() {
     queryKey: ['title', seriesId],
     queryFn: () => titleApi.page(seriesId),
     enabled: Number.isFinite(seriesId),
+  })
+
+  const refine = useMutation({
+    mutationFn: () =>
+      api.post<{ episodes: number; refined: number; failed: number; reason: string | null }>(
+        `/series/${seriesId}/refine-quality`,
+      ),
+    onSuccess: (result) => {
+      // Если не вышло вообще ничего, это не «частичный успех», а отказ —
+      // и у него есть конкретная причина, которую сервер уже назвал.
+      const allFailed = result.refined === 0 && result.failed > 0
+      notifications.show({
+        color: allFailed ? 'red' : result.failed ? 'yellow' : 'teal',
+        title: allFailed ? 'Уточнить качество не удалось' : 'Качество уточнено',
+        message: allFailed
+          ? (result.reason ?? 'Ни одна серия не ответила.') +
+            ' Чаще всего дело в токене: точные ступени отдаются только с активной подпиской.'
+          : `Серий обработано: ${result.refined} из ${result.episodes}` +
+            (result.failed ? `, не удалось: ${result.failed}` : ''),
+        autoClose: allFailed ? 12000 : 5000,
+      })
+      queryClient.invalidateQueries({ queryKey: ['title', seriesId] })
+    },
+    onError: (error: Error) =>
+      notifications.show({
+        color: 'red',
+        title: 'Не удалось уточнить качество',
+        message: error.message,
+        autoClose: 12000,
+      }),
   })
 
   if (query.isLoading) {
@@ -170,9 +205,23 @@ export function TitlePage() {
       )}
 
       <Card withBorder padding="sm">
-        <Text size="sm" fw={600} mb={4}>
-          Доступное качество
-        </Text>
+        <Group justify="space-between" mb={4} wrap="wrap" gap="xs">
+          <Text size="sm" fw={600}>
+            Доступное качество
+          </Text>
+          {quality.buckets.length > 0 && quality.is_estimate && (
+            <Tooltip label="Запросит точные ступени по одному переводу на серию">
+              <Button
+                size="compact-xs"
+                variant="light"
+                onClick={() => refine.mutate()}
+                loading={refine.isPending}
+              >
+                Уточнить качество
+              </Button>
+            </Tooltip>
+          )}
+        </Group>
         {quality.buckets.length === 0 ? (
           <Text size="sm" c="dimmed">
             Нет данных о разрешении.
@@ -191,7 +240,12 @@ export function TitlePage() {
           </Stack>
         )}
         <Text size="xs" c="dimmed" mt={4}>
-          Оценка по разрешению исходников, без обращения к каждому переводу.
+          {quality.is_estimate
+            ? 'Оценка по разрешению исходников, без обращения к каждому переводу.'
+            : 'Точные ступени скачивания, полученные по каждой серии.'}
+          {quality.is_estimate &&
+            quality.refined_episodes > 0 &&
+            ` Уточнено серий: ${quality.refined_episodes}.`}
           {quality.capped_from_4k && ' Исходники есть в 4K, но скачивание ограничено 1080p.'}
           {quality.unknown_episodes > 0 && ` Без данных: ${quality.unknown_episodes} серий.`}
         </Text>

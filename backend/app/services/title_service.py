@@ -10,8 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.core.db import session_scope
+from app.core.events import bus
 from app.models.catalog import Episode, Series, Translation, TranslationEmbed
-from app.services.anime365 import Anime365Client
+from app.services.anime365 import Anime365Client, Anime365Error
 from app.services.coverage import (
     NON_CONTENT_EPISODE_TYPES,
     build_quality_summary,
@@ -307,7 +308,9 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
         ],
         "total_episodes": total,
         "summary": build_summary(normalized, total),
-        "quality": build_quality_summary(normalized, total),
+        # Точные ступени берём из кэша embed: если пользователь уже нажимал
+        # «уточнить», сводка обязана показывать факт, а не прежнюю прикидку.
+        "quality": build_quality_summary(normalized, total, exact_heights_for_series(series_id)),
     }
 
 
@@ -349,3 +352,136 @@ async def get_embed(translation_id: int, force: bool = False) -> dict[str, Any]:
         "heights": info.heights,
         "from_cache": False,
     }
+
+
+class QualityRefiner:
+    """Уточнение качества: дотягивает embed по каждой серии тайтла.
+
+    Оценка в сводке строится по `height` исходника и врёт в обе стороны: у
+    источника 528p ступени бывают [720, 360], а у 4K потолок всё равно 1080.
+    Точный набор ступеней есть только в embed, а это ОДИН запрос на перевод.
+
+    Поэтому здесь берётся по одному представителю на серию — перевод с
+    наибольшим исходником, — и уточняются только они. Для тайтла из 28 серий
+    это 28 запросов вместо двух тысяч.
+    """
+
+    def __init__(self) -> None:
+        self._running: set[int] = set()
+
+    def is_running(self, series_id: int) -> bool:
+        return series_id in self._running
+
+    async def run(self, series_id: int) -> dict[str, Any]:
+        if series_id in self._running:
+            raise RuntimeError("Уточнение уже идёт для этого тайтла")
+
+        self._running.add(series_id)
+        try:
+            return await self._refine(series_id)
+        finally:
+            self._running.discard(series_id)
+
+    async def _refine(self, series_id: int) -> dict[str, Any]:
+        representatives = self._pick_representatives(series_id)
+        total = len(representatives)
+        done = failed = 0
+        last_error: str | None = None
+
+        bus.publish("quality_refine", series_id=series_id, done=0, total=total, status="running")
+
+        for episode, translation_id in representatives.items():
+            try:
+                await get_embed(translation_id)
+            except Anime365Error as exc:
+                # Один недоступный перевод не должен прекращать уточнение:
+                # остальные серии всё равно станут точными.
+                failed += 1
+                last_error = str(exc)
+                log.warning("Не удалось уточнить серию %s тайтла %s: %s", episode, series_id, exc)
+            done += 1
+            bus.publish(
+                "quality_refine", series_id=series_id, done=done, total=total, status="running"
+            )
+
+        bus.publish(
+            "quality_refine",
+            series_id=series_id,
+            done=done,
+            total=total,
+            failed=failed,
+            status="done",
+        )
+        # Когда не удалась НИ ОДНА серия, причина почти всегда общая — чаще
+        # всего токен: embed без него отвечает 403. Сообщить «не удалось 28»
+        # без причины означает отправить пользователя гадать.
+        reason = last_error if failed and failed == total else None
+        return {
+            "episodes": total,
+            "refined": done - failed,
+            "failed": failed,
+            "reason": reason,
+        }
+
+    @staticmethod
+    def _pick_representatives(series_id: int) -> dict[float, int]:
+        """По одному переводу на серию — с максимальным исходником.
+
+        Ступени скачивания у разных переводов одной серии различаются, и нас
+        интересует лучшее из доступного, а не среднее.
+        """
+        with session_scope() as session:
+            rows = session.execute(
+                select(Translation.id, Translation.episode_id, Translation.height)
+                .where(Translation.series_id == series_id, Translation.is_active.is_(True))
+            ).all()
+            episodes = {
+                e.id: e.episode_num
+                for e in session.execute(
+                    select(Episode).where(
+                        Episode.series_id == series_id,
+                        Episode.episode_type.not_in(NON_CONTENT_EPISODE_TYPES),
+                    )
+                ).scalars()
+            }
+
+        best: dict[float, tuple[int, int]] = {}
+        for translation_id, episode_id, height in rows:
+            episode_num = episodes.get(episode_id)
+            if episode_num is None:
+                continue
+            current = best.get(episode_num)
+            if current is None or (height or 0) > current[1]:
+                best[episode_num] = (translation_id, height or 0)
+
+        return {episode: pair[0] for episode, pair in sorted(best.items())}
+
+
+quality_refiner = QualityRefiner()
+
+
+def exact_heights_for_series(series_id: int) -> dict[float, list[int]]:
+    """Точные ступени по сериям — из кэша embed, без единого запроса в сеть."""
+    with session_scope() as session:
+        rows = session.execute(
+            select(Translation.episode_id, TranslationEmbed.download_heights)
+            .join(TranslationEmbed, TranslationEmbed.translation_id == Translation.id)
+            .where(Translation.series_id == series_id)
+        ).all()
+        episodes = {
+            e.id: e.episode_num
+            for e in session.execute(
+                select(Episode).where(Episode.series_id == series_id)
+            ).scalars()
+        }
+
+    out: dict[float, list[int]] = {}
+    for episode_id, heights in rows:
+        episode_num = episodes.get(episode_id)
+        if episode_num is None or not heights:
+            continue
+        known = out.setdefault(episode_num, [])
+        for height in heights:
+            if height not in known:
+                known.append(height)
+    return {episode: sorted(heights, reverse=True) for episode, heights in out.items()}

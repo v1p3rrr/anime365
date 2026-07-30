@@ -50,7 +50,10 @@ export interface QualityBucket {
 }
 
 export interface QualitySummary {
+  /** true, пока хоть одна серия не уточнена через embed. */
   is_estimate: boolean
+  /** Сколько серий уже уточнено точными ступенями. */
+  refined_episodes: number
   uniform: number | null
   buckets: QualityBucket[]
   unknown_episodes: number

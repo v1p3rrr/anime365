@@ -232,3 +232,59 @@ class TestExtraEpisodeSplit:
         sections = build_summary([self._translation(1, "tv", 1)], total_episodes=1)
         # Пустой список — сигнал UI не показывать тумблер вовсе.
         assert sections[0]["groups"][0]["extra_translation_ids"] == []
+
+
+class TestQualityRefinement:
+    """Точные ступени из embed перекрывают оценку по разрешению исходника.
+
+    Оценка врёт в обе стороны: у источника 528p ступени бывают [720, 360],
+    у 4K потолок всё равно 1080. Смешивать уточнённые и прикидочные цифры без
+    пометки нельзя — пользователь примет их за факт.
+    """
+
+    @staticmethod
+    def _translations(*pairs: tuple[float, int]) -> list[dict]:
+        return [
+            {"id": i, "episode_num": episode, "height": height, "type_lang": "ru"}
+            for i, (episode, height) in enumerate(pairs, start=1)
+        ]
+
+    def test_without_exact_data_it_is_an_estimate(self) -> None:
+        from app.services.coverage import build_quality_summary
+
+        summary = build_quality_summary(self._translations((1, 1080), (2, 1080)), 2)
+        assert summary["is_estimate"] is True
+        assert summary["refined_episodes"] == 0
+
+    def test_exact_overrides_estimate(self) -> None:
+        from app.services.coverage import build_quality_summary
+
+        # Источник 528p, а реально доступно 720p — оценка обязана уступить.
+        summary = build_quality_summary(self._translations((1, 528)), 1, exact={1: [720, 360]})
+        assert summary["uniform"] == 720
+        assert summary["refined_episodes"] == 1
+        assert summary["is_estimate"] is False
+
+    def test_partial_refinement_stays_marked_as_estimate(self) -> None:
+        from app.services.coverage import build_quality_summary
+
+        summary = build_quality_summary(
+            self._translations((1, 1080), (2, 720)), 2, exact={1: [1080, 720]}
+        )
+        # Уточнена одна серия из двух — сводка всё ещё частично прикидочная.
+        assert summary["is_estimate"] is True
+        assert summary["refined_episodes"] == 1
+
+    def test_4k_source_is_still_capped(self) -> None:
+        from app.services.coverage import build_quality_summary
+
+        summary = build_quality_summary(self._translations((1, 2160)), 1)
+        assert summary["uniform"] == 1080
+        assert summary["capped_from_4k"] is True
+
+    def test_empty_exact_list_does_not_override(self) -> None:
+        from app.services.coverage import build_quality_summary
+
+        # Пустой список ступеней — это «данных нет», а не «доступно 0p».
+        summary = build_quality_summary(self._translations((1, 1080)), 1, exact={1: []})
+        assert summary["uniform"] == 1080

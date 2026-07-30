@@ -160,14 +160,22 @@ def build_summary(translations: list[dict], total_episodes: int) -> list[dict]:
     return out
 
 
-def build_quality_summary(translations: list[dict], total_episodes: int) -> dict:
-    """Оценка доступного качества по сериям — без единого запроса embed.
+def build_quality_summary(
+    translations: list[dict],
+    total_episodes: int,
+    exact: dict[float, list[int]] | None = None,
+) -> dict:
+    """Доступное качество по сериям.
 
-    Опирается на `height` исходника из списочного ответа. Точные ступени скачивания
-    из него не выводятся: встречается и 526 → [478], и 528 → [720, 360], а у 4K-источников
-    потолок всё равно 1080. Поэтому результат помечен как оценка, а уточнение —
-    отдельной кнопкой, которая дотягивает embed по всем эпизодам.
+    По умолчанию это ОЦЕНКА по `height` исходника из списочного ответа: точные
+    ступени скачивания из него не выводятся — встречается и 526 → [478], и
+    528 → [720, 360], а у 4K-источников потолок всё равно 1080.
+
+    `exact` — уже уточнённые кнопкой ступени из кэша embed. Для серий, которые в
+    нём есть, берётся настоящий максимум; остальные остаются оценкой, и сводка
+    честно помечается смешанной.
     """
+    exact = exact or {}
     best_by_episode: dict[float, int] = {}
     had_above_ceiling = False
     for item in translations:
@@ -180,6 +188,11 @@ def build_quality_summary(translations: list[dict], total_episodes: int) -> dict
             height = MAX_DOWNLOAD_HEIGHT
         if height > best_by_episode.get(episode, 0):
             best_by_episode[episode] = height
+
+    # Точные данные перекрывают оценку: ради этого кнопка и нужна.
+    for episode, heights in exact.items():
+        if heights:
+            best_by_episode[episode] = max(heights)
 
     if not best_by_episode:
         return {
@@ -201,8 +214,12 @@ def build_quality_summary(translations: list[dict], total_episodes: int) -> dict
     ]
 
     known = len(best_by_episode)
+    refined = len([e for e in exact if e in best_by_episode])
     return {
-        "is_estimate": True,
+        # Оценка, пока хоть одна серия не уточнена: смешивать точные и
+        # прикидочные цифры без пометки нельзя — пользователь примет их за факт.
+        "is_estimate": refined < known,
+        "refined_episodes": refined,
         # Если качество одинаково у всех серий, UI напишет одной строкой.
         "uniform": buckets[0]["height"] if len(buckets) == 1 else None,
         "buckets": buckets,
