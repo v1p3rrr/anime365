@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import catalog, health, maintenance, title
+from app.api import catalog, health, library, maintenance, title
 from app.core.bootstrap import bootstrap
 from app.core.db import check_connection
 from app.core.logging_setup import setup_logging
@@ -55,6 +55,7 @@ app = FastAPI(
 app.include_router(health.router, prefix="/api")
 app.include_router(catalog.router, prefix="/api")
 app.include_router(title.router, prefix="/api")
+app.include_router(library.router, prefix="/api")
 app.include_router(maintenance.router, prefix="/api")
 
 

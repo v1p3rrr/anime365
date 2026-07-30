@@ -9,6 +9,13 @@ from app.models.catalog import (
     Translation,
     TranslationEmbed,
 )
+from app.models.library import (
+    EpisodeMapping,
+    LibraryFile,
+    LibraryFolder,
+    LibraryRoot,
+    TitleMapping,
+)
 from app.models.settings import DEFAULT_USER_ID, AppSetting, AppUser
 
 __all__ = [
@@ -16,10 +23,15 @@ __all__ = [
     "AppSetting",
     "AppUser",
     "Episode",
+    "EpisodeMapping",
     "Genre",
+    "LibraryFile",
+    "LibraryFolder",
+    "LibraryRoot",
     "ScanRun",
     "Series",
     "SeriesGenre",
+    "TitleMapping",
     "Translation",
     "TranslationEmbed",
 ]

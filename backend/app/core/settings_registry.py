@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
 
@@ -88,8 +88,10 @@ class Setting:
                 f"{self.key}: допустимы только {', '.join(self.choices)}, получено {value!r}"
             )
         if self.type is SettingType.PATH and value:
-            # Пути внутри контейнера всегда POSIX и всегда абсолютные.
-            if not PurePosixPath(str(value)).is_absolute():
+            # В контейнере пути всегда POSIX, но разработка идёт и на Windows,
+            # поэтому абсолютным считаем путь в любой из двух нотаций.
+            text = str(value)
+            if not (PurePosixPath(text).is_absolute() or PureWindowsPath(text).is_absolute()):
                 raise ValidationError(f"{self.key}: путь должен быть абсолютным, получено {value!r}")
         if self.check is not None:
             problem = self.check(value)
