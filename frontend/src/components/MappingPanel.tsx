@@ -16,6 +16,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { formatBytes, SOURCE_COLORS, SOURCE_LABELS } from '../api/library'
 import { titleApi, type LocalCoverage, type TitleMappingInfo } from '../api/title'
+import pathClasses from './PathLine.module.css'
 
 interface Props {
   seriesId: number
@@ -101,7 +102,12 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
             <Group justify="space-between" wrap="nowrap" align="flex-start">
               <div style={{ minWidth: 0 }}>
                 <Group gap={6} wrap="wrap">
-                  <Code style={{ wordBreak: 'break-all' }}>{mapping.rel_path}</Code>
+                  {/* Прокручивается вбок пальцем: перенос по символам рвал
+                      слова посреди («…End/Sea» + «son 01»), а путь читается
+                      слева направо и рваным становится нечитаемым. */}
+                  <Code className={pathClasses.pathLine} title={mapping.rel_path}>
+                    {mapping.rel_path}
+                  </Code>
                   {/* Метку показываем только когда папок несколько: при одной
                       она ничего не сообщает и лишь засоряет плашку. */}
                   {multiple && mapping.is_primary && (

@@ -2,12 +2,14 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import type { CatalogCard as CardData } from '../api/client'
-import { CatalogCard } from './CatalogCard'
+import { CatalogCard, type BadgeKey } from './CatalogCard'
 
 interface Props {
   ids: number[]
   cards: Map<number, CardData>
   onRangeChange: (start: number, end: number) => void
+  /** Какие значки наличия показывать — настройка пользователя из браузера. */
+  visibleBadges: BadgeKey[]
 }
 
 const CARD_MIN_WIDTH = 168
@@ -21,7 +23,7 @@ const cardHeight = (columnWidth: number) => Math.round((columnWidth * 3) / 2) + 
  * Виртуализируем строки, а не отдельные карточки: число колонок зависит от ширины,
  * и построчный подход позволяет пересчитывать раскладку одним измерением контейнера.
  */
-export function CatalogGrid({ ids, cards, onRangeChange }: Props) {
+export function CatalogGrid({ ids, cards, onRangeChange, visibleBadges }: Props) {
   const parentRef = useRef<HTMLDivElement>(null)
   const [columns, setColumns] = useState(1)
   const [columnWidth, setColumnWidth] = useState(CARD_MIN_WIDTH)
@@ -112,7 +114,7 @@ export function CatalogGrid({ ids, cards, onRangeChange }: Props) {
               }}
             >
               {rowIds.map((id) => (
-                <CatalogCard key={id} card={cards.get(id)} />
+                <CatalogCard key={id} card={cards.get(id)} visibleBadges={visibleBadges} />
               ))}
             </div>
           )

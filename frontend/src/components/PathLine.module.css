@@ -1,0 +1,28 @@
+/*
+ * Путь к папке одной строкой с горизонтальной прокруткой.
+ *
+ * Перенос по любому символу (`word-break: break-all`) рвал слова посреди:
+ * «Frieren Beyond Journey's End/Sea» + «son 01». Путь читается слева направо,
+ * и порванное слово в нём хуже, чем необходимость прокрутить.
+ */
+.pathLine {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: nowrap;
+  /* Инерционная прокрутка пальцем на мобильных. */
+  -webkit-overflow-scrolling: touch;
+  /* Прокрутка вбок не должна утаскивать за собой всю страницу. */
+  overscroll-behavior-x: contain;
+}
+
+/* Полоса прокрутки на каждой строке пути — визуальный шум.
+   Прокрутка при этом работает и мышью с зажатым Shift, и пальцем. */
+.pathLine::-webkit-scrollbar {
+  height: 3px;
+}
+
+.pathLine::-webkit-scrollbar-thumb {
+  background: light-dark(var(--mantine-color-gray-4), var(--mantine-color-dark-3));
+  border-radius: 3px;
+}

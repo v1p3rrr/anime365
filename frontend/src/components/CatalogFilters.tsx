@@ -41,6 +41,9 @@ interface Props {
   /** На вкладке онгоингов фильтр «только онгоинги» бессмыслен — он там уже применён. */
   hideAiringToggle?: boolean
   onSearchOnline: () => void
+  /** Значок английских субтитров на карточках — настройка своя у каждого. */
+  showEnBadges: boolean
+  onToggleEnBadges: () => void
 }
 
 const TYPES = [
@@ -62,6 +65,8 @@ export function CatalogFilters({
   onSearchInput,
   hideAiringToggle = false,
   onSearchOnline,
+  showEnBadges,
+  onToggleEnBadges,
 }: Props) {
   const [expanded, setExpanded] = useState(false)
 
@@ -224,6 +229,16 @@ export function CatalogFilters({
             description="Иначе достаточно любого"
             checked={filters.genresAnd ?? false}
             onChange={(e) => patch({ genresAnd: e.currentTarget.checked })}
+          />
+
+          {/* Это не фильтр выборки, а настройка отображения, поэтому она не
+              участвует в счётчике активных фильтров и не сбрасывается вместе
+              с ними: у каждого свой выбор, и он хранится в браузере. */}
+          <Switch
+            label="Значок EN-субтитров"
+            description="На карточках каталога"
+            checked={showEnBadges}
+            onChange={onToggleEnBadges}
           />
         </Group>
 

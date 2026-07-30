@@ -16,6 +16,7 @@ import { useMemo, useState } from 'react'
 
 import { formatBytes, libraryApi } from '../api/library'
 import { ErrorState } from './ErrorState'
+import pathClasses from './PathLine.module.css'
 
 interface Props {
   opened: boolean
@@ -98,7 +99,7 @@ export function BindFolderModal({ opened, seriesId, seriesTitle, onClose }: Prop
               p="xs"
               style={{ borderRadius: 6 }}
             >
-              <Text size="sm" style={{ wordBreak: 'break-word' }}>
+              <Text size="sm" className={pathClasses.pathLine} title={folder.rel_path}>
                 {folder.rel_path}
               </Text>
               <Group gap={6} mt={2}>

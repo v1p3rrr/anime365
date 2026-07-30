@@ -18,16 +18,21 @@ export interface Preferences {
   /** ТЗ: должно быть нельзя выключить все три языка сразу. */
   langs: Lang[]
   kinds: string[]
+  /**
+   * Показывать ли значок английских субтитров на карточках каталога.
+   *
+   * Значка «озвучка по языкам» здесь нет намеренно: у видеофайла роль всегда
+   * `video`, язык дорожки при сопоставлении не сохраняется. Тоггл без данных
+   * был бы обманом — см. claude/08-open-questions.md.
+   */
   showEnBadges: boolean
-  showVoiceBadges: boolean
 }
 
 const DEFAULTS: Preferences = {
   langs: ['ru', 'en', 'ja'],
   kinds: ['voice', 'sub', 'raw'],
-  // По ТЗ значки для англ. субтитров и озвучек по умолчанию выключены.
+  // По ТЗ значок английских субтитров по умолчанию выключен.
   showEnBadges: false,
-  showVoiceBadges: false,
 }
 
 function read<T>(key: string, fallback: T): T {
@@ -53,7 +58,6 @@ export function usePreferences() {
     langs: read('langs', DEFAULTS.langs),
     kinds: read('kinds', DEFAULTS.kinds),
     showEnBadges: read('showEnBadges', DEFAULTS.showEnBadges),
-    showVoiceBadges: read('showVoiceBadges', DEFAULTS.showVoiceBadges),
   }))
 
   useEffect(() => {
@@ -71,6 +75,10 @@ export function usePreferences() {
     })
   }, [])
 
+  const toggleEnBadges = useCallback(() => {
+    setPrefs((prev) => ({ ...prev, showEnBadges: !prev.showEnBadges }))
+  }, [])
+
   const toggleKind = useCallback((kind: string) => {
     setPrefs((prev) => {
       const next = prev.kinds.includes(kind)
@@ -81,5 +89,5 @@ export function usePreferences() {
     })
   }, [])
 
-  return { prefs, setPrefs, toggleLang, toggleKind }
+  return { prefs, setPrefs, toggleLang, toggleKind, toggleEnBadges }
 }

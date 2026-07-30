@@ -19,6 +19,7 @@ import { useEffect, useState } from 'react'
 import { catalogApi } from '../api/client'
 import { libraryApi, type UnmappedFolder } from '../api/library'
 import { ErrorState } from './ErrorState'
+import pathClasses from './PathLine.module.css'
 
 interface Props {
   folder: UnmappedFolder | null
@@ -73,7 +74,7 @@ export function MapFolderModal({ folder, onClose }: Props) {
       {folder && (
         <Stack gap="sm">
           <Alert color="gray" p="xs">
-            <Text size="sm" style={{ wordBreak: 'break-word' }}>
+            <Text size="sm" className={pathClasses.pathLine} title={folder.rel_path}>
               {folder.rel_path}
             </Text>
             <Text size="xs" c="dimmed">

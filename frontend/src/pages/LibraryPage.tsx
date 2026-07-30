@@ -38,6 +38,7 @@ import {
 import { ErrorState } from '../components/ErrorState'
 import { MapFolderModal } from '../components/MapFolderModal'
 import scrollClasses from './ScrollPage.module.css'
+import pathClasses from '../components/PathLine.module.css'
 
 function capitalize(text: string | null | undefined): string {
   return text ? text[0].toUpperCase() + text.slice(1) : ''
@@ -165,7 +166,7 @@ export function LibraryPage() {
                 </Badge>
               )}
             </Group>
-            <Text size="xs" c="dimmed" style={{ wordBreak: 'break-all' }}>
+            <Text size="xs" c="dimmed" className={pathClasses.pathLine} title={root.path}>
               {root.path}
             </Text>
             <Text size="sm" mt={4}>

@@ -4,12 +4,14 @@ import { useQuery } from '@tanstack/react-query'
 import { useCallback, useMemo, useState } from 'react'
 
 import { catalogApi, type CatalogFilters as Filters } from '../api/client'
+import { DEFAULT_BADGES, type BadgeKey } from '../components/CatalogCard'
 import { CatalogFilters } from '../components/CatalogFilters'
 import { CatalogGrid } from '../components/CatalogGrid'
 import { ErrorState } from '../components/ErrorState'
 import { OnlineSearchModal } from '../components/OnlineSearchModal'
 import { SyncIndicator } from '../components/SyncIndicator'
 import { useVirtualCatalog } from '../hooks/useVirtualCatalog'
+import { usePreferences } from '../stores/preferences'
 
 interface Props {
   onlyAiring?: boolean
@@ -24,6 +26,13 @@ export function CatalogPage({ onlyAiring = false }: Props) {
   // экраном полезнее видеть лучшее, а не самое свежедобавленное.
   const [filters, setFilters] = useState<Filters>({ sort: 'score', sortDir: 'desc' })
   const [onlineOpened, { open: openOnline, close: closeOnline }] = useDisclosure(false)
+  const { prefs, toggleEnBadges } = usePreferences()
+
+  // Значок английских субтитров по ТЗ выключен по умолчанию: у большинства
+  // они не нужны, а лишний бейдж на каждой карточке — шум.
+  const visibleBadges: BadgeKey[] = prefs.showEnBadges
+    ? [...DEFAULT_BADGES, 'sub_en']
+    : DEFAULT_BADGES
 
   const effectiveFilters = useMemo<Filters>(
     () => ({
@@ -109,6 +118,8 @@ export function CatalogPage({ onlyAiring = false }: Props) {
         onSearchInput={setSearchInput}
         hideAiringToggle={onlyAiring}
         onSearchOnline={openOnline}
+        showEnBadges={prefs.showEnBadges}
+        onToggleEnBadges={toggleEnBadges}
       />
 
       <OnlineSearchModal
@@ -136,7 +147,12 @@ export function CatalogPage({ onlyAiring = false }: Props) {
       )}
 
       {ids.length > 0 && (
-        <CatalogGrid ids={ids} cards={cards} onRangeChange={handleRangeChange} />
+        <CatalogGrid
+          ids={ids}
+          cards={cards}
+          onRangeChange={handleRangeChange}
+          visibleBadges={visibleBadges}
+        />
       )}
     </Stack>
   )
