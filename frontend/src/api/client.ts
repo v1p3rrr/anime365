@@ -5,6 +5,9 @@
  * это часть защиты от CSRF.
  */
 
+/** Сигнал «сессия больше не действительна» — слушает useAuth. */
+export const UNAUTHORIZED_EVENT = 'a365:unauthorized'
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -33,6 +36,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // Тело может быть не JSON — тогда довольствуемся статусом.
     }
+    if (response.status === 401) {
+      // Сессия истекла посреди работы. Без этого сигнала пользователь увидел бы
+      // «Требуется вход» в каждой карточке вместо формы пароля.
+      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
+    }
     throw new ApiError(response.status, detail)
   }
 
@@ -43,6 +51,8 @@ export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) }),
+  put: <T>(path: string, body?: unknown) =>
+    request<T>(path, { method: 'PUT', body: body === undefined ? undefined : JSON.stringify(body) }),
   del: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
 }
 

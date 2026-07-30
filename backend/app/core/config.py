@@ -126,6 +126,7 @@ class Settings:
                 "env": s.env,
                 "source": resolved.source,
                 "secret": s.secret,
+                "server_only": s.server_only,
                 "choices": list(s.choices) if s.choices else None,
             }
             if s.secret:

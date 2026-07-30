@@ -25,6 +25,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.core.db import session_scope
 from app.core.events import bus
+from app.core.paths import UnsafePathError, resolve_within
 from app.models.catalog import Series, Translation
 from app.models.downloads import ACTIVE_KEY, ACTIVE_STATUSES, DownloadTask, TaskStatus
 from app.models.library import LibraryFile, LibraryFolder, LibraryRoot, TitleMapping
@@ -519,7 +520,8 @@ class DownloadQueue:
                 _finish(task_id, TaskStatus.FAILED, str(exc))
                 return
 
-        await self._postprocess(task_id, tmp_path, Path(root.path) / folder.rel_path, filename)
+        target_dir = resolve_within(root.path, Path(folder.rel_path))
+        await self._postprocess(task_id, tmp_path, target_dir, filename)
 
     def _build_name(
         self, snapshot: dict, folder: LibraryFolder, height: int, extension: str
@@ -559,8 +561,17 @@ class DownloadQueue:
             if db_task is not None:
                 db_task.status = TaskStatus.POSTPROCESSING
 
+        try:
+            # Последний рубеж перед записью. Имя автора перевода приходит из
+            # внешнего API и попадает в имя файла, а корень и rel_path — из БД:
+            # сверяем итог с настроенным корнем, а не доверяем цепочке склеек.
+            destination = resolve_within(target_dir, filename)
+        except UnsafePathError as exc:
+            _fail_with_backoff(task_id, str(exc))
+            log.error("Отклонена запись за пределы библиотеки: %s", exc)
+            return
+
         target_dir.mkdir(parents=True, exist_ok=True)
-        destination = target_dir / filename
 
         try:
             # shutil.move переживает перемещение между дисками, os.rename — нет,

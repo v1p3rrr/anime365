@@ -11,10 +11,11 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
+from app.api.deps import rate_limit
 from app.core.db import session_scope
 from app.models.catalog import Genre, ScanRun, Series, SeriesGenre
 from app.services.anime365 import Anime365Client, Anime365Error
@@ -164,7 +165,12 @@ def catalog_genres() -> list[dict[str, Any]]:
     return [{"id": gid, "title": title, "count": count} for gid, title, count in rows]
 
 
-@router.get("/search-online")
+@router.get(
+    "/search-online",
+    # Каждый вызов — запрос на сайт. Локальный поиск по кэшу лимита не имеет,
+    # он не выходит в сеть; ограничиваем только онлайновый.
+    dependencies=[Depends(rate_limit("search-online", limit=30, window=60))],
+)
 async def search_online(query: Annotated[str, Query(min_length=1, max_length=200)]) -> list[dict]:
     """Поиск прямым запросом на сайт — ловит то, чего ещё нет в локальном кэше."""
     try:

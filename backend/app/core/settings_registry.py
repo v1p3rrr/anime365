@@ -54,6 +54,9 @@ class Setting:
     help_ru: str = ""
     # Секретные значения наружу отдаются только маской и флагом is_set.
     secret: bool = False
+    # Меняется только на сервере (ENV/код). Правка из UI отклоняется —
+    # так устроен allowlist зеркал: иначе подмена значения в браузере даёт SSRF.
+    server_only: bool = False
     # Допустимые значения для ENUM.
     choices: tuple[str, ...] = ()
     # Дополнительная проверка: возвращает None или текст ошибки.
@@ -178,6 +181,7 @@ SETTINGS: tuple[Setting, ...] = (
         group=SettingGroup.API,
         label_ru="Список зеркал (allowlist)",
         help_ru="Через запятую. Задаётся только на сервере: из UI не меняется — это защита от SSRF.",
+        server_only=True,
         check=_check_mirror_list,
     ),
     Setting(

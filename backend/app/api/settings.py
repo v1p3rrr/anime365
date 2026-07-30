@@ -1,0 +1,209 @@
+"""Эндпоинты настроек.
+
+Форма в интерфейсе строится из реестра, а не пишется руками: иначе она разойдётся
+с реальным набором настроек при первом же добавлении параметра.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Body, HTTPException, Request, Response
+from pydantic import BaseModel
+from sqlalchemy import delete
+
+from app.api.auth import issue_session_after_password_change
+from app.core import settings_registry as reg
+from app.core.bootstrap import load_settings_from_db
+from app.core.config import settings
+from app.core.security import HASH_PREFIX, hash_password
+from app.core.settings_registry import ValidationError
+from app.models.settings import AppSetting
+from app.services.anime365 import Anime365Client, Anime365Error
+
+log = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/settings", tags=["settings"])
+
+GROUP_LABELS = {
+    "api": "Anime365",
+    "paths": "Пути",
+    "downloads": "Загрузки",
+    "schedule": "Расписания",
+    "matching": "Сопоставление",
+    "files": "Права на файлы",
+    "security": "Безопасность",
+    "features": "Дополнительно",
+}
+
+# Порядок групп в интерфейсе — от того, что настраивают в первую очередь.
+GROUP_ORDER = tuple(GROUP_LABELS)
+
+
+@router.get("")
+def list_settings() -> dict[str, Any]:
+    """Все настройки с текущими значениями и источником каждого."""
+    items = settings.describe_all()
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        groups.setdefault(item["group"], []).append(item)
+
+    ordered = sorted(groups.items(), key=lambda kv: GROUP_ORDER.index(kv[0]))
+    return {
+        "groups": [
+            {"key": key, "label": GROUP_LABELS.get(key, key), "settings": values}
+            for key, values in ordered
+        ]
+    }
+
+
+class SettingUpdate(BaseModel):
+    key: str
+    value: str
+
+
+def _store(key: str, raw: str) -> None:
+    from app.core.db import session_scope
+
+    with session_scope() as session:
+        row = session.get(AppSetting, key)
+        if row is None:
+            session.add(AppSetting(key=key, value=raw))
+        else:
+            row.value = raw
+
+
+@router.put("")
+def update_settings(
+    updates: Annotated[list[SettingUpdate], Body(embed=True)],
+    request: Request,
+    response: Response,
+) -> dict[str, Any]:
+    """Сохраняет переопределения из интерфейса.
+
+    Значения проходят ту же валидацию, что и переменные окружения: правка на
+    стороне браузера не может протащить недопустимое значение.
+    """
+    applied: list[str] = []
+    errors: list[str] = []
+    password_changed = False
+
+    for update in updates:
+        try:
+            setting = reg.get(update.key)
+        except KeyError:
+            errors.append(f"{update.key}: неизвестная настройка")
+            continue
+
+        if setting.server_only:
+            # Ровно тот случай, ради которого заведён флаг: allowlist зеркал
+            # нельзя расширить из браузера, иначе весь смысл allowlist теряется.
+            errors.append(f"{setting.label_ru}: меняется только на сервере, через переменную окружения")
+            continue
+
+        raw = update.value
+
+        if setting.key == "ui_password":
+            if raw == "":
+                # Пустая строка приходит из формы при каждом сохранении: поле
+                # секретное и не показывает текущее значение. Считаем это
+                # «не трогать», а не «снять пароль» — снятие делается сбросом.
+                continue
+            raw = hash_password(raw)
+            password_changed = True
+        elif setting.secret and raw == "":
+            continue
+
+        try:
+            setting.validate(setting.parse(raw))
+        except ValidationError as exc:
+            errors.append(str(exc))
+            continue
+
+        _store(setting.key, raw)
+        applied.append(setting.key)
+
+    if errors and not applied:
+        raise HTTPException(400, "; ".join(errors))
+
+    # Перечитываем слой БД целиком, чтобы значения применились сразу.
+    load_settings_from_db()
+
+    if password_changed:
+        issue_session_after_password_change(response, request)
+
+    return {"applied": applied, "errors": errors}
+
+
+@router.post("/reset/{key}")
+def reset_setting(key: str, request: Request, response: Response) -> dict[str, Any]:
+    """Убирает переопределение — значение возвращается к переменной окружения."""
+    from app.core.db import session_scope
+
+    try:
+        setting = reg.get(key)
+    except KeyError as exc:
+        raise HTTPException(404, f"Неизвестная настройка {key}") from exc
+
+    with session_scope() as session:
+        session.execute(delete(AppSetting).where(AppSetting.key == key))
+
+    load_settings_from_db()
+
+    if setting.key == "ui_password":
+        issue_session_after_password_change(response, request)
+
+    resolved = settings.resolve(key)
+    return {"key": key, "source": resolved.source}
+
+
+@router.post("/test-token")
+async def test_token() -> dict[str, Any]:
+    """Проверка токена и подписки — единственный способ узнать это заранее.
+
+    Без активной подписки скачивание вернёт HTML-страницу вместо файла, поэтому
+    лучше выяснить проблему здесь, а не на первой загрузке.
+    """
+    if not settings.get_str("access_token"):
+        return {"ok": False, "reason": "Токен не задан"}
+
+    try:
+        async with Anime365Client() as client:
+            me = await client.me()
+    except Anime365Error as exc:
+        return {"ok": False, "reason": f"Anime365 недоступен: {exc}"}
+
+    logged_in = bool(me.get("isLogined"))
+    premium = bool(me.get("isPremium"))
+    return {
+        "ok": logged_in and premium,
+        "logged_in": logged_in,
+        "premium": premium,
+        "name": me.get("name"),
+        "premium_until": me.get("premiumUntil"),
+        "reason": (
+            None
+            if logged_in and premium
+            else "Токен не опознан" if not logged_in else "Подписка неактивна"
+        ),
+    }
+
+
+@router.get("/env-example", response_class=Response)
+def env_example() -> Response:
+    """`.env.example`, сгенерированный из реестра.
+
+    Отдаётся как файл, чтобы содержимое не расходилось с кодом: править его
+    руками нельзя, а копировать из репозитория — лишний шаг при обновлении.
+    """
+    return Response(
+        reg.render_env_example(),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename=".env.example"'},
+    )
+
+
+def password_is_hashed() -> bool:
+    """Диагностика: пароль из ENV лежит в открытом виде, из UI — хешем."""
+    return settings.get_str("ui_password").startswith(HASH_PREFIX)

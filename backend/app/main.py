@@ -13,7 +13,18 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import catalog, downloads, events, health, library, maintenance, title
+from app.api import (
+    auth,
+    catalog,
+    downloads,
+    events,
+    health,
+    library,
+    maintenance,
+    settings as settings_api,
+    title,
+)
+from app.core import middleware
 from app.core.bootstrap import bootstrap
 from app.core.db import check_connection
 from app.core.logging_setup import setup_logging
@@ -55,12 +66,16 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 
+middleware.install(app)
+
 app.include_router(health.router, prefix="/api")
+app.include_router(auth.router, prefix="/api")
 app.include_router(catalog.router, prefix="/api")
 app.include_router(title.router, prefix="/api")
 app.include_router(library.router, prefix="/api")
 app.include_router(downloads.router, prefix="/api")
 app.include_router(events.router, prefix="/api")
+app.include_router(settings_api.router, prefix="/api")
 app.include_router(maintenance.router, prefix="/api")
 
 

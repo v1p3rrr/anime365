@@ -6,10 +6,11 @@ import logging
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
+from app.api.deps import rate_limit
 from app.core.db import session_scope
 from app.models.downloads import ACTIVE_KEY, ACTIVE_STATUSES, DownloadTask, TaskStatus
 from app.models.library import LibraryFolder, LibraryRoot, TitleMapping
@@ -102,7 +103,12 @@ def _series_of(translation_id: int) -> int:
         return translation.series_id if translation else 0
 
 
-@router.post("/batch")
+@router.post(
+    "/batch",
+    # Один батч — до 2000 задач. Десяток таких подряд забьёт диск быстрее,
+    # чем пользователь успеет заметить, поэтому частота ограничена.
+    dependencies=[Depends(rate_limit("batch", limit=20, window=60))],
+)
 def create_batch(payload: BatchRequest) -> dict[str, Any]:
     """Пакетная постановка: «все видео», «все субтитры», «видео и субтитры»."""
     kinds = ["video", "subtitle"] if payload.kind == "both" else [payload.kind]

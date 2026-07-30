@@ -15,12 +15,15 @@ import {
   IconFolders,
   IconLayoutGrid,
   IconLayoutSidebar,
+  IconLogout,
   IconSettings,
 } from '@tabler/icons-react'
 import { Link, Route, Routes, useLocation } from 'react-router-dom'
 
+import { useAuth } from './hooks/useAuth'
 import { CatalogPage } from './pages/CatalogPage'
 import { LibraryPage } from './pages/LibraryPage'
+import { LoginPage } from './pages/LoginPage'
 import { QueuePage } from './pages/QueuePage'
 import { SettingsPage } from './pages/SettingsPage'
 import { TitlePage } from './pages/TitlePage'
@@ -39,6 +42,7 @@ const NARROW = 56
 
 export function App() {
   const { pathname } = useLocation()
+  const auth = useAuth()
   // Свёрнуто по умолчанию: в узком окне развёрнутое меню съедало почти всю ширину.
   const [collapsed, setCollapsed] = useLocalStorage({
     key: 'a365.v1.navCollapsed',
@@ -52,6 +56,12 @@ export function App() {
   const [mobileOpened, { toggle: toggleMobile, close: closeMobile }] = useDisclosure(false)
 
   const width = collapsed ? NARROW : WIDE
+
+  // Пока пароль не введён, приложения нет вовсе: иначе каждая страница успела бы
+  // отправить свои запросы и собрать по 401 в уведомлениях.
+  if (!auth.authenticated) {
+    return <LoginPage onSuccess={auth.refresh} />
+  }
 
   const navItems = (showLabels: boolean, onNavigate?: () => void) =>
     NAV.map(({ to, label, icon: Icon }) => {
@@ -111,9 +121,22 @@ export function App() {
               Anime365 Downloader
             </Text>
           </Group>
-          <Badge variant="light" color="gray" visibleFrom="xs">
-            v0.1.0
-          </Badge>
+          <Group gap="xs" wrap="nowrap">
+            <Badge variant="light" color="gray" visibleFrom="xs">
+              v0.1.0
+            </Badge>
+            {auth.passwordRequired && (
+              <Tooltip label="Выйти">
+                <ActionIcon
+                  variant="subtle"
+                  aria-label="Выйти"
+                  onClick={() => auth.logout().then(auth.refresh)}
+                >
+                  <IconLogout size={18} />
+                </ActionIcon>
+              </Tooltip>
+            )}
+          </Group>
         </Group>
       </AppShell.Header>
 

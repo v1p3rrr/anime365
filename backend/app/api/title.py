@@ -5,14 +5,19 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api.deps import rate_limit
 from app.services.anime365 import Anime365Error, SubscriptionRequired
 from app.services.title_service import build_title_page, get_embed
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["title"])
+
+# embed — один запрос к Anime365 на перевод. При раскрытии больших групп их
+# летит много подряд, но 120 в минуту с запасом покрывают любое ручное раскрытие.
+_embed_limit = Depends(rate_limit("embed", limit=120, window=60))
 
 
 @router.get("/series/{series_id}")
@@ -30,7 +35,7 @@ async def title_page(
     return data
 
 
-@router.get("/translations/{translation_id}/embed")
+@router.get("/translations/{translation_id}/embed", dependencies=[_embed_limit])
 async def translation_embed(
     translation_id: int,
     refresh: Annotated[bool, Query()] = False,
