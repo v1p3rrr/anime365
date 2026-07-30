@@ -16,6 +16,8 @@ import {
 import { notifications } from '@mantine/notifications'
 import {
   IconAlertTriangle,
+  IconClock,
+  IconEye,
   IconFolderOff,
   IconFolders,
   IconLock,
@@ -86,16 +88,24 @@ export function LibraryPage() {
     // прокрутки обрезала нижние карточки.
     <Stack gap="md" style={{ overflowY: 'auto', minHeight: 0 }}>
       <Group justify="space-between">
-        <Group gap="sm" align="baseline">
+        <Group gap="sm" align="center">
           <Title order={3}>Библиотека</Title>
-          {data?.scanning && (
+          {data?.scanning ? (
             <Group gap={6}>
               <Loader size="xs" />
               <Text size="xs" c="dimmed">
                 идёт сканирование
               </Text>
             </Group>
-          )}
+          ) : data?.watcher.state === 'active' ? (
+            <Tooltip
+              label={`Отслеживается ${data.watcher.directories} каталогов, событий: ${data.watcher.events_seen}`}
+            >
+              <Badge size="sm" color="teal" variant="light" leftSection={<IconEye size={12} />}>
+                изменения видны сразу
+              </Badge>
+            </Tooltip>
+          ) : null}
         </Group>
         <Button
           leftSection={<IconRefresh size={16} />}
@@ -111,6 +121,16 @@ export function LibraryPage() {
           {root.path} — проверьте, что том примонтирован в контейнер.
         </Alert>
       ))}
+
+      {/* Молчаливый откат на расписание — худший вариант: пользователь будет
+          думать, что изменения подхватываются сразу, а они не подхватываются. */}
+      {data?.watcher.state === 'fallback' && (
+        <Alert color="yellow" title="Изменения отслеживаются по расписанию" icon={<IconClock size={18} />}>
+          {data.watcher.reason}. Библиотека всё равно обновляется, но не мгновенно —
+          по расписанию сверочного сканирования. Уменьшите интервал в настройках либо
+          устраните причину.
+        </Alert>
+      )}
 
       {readOnlyRoots.length > 0 && (
         <Alert color="yellow" title="Только для чтения" icon={<IconLock size={18} />}>

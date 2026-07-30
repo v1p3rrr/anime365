@@ -12,8 +12,20 @@ export interface LibraryRootInfo {
   scanned_at: string | null
 }
 
+export interface WatcherStatus {
+  /** active — изменения видны сразу; fallback — живём на расписании. */
+  state: 'active' | 'fallback' | 'disabled'
+  reason: string | null
+  watched_roots: string[]
+  directories: number
+  events_seen: number
+  last_event_at: string | null
+  last_rescan_at: string | null
+}
+
 export interface LibraryStatus {
   scanning: boolean
+  watcher: WatcherStatus
   roots: LibraryRootInfo[]
   folders_total: number
   folders_mapped: number

@@ -14,6 +14,7 @@ from app.models.catalog import ScanRun, Series
 from app.models.library import LibraryFile, LibraryFolder, LibraryRoot, TitleMapping
 from app.services.filename_rules import get_rules, parse_filename, reload_rules
 from app.services.library_service import library_scanner
+from app.services.library_watcher import library_watcher
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +38,9 @@ def library_status() -> dict[str, Any]:
 
         return {
             "scanning": library_scanner.running,
+            # Пользователь должен знать, живёт ли библиотека на слежении или на
+            # расписании: молчаливый откат — худший вариант.
+            "watcher": library_watcher.refresh_status().to_dict(),
             "roots": [
                 {
                     "id": r.id,
