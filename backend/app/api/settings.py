@@ -11,7 +11,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, HTTPException, Request, Response
 from pydantic import BaseModel
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.api.auth import issue_session_after_password_change
 from app.core import settings_registry as reg
@@ -19,6 +19,7 @@ from app.core.bootstrap import load_settings_from_db
 from app.core.config import settings
 from app.core.security import HASH_PREFIX, hash_password
 from app.core.settings_registry import ValidationError
+from app.models.catalog import ScanRun
 from app.models.settings import AppSetting
 from app.services.anime365 import Anime365Client, Anime365Error
 
@@ -41,12 +42,60 @@ GROUP_LABELS = {
 GROUP_ORDER = tuple(GROUP_LABELS)
 
 
+# Какая настройка какой историей джоб иллюстрируется.
+HINT_SOURCES = {
+    "catalog_full_refresh_hours": "catalog_full",
+    "catalog_refresh_hours": "catalog_incr",
+    "library_scan_hours": "library",
+}
+
+
+def _live_hints() -> dict[str, str]:
+    """Подсказки по фактическим замерам, а не по числам в тексте справки.
+
+    Раньше в справке стояли конкретные значения («44 запроса, ~32 секунды,
+    29 тысяч тайтлов»). Они верны для одного дня и одной машины: каталог растёт,
+    сеть у всех разная. Показываем последний реальный прогон — он и точнее,
+    и заодно отвечает на вопрос «а когда это вообще запускалось».
+    """
+    from app.core.db import session_scope
+
+    out: dict[str, str] = {}
+    with session_scope() as session:
+        for key, kind in HINT_SOURCES.items():
+            run = session.execute(
+                select(ScanRun)
+                .where(ScanRun.kind == kind, ScanRun.status == "ok")
+                .order_by(ScanRun.finished_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+
+            if run is None or run.finished_at is None:
+                out[key] = "Ещё ни разу не выполнялось."
+                continue
+
+            seconds = (run.finished_at - run.started_at).total_seconds()
+            stats = run.stats or {}
+            # У разных джоб разные ключи, поэтому берём первое осмысленное число.
+            amount = next(
+                (v for k, v in stats.items() if isinstance(v, int) and k != "skipped_junk"),
+                None,
+            )
+            parts = [f"последний прогон {run.finished_at:%d.%m %H:%M}", f"занял {seconds:.0f} с"]
+            if amount is not None:
+                parts.append(f"обработано {amount:,}".replace(",", " "))
+            out[key] = ", ".join(parts).capitalize() + "."
+    return out
+
+
 @router.get("")
 def list_settings() -> dict[str, Any]:
     """Все настройки с текущими значениями и источником каждого."""
     items = settings.describe_all()
+    hints = _live_hints()
     groups: dict[str, list[dict[str, Any]]] = {}
     for item in items:
+        item["hint"] = hints.get(item["key"])
         groups.setdefault(item["group"], []).append(item)
 
     ordered = sorted(groups.items(), key=lambda kv: GROUP_ORDER.index(kv[0]))

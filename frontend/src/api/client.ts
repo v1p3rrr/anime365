@@ -58,6 +58,15 @@ export const api = {
 
 // --- Типы ответов каталога ---
 
+/** Что из тайтла есть локально. `total` уже посчитан на сервере. */
+export interface LocalBadges {
+  total: number
+  video: number
+  sub_ru: number
+  sub_ja: number
+  sub_en: number
+}
+
 export interface CatalogCard {
   id: number
   title_ru: string | null
@@ -71,6 +80,8 @@ export interface CatalogCard {
   poster_url_small: string | null
   mal_score: number | null
   is_airing: boolean
+  /** null — тайтла нет в библиотеке. Это не то же самое, что «есть, но пусто». */
+  local: LocalBadges | null
 }
 
 export interface CatalogIdsResponse {
@@ -111,6 +122,8 @@ export interface CatalogFilters {
   isAiring?: boolean
   /** Минимальная оценка MAL. Тайтлы без оценки при этом фильтре не показываются. */
   scoreFrom?: number
+  /** only — только то, что есть в библиотеке; missing — только чего нет. */
+  local?: 'only' | 'missing'
   sort?: SortField
   sortDir?: 'asc' | 'desc'
 }
@@ -140,6 +153,7 @@ function buildParams(filters: CatalogFilters): string {
   if (filters.season) params.set('season', filters.season)
   if (filters.isAiring !== undefined) params.set('is_airing', String(filters.isAiring))
   if (filters.scoreFrom !== undefined) params.set('score_from', String(filters.scoreFrom))
+  if (filters.local) params.set('local', filters.local)
   if (filters.sort) params.set('sort', filters.sort)
   if (filters.sortDir) params.set('sort_dir', filters.sortDir)
   return params.toString()

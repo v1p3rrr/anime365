@@ -19,6 +19,7 @@ import {
   IconSearch,
   IconSortAscending,
   IconSortDescending,
+  IconWorldSearch,
   IconX,
 } from '@tabler/icons-react'
 import { useState } from 'react'
@@ -39,6 +40,7 @@ interface Props {
   onSearchInput: (value: string) => void
   /** На вкладке онгоингов фильтр «только онгоинги» бессмыслен — он там уже применён. */
   hideAiringToggle?: boolean
+  onSearchOnline: () => void
 }
 
 const TYPES = [
@@ -59,6 +61,7 @@ export function CatalogFilters({
   searchInput,
   onSearchInput,
   hideAiringToggle = false,
+  onSearchOnline,
 }: Props) {
   const [expanded, setExpanded] = useState(false)
 
@@ -105,7 +108,8 @@ export function CatalogFilters({
     (filters.yearFrom !== undefined ? 1 : 0) +
     (filters.yearTo !== undefined ? 1 : 0) +
     (filters.season ? 1 : 0) +
-    (filters.scoreFrom !== undefined ? 1 : 0)
+    (filters.scoreFrom !== undefined ? 1 : 0) +
+    (filters.local ? 1 : 0)
 
   return (
     <>
@@ -124,6 +128,21 @@ export function CatalogFilters({
             ) : null
           }
         />
+
+        {/* Появляется только при непустом запросе: без него искать нечего,
+            а каждый вызов — это запрос на сайт. */}
+        {searchInput.trim().length > 0 && (
+          <Tooltip label="Искать на сайте — ловит то, чего ещё нет в локальном кэше">
+            <ActionIcon
+              variant="default"
+              size="input-sm"
+              onClick={onSearchOnline}
+              aria-label="Искать на сайте"
+            >
+              <IconWorldSearch size={17} />
+            </ActionIcon>
+          </Tooltip>
+        )}
 
         <Tooltip label="Фильтры">
           <Button
@@ -250,6 +269,26 @@ export function CatalogFilters({
               Только онгоинги
             </Chip>
           )}
+
+          {/* Две взаимоисключающие чипсы вместо одной трёхпозиционной: «что уже
+              есть» и «чего не хватает» — разные задачи, и переключаться между
+              ними приходится часто. */}
+          <Chip
+            checked={filters.local === 'only'}
+            onChange={(checked) => patch({ local: checked ? 'only' : undefined })}
+            size="xs"
+            color="teal"
+          >
+            Есть в библиотеке
+          </Chip>
+          <Chip
+            checked={filters.local === 'missing'}
+            onChange={(checked) => patch({ local: checked ? 'missing' : undefined })}
+            size="xs"
+            color="orange"
+          >
+            Нет в библиотеке
+          </Chip>
           {activeCount > 0 && (
             <Button
               size="xs"

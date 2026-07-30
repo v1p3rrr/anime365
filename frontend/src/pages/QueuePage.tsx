@@ -38,6 +38,7 @@ import {
 import { formatBytes } from '../api/library'
 import { ErrorState } from '../components/ErrorState'
 import { useServerEvents, type ServerEvent } from '../hooks/useServerEvents'
+import scrollClasses from './ScrollPage.module.css'
 
 export function QueuePage() {
   const queryClient = useQueryClient()
@@ -135,7 +136,7 @@ export function QueuePage() {
   const postprocessing = counts.postprocessing ?? 0
 
   return (
-    <Stack gap="md" style={{ overflowY: 'auto', minHeight: 0 }}>
+    <Stack gap="md" className={scrollClasses.scrollPage}>
       <Group justify="space-between" wrap="wrap">
         <Group gap="sm" align="center">
           <Title order={3}>Очередь загрузок</Title>

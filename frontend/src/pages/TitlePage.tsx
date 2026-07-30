@@ -25,6 +25,7 @@ import { EpisodeRow } from '../components/EpisodeRow'
 import { ErrorState } from '../components/ErrorState'
 import { MappingPanel } from '../components/MappingPanel'
 import { TranslationGroups } from '../components/TranslationGroups'
+import scrollClasses from './ScrollPage.module.css'
 
 export function TitlePage() {
   const { id } = useParams()
@@ -74,12 +75,14 @@ export function TitlePage() {
   return (
     // Страница длинная: описание, сводка переводов и список серий. Прокрутка
     // должна быть у неё самой, иначе нижние блоки обрезаются.
-    <Stack gap="md" style={{ overflowY: 'auto', minHeight: 0 }}>
+    <Stack gap="md" className={scrollClasses.scrollPage}>
       <Group align="flex-start" wrap="nowrap" gap="md">
         {series.poster_url && (
+          // На 375px постер шириной 180 оставлял под заголовок около 150 пикселей,
+          // и длинные названия ломались посреди слова. Сужаем его на узких экранах.
           <Image
             src={series.poster_url}
-            w={180}
+            w={{ base: 108, sm: 180 }}
             radius="md"
             fit="cover"
             style={{ flexShrink: 0 }}
@@ -132,9 +135,11 @@ export function TitlePage() {
       </Group>
 
       {data.descriptions.length > 0 && (
-        <Spoiler maxHeight={90} showLabel="Читать полностью" hideLabel="Свернуть">
+        // Высота задана кратной строке (4 × 22px) при явном line-height: иначе
+        // обрезка приходится на середину пятой строки и выглядит как поломка.
+        <Spoiler maxHeight={88} showLabel="Читать полностью" hideLabel="Свернуть">
           {data.descriptions.map((d, i) => (
-            <Text key={i} size="sm" style={{ whiteSpace: 'pre-line' }}>
+            <Text key={i} size="sm" lh="22px" style={{ whiteSpace: 'pre-line' }}>
               {d.value}
               {d.source && (
                 <Text component="span" size="xs" c="dimmed">
@@ -168,9 +173,7 @@ export function TitlePage() {
         </Group>
       )}
 
-      {/* flexShrink: 0 — иначе во flex-колонке карточка сжимается и текст
-          обрезается по высоте. */}
-      <Card withBorder padding="sm" style={{ flexShrink: 0 }}>
+      <Card withBorder padding="sm">
         <Text size="sm" fw={600} mb={4}>
           Доступное качество
         </Text>

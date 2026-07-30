@@ -265,3 +265,27 @@ class CatalogSync:
 
 
 catalog_sync = CatalogSync()
+
+
+def cache_series(items: list[dict[str, Any]]) -> set[int]:
+    """Кладёт тайтлы из произвольного ответа API в кэш и обновляет поисковый индекс.
+
+    Нужна онлайн-поиску: страница тайтла работает только с локальной БД, поэтому
+    найденное на сайте надо сначала закэшировать, иначе клик по результату ведёт
+    в никуда.
+
+    Возвращает идентификаторы, которые в кэше уже были, — чтобы UI мог показать,
+    что именно нашлось нового.
+    """
+    if not items:
+        return set()
+
+    ids = [i["id"] for i in items if i.get("id") is not None]
+    with session_scope() as session:
+        known = {
+            row[0] for row in session.execute(select(Series.id).where(Series.id.in_(ids))).all()
+        }
+        _upsert_series(session, items)
+
+    rebuild_fts_for([i["id"] for i in items if not is_junk(i)])
+    return known

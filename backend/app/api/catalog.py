@@ -18,15 +18,27 @@ from sqlalchemy import func, select
 from app.api.deps import rate_limit
 from app.core.db import session_scope
 from app.models.catalog import Genre, ScanRun, Series, SeriesGenre
+from app.models.library import TitleMapping
 from app.services.anime365 import Anime365Client, Anime365Error
-from app.services.catalog_sync import catalog_sync
+from app.services.catalog_sync import cache_series, catalog_sync
 from app.services.fts import search_ids
+from app.services.mapping_info import series_badges
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/catalog", tags=["catalog"])
 
 MAX_CARDS_PER_REQUEST = 200
+
+
+class LocalBadges(BaseModel):
+    """Что из тайтла есть локально. Знаменатель уже посчитан по правилу из ТЗ."""
+
+    total: int = 0
+    video: int = 0
+    sub_ru: int = 0
+    sub_ja: int = 0
+    sub_en: int = 0
 
 
 class CatalogCard(BaseModel):
@@ -41,9 +53,11 @@ class CatalogCard(BaseModel):
     poster_url_small: str | None = None
     mal_score: float | None = None
     is_airing: bool
+    # None означает «тайтла нет в библиотеке» — это не то же самое, что «есть, но пусто».
+    local: LocalBadges | None = None
 
 
-def _card(series: Series) -> CatalogCard:
+def _card(series: Series, badges: dict[str, Any] | None) -> CatalogCard:
     titles = series.titles or {}
     return CatalogCard(
         id=series.id,
@@ -57,6 +71,7 @@ def _card(series: Series) -> CatalogCard:
         poster_url_small=series.poster_url_small,
         mal_score=series.mal_score,
         is_airing=series.is_airing,
+        local=LocalBadges(**badges) if badges else None,
     )
 
 
@@ -76,11 +91,21 @@ def catalog_ids(
         float | None, Query(ge=0, le=10, description="Минимальная оценка MAL")
     ] = None,
     include_hentai: Annotated[bool, Query()] = False,
+    local: Annotated[
+        str | None,
+        Query(pattern="^(only|missing)$", description="only — есть в библиотеке, missing — нет"),
+    ] = None,
     sort: Annotated[str, Query(pattern="^(id|year|score|title)$")] = "id",
     sort_dir: Annotated[str, Query(pattern="^(asc|desc)$")] = "desc",
 ) -> dict[str, Any]:
     """Идентификаторы выборки целиком — фронт строит по ним виртуальный список."""
     stmt = select(Series.id)
+
+    if local is not None:
+        # Множество смапленных тайтлов небольшое (сотни-тысячи), поэтому
+        # подставляем его как подзапрос, а не тянем в память.
+        mapped = select(func.distinct(TitleMapping.series_id))
+        stmt = stmt.where(Series.id.in_(mapped) if local == "only" else Series.id.not_in(mapped))
 
     if not include_hentai:
         stmt = stmt.where(Series.is_hentai.is_(False))
@@ -145,9 +170,13 @@ def catalog_cards(ids: Annotated[list[int], Body(embed=True)]) -> list[CatalogCa
     if len(ids) > MAX_CARDS_PER_REQUEST:
         raise HTTPException(400, f"За раз не более {MAX_CARDS_PER_REQUEST} карточек")
 
+    # Значки считаются только по видимому окну: агрегат по всем 29 тысячам
+    # тайтлов ради сотни карточек — лишняя работа на каждый шаг прокрутки.
+    badges = series_badges(ids)
+
     with session_scope() as session:
         rows = session.execute(select(Series).where(Series.id.in_(ids))).scalars().all()
-        by_id = {s.id: _card(s) for s in rows}
+        by_id = {s.id: _card(s, badges.get(s.id)) for s in rows}
 
     return [by_id[i] for i in ids if i in by_id]
 
@@ -179,6 +208,10 @@ async def search_online(query: Annotated[str, Query(min_length=1, max_length=200
     except Anime365Error as exc:
         raise HTTPException(502, f"Anime365 недоступен: {exc}") from exc
 
+    # Найденное сразу кладём в кэш. Иначе клик по результату вёл бы на 404:
+    # страница тайтла работает только с тем, что есть в локальной БД.
+    known = cache_series(found)
+
     return [
         {
             "id": item.get("id"),
@@ -187,6 +220,8 @@ async def search_online(query: Annotated[str, Query(min_length=1, max_length=200
             "type": item.get("type"),
             "year": item.get("year"),
             "poster_url_small": item.get("posterUrlSmall"),
+            # Чтобы в UI было видно, ради чего пользователь сюда полез.
+            "was_new": item.get("id") not in known,
         }
         for item in found
     ]

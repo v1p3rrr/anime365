@@ -1,5 +1,5 @@
 import { Alert, Group, Loader, Stack, Text, Title } from '@mantine/core'
-import { useDebouncedValue } from '@mantine/hooks'
+import { useDebouncedValue, useDisclosure } from '@mantine/hooks'
 import { useQuery } from '@tanstack/react-query'
 import { useCallback, useMemo, useState } from 'react'
 
@@ -7,6 +7,7 @@ import { catalogApi, type CatalogFilters as Filters } from '../api/client'
 import { CatalogFilters } from '../components/CatalogFilters'
 import { CatalogGrid } from '../components/CatalogGrid'
 import { ErrorState } from '../components/ErrorState'
+import { OnlineSearchModal } from '../components/OnlineSearchModal'
 import { SyncIndicator } from '../components/SyncIndicator'
 import { useVirtualCatalog } from '../hooks/useVirtualCatalog'
 
@@ -22,6 +23,7 @@ export function CatalogPage({ onlyAiring = false }: Props) {
   // По умолчанию сортируем по оценке: в каталоге 29 тысяч тайтлов, и первым
   // экраном полезнее видеть лучшее, а не самое свежедобавленное.
   const [filters, setFilters] = useState<Filters>({ sort: 'score', sortDir: 'desc' })
+  const [onlineOpened, { open: openOnline, close: closeOnline }] = useDisclosure(false)
 
   const effectiveFilters = useMemo<Filters>(
     () => ({
@@ -51,6 +53,31 @@ export function CatalogPage({ onlyAiring = false }: Props) {
     [ensureRange],
   )
 
+  // Тот же запрос, что у индикатора синхронизации, — react-query отдаёт его из кэша.
+  const statusQuery = useQuery({
+    queryKey: ['catalog-status'],
+    queryFn: catalogApi.status,
+    staleTime: 30_000,
+  })
+
+  // «Ничего не найдено» имеет три разные причины, и советы к ним противоположные.
+  // Раньше здесь всегда предлагалась синхронизация — при полном каталоге и
+  // слишком узком фильтре это отправляло пользователя не туда.
+  const catalogIsEmpty = (statusQuery.data?.total_series ?? 0) === 0
+  const hasFilters =
+    Boolean(filters.type || filters.season || filters.genres?.length || filters.local) ||
+    filters.yearFrom !== undefined ||
+    filters.yearTo !== undefined ||
+    filters.scoreFrom !== undefined
+
+  const emptyReason = catalogIsEmpty
+    ? 'Каталог ещё не синхронизирован. Нажмите кнопку обновления справа сверху — это занимает около минуты.'
+    : debouncedSearch
+      ? 'Попробуйте изменить запрос или поискать на сайте — кнопка справа от поля поиска. Локальный кэш обновляется раз в час, совсем свежих тайтлов в нём может не быть.'
+      : hasFilters
+        ? 'Под выбранные фильтры не подошёл ни один тайтл. Ослабьте условия или сбросьте фильтры.'
+        : 'Под текущие условия не подошёл ни один тайтл.'
+
   return (
     // Колонка на всю доступную высоту: сетка внутри растягивается сама,
     // поэтому подстраивается под любую высоту шапки и блока фильтров.
@@ -75,6 +102,13 @@ export function CatalogPage({ onlyAiring = false }: Props) {
         searchInput={searchInput}
         onSearchInput={setSearchInput}
         hideAiringToggle={onlyAiring}
+        onSearchOnline={openOnline}
+      />
+
+      <OnlineSearchModal
+        query={searchInput.trim()}
+        opened={onlineOpened}
+        onClose={closeOnline}
       />
 
       {idsQuery.isError && (
@@ -90,10 +124,8 @@ export function CatalogPage({ onlyAiring = false }: Props) {
       )}
 
       {idsQuery.isSuccess && ids.length === 0 && (
-        <Alert color="gray" title="Ничего не найдено">
-          {debouncedSearch
-            ? 'Попробуйте изменить запрос. Если тайтла нет в локальном кэше, поищите его на сайте — кнопка появится на этапе 3.'
-            : 'Каталог пуст. Запустите синхронизацию — она занимает около минуты.'}
+        <Alert color="gray" title="Ничего не найдено" style={{ flexShrink: 0 }}>
+          {emptyReason}
         </Alert>
       )}
 

@@ -259,3 +259,67 @@ class TestLoginBruteForce:
         assert limiter.check("1.2.3.4") > 0
         limiter.reset("1.2.3.4")
         assert limiter.check("1.2.3.4") == 0
+
+
+class TestFreeSpaceCheck:
+    """Проверка места должна смотреть на ОБА тома, а не только на временный.
+
+    Файл скачивается во временную папку и переезжает в библиотеку. В compose это
+    разные монтирования, поэтому проверка только временной папки обнаруживала бы
+    нехватку места уже после того, как сотни мегабайт скачаны.
+    """
+
+    def test_missing_directory_does_not_look_like_full_disk(self, tmp_path) -> None:
+        from app.services.downloader import free_space_bytes
+
+        # Первый запуск: /data/tmp ещё не создан. Раньше OSError давал 0 байт,
+        # то есть «диск переполнен», и ни одна загрузка не стартовала.
+        missing = tmp_path / "нет" / "такой" / "папки"
+        assert free_space_bytes(missing) > 0
+
+    def test_passes_when_both_volumes_have_room(self, tmp_path) -> None:
+        from app.services.downloader import check_free_space
+
+        assert check_free_space(tmp_path, tmp_path, min_free_bytes=1) is None
+
+    def test_names_the_volume_that_is_short(self, tmp_path) -> None:
+        from app.services.downloader import check_free_space
+
+        # Заведомо недостижимый порог: сообщение обязано указать конкретный путь,
+        # иначе пользователю негде искать причину.
+        problem = check_free_space(tmp_path, tmp_path, min_free_bytes=1 << 60)
+        assert problem is not None
+        assert str(tmp_path) in problem
+
+    def test_same_volume_is_checked_once(self, tmp_path) -> None:
+        from app.services import downloader
+
+        seen: list[str] = []
+        original = downloader.free_space_bytes
+
+        def spy(path):
+            seen.append(str(path))
+            return original(path)
+
+        downloader.free_space_bytes = spy
+        try:
+            downloader.check_free_space(tmp_path, tmp_path, min_free_bytes=1)
+        finally:
+            downloader.free_space_bytes = original
+
+        # Оба пути на одном томе — требовать место дважды неправильно.
+        assert len(seen) == 1
+
+
+class TestSettingsHelpIsNotStale:
+    """В справке не должно быть чисел, которые устаревают вместе с данными."""
+
+    def test_no_hardcoded_catalog_size(self) -> None:
+        from app.core import settings_registry as reg
+
+        # Каталог растёт, «29 231 тайтл» и «306 онгоингов» верны один день.
+        # Фактические замеры отдаются отдельным полем hint из истории джоб.
+        stale = ("29 231", "29 тысяч", "306 ", "44 запроса", "~32 секунды")
+        for setting in reg.SETTINGS:
+            for marker in stale:
+                assert marker not in setting.help_ru, f"{setting.key}: устаревающее число {marker!r}"

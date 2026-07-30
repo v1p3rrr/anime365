@@ -37,6 +37,11 @@ import {
 } from '../api/library'
 import { ErrorState } from '../components/ErrorState'
 import { MapFolderModal } from '../components/MapFolderModal'
+import scrollClasses from './ScrollPage.module.css'
+
+function capitalize(text: string | null | undefined): string {
+  return text ? text[0].toUpperCase() + text.slice(1) : ''
+}
 
 export function LibraryPage() {
   const queryClient = useQueryClient()
@@ -90,7 +95,7 @@ export function LibraryPage() {
   return (
     // Страница длинная и должна прокручиваться целиком: жёсткая высота без
     // прокрутки обрезала нижние карточки.
-    <Stack gap="md" style={{ overflowY: 'auto', minHeight: 0 }}>
+    <Stack gap="md" className={scrollClasses.scrollPage}>
       <Group justify="space-between">
         <Group gap="sm" align="center">
           <Title order={3}>Библиотека</Title>
@@ -130,7 +135,9 @@ export function LibraryPage() {
           думать, что изменения подхватываются сразу, а они не подхватываются. */}
       {data?.watcher?.state === 'fallback' && (
         <Alert color="yellow" title="Изменения отслеживаются по расписанию" icon={<IconClock size={18} />}>
-          {data.watcher.reason}. Библиотека всё равно обновляется, но не мгновенно —
+          {/* Причина приходит с сервера строчной: там она — часть строки лога.
+              В начале предложения её надо поднять, иначе выглядит как обрывок. */}
+          {capitalize(data.watcher.reason)}. Библиотека всё равно обновляется, но не мгновенно —
           по расписанию сверочного сканирования. Уменьшите интервал в настройках либо
           устраните причину.
         </Alert>

@@ -282,26 +282,57 @@ def mapped_series_ids() -> set[int]:
         }
 
 
-def series_badges() -> dict[int, dict[str, Any]]:
-    """Счётчики наличия по всем смапленным тайтлам — для значков на постерах."""
-    with session_scope() as session:
-        rows = session.execute(
-            select(
-                EpisodeMapping.series_id,
-                EpisodeMapping.role,
-                func.count(func.distinct(EpisodeMapping.episode)),
-            ).group_by(EpisodeMapping.series_id, EpisodeMapping.role)
-        ).all()
+def series_badges(series_ids: list[int] | None = None) -> dict[int, dict[str, Any]]:
+    """Счётчики наличия для значков на постерах.
 
-        totals = {
-            sid: total
-            for sid, total in session.execute(
-                select(Series.id, Series.number_of_episodes)
-            ).all()
-        }
+    `series_ids` ограничивает выборку окном карточек: гонять агрегат по всем
+    29 тысячам тайтлов ради сотни видимых карточек незачем.
+
+    Знаменатель считается по правилу из ТЗ:
+    `max(numberOfEpisodes, серий-контента в API, максимальный локальный номер)`.
+    `numberOfEpisodes` — это ПЛАН, а не выложенное, поэтому одного его мало:
+    у Re:Zero 4th Season план 19 при 11 реальных сериях, а у давно скачанных
+    тайтлов локальных серий бывает больше, чем знает сайт.
+    """
+    with session_scope() as session:
+        role_stmt = select(
+            EpisodeMapping.series_id,
+            EpisodeMapping.role,
+            func.count(func.distinct(EpisodeMapping.episode)),
+            func.max(EpisodeMapping.episode),
+        ).group_by(EpisodeMapping.series_id, EpisodeMapping.role)
+
+        api_stmt = (
+            select(Episode.series_id, func.count(func.distinct(Episode.episode_num)))
+            .where(Episode.episode_type.not_in(NON_CONTENT_EPISODE_TYPES))
+            .group_by(Episode.series_id)
+        )
+        planned_stmt = select(Series.id, Series.number_of_episodes)
+
+        if series_ids is not None:
+            if not series_ids:
+                return {}
+            role_stmt = role_stmt.where(EpisodeMapping.series_id.in_(series_ids))
+            api_stmt = api_stmt.where(Episode.series_id.in_(series_ids))
+            planned_stmt = planned_stmt.where(Series.id.in_(series_ids))
+
+        rows = session.execute(role_stmt).all()
+        api_counts = dict(session.execute(api_stmt).all())
+        planned = dict(session.execute(planned_stmt).all())
 
     out: dict[int, dict[str, Any]] = {}
-    for series_id, role, count in rows:
-        entry = out.setdefault(series_id, {"total": totals.get(series_id) or 0})
+    local_max: dict[int, float] = {}
+    for series_id, role, count, highest in rows:
+        entry = out.setdefault(series_id, {})
         entry[role] = count
+        local_max[series_id] = max(local_max.get(series_id, 0.0), float(highest or 0))
+
+    for series_id, entry in out.items():
+        entry["total"] = int(
+            max(
+                planned.get(series_id) or 0,
+                api_counts.get(series_id) or 0,
+                local_max.get(series_id, 0.0),
+            )
+        )
     return out

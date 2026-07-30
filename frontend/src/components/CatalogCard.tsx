@@ -5,23 +5,23 @@ import { useNavigate } from 'react-router-dom'
 import type { CatalogCard as CardData } from '../api/client'
 import classes from './CatalogCard.module.css'
 
-/**
- * Значки наличия локальных файлов. Появятся на этапе 4, когда заработает маппинг;
- * структура заложена сейчас, чтобы вёрстка сразу проверялась на максимуме элементов.
- */
-export interface LocalBadges {
-  video?: { have: number; total: number }
-  subRu?: { have: number; total: number }
-  subJa?: { have: number; total: number }
-  subEn?: { have: number; total: number }
-  voice?: { have: number; total: number }
-  mappingProblem?: boolean
-}
-
 interface Props {
   card?: CardData
-  badges?: LocalBadges
+  /** Какие значки показывать — настройка пользователя, хранится в браузере. */
+  visibleBadges?: BadgeKey[]
 }
+
+export type BadgeKey = 'video' | 'sub_ru' | 'sub_ja' | 'sub_en'
+
+export const BADGE_LABELS: Record<BadgeKey, string> = {
+  video: 'Видео',
+  sub_ru: 'RU',
+  sub_ja: 'JA',
+  sub_en: 'EN',
+}
+
+/** По умолчанию только то, что просил пользователь: видео, RU- и JA-сабы. */
+export const DEFAULT_BADGES: BadgeKey[] = ['video', 'sub_ru', 'sub_ja']
 
 function coverageColor(have: number, total: number): string {
   if (total <= 0) return 'gray'
@@ -30,7 +30,7 @@ function coverageColor(have: number, total: number): string {
   return 'yellow'
 }
 
-export function CatalogCard({ card, badges }: Props) {
+export function CatalogCard({ card, visibleBadges = DEFAULT_BADGES }: Props) {
   const navigate = useNavigate()
 
   if (!card) {
@@ -51,13 +51,9 @@ export function CatalogCard({ card, badges }: Props) {
   const primary = card.title_ru || card.title_romaji || `#${card.id}`
   const secondary = card.title_ru ? card.title_romaji : null
 
-  const coverage: Array<[string, { have: number; total: number } | undefined]> = [
-    ['Видео', badges?.video],
-    ['RU', badges?.subRu],
-    ['JA', badges?.subJa],
-    ['EN', badges?.subEn],
-    ['Озв', badges?.voice],
-  ]
+  // Значков нет вовсе, если тайтла нет в библиотеке: пустое «0/12» на каждой
+  // из 29 тысяч карточек — шум, а не информация.
+  const local = card.local
 
   return (
     <div
@@ -86,25 +82,25 @@ export function CatalogCard({ card, badges }: Props) {
           </Badge>
         )}
 
-        <div className={classes.badgeStrip}>
-          {badges?.mappingProblem && (
-            <Badge size="xs" color="orange" variant="filled">
-              маппинг
-            </Badge>
-          )}
-          {coverage.map(([label, value]) =>
-            value ? (
-              <Badge
-                key={label}
-                size="xs"
-                variant="filled"
-                color={coverageColor(value.have, value.total)}
-              >
-                {label} {value.have}/{value.total}
-              </Badge>
-            ) : null,
-          )}
-        </div>
+        {local && (
+          <div className={classes.badgeStrip}>
+            {visibleBadges.map((key) => {
+              const have = local[key] ?? 0
+              // Знаменатель приходит с сервера уже по правилу
+              // «максимум из плана, эпизодов в API и локального номера».
+              return (
+                <Badge
+                  key={key}
+                  size="xs"
+                  variant="filled"
+                  color={coverageColor(have, local.total)}
+                >
+                  {BADGE_LABELS[key]} {have}/{local.total}
+                </Badge>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       <div className={classes.body}>

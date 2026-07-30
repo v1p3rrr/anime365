@@ -236,9 +236,58 @@ def pick_download_url(links: dict, preferred_height: int) -> tuple[str | None, i
 
 
 def free_space_bytes(path: Path) -> int:
+    """Свободное место на томе, которому принадлежит путь.
+
+    В контейнере это работает именно так, как нужно: `disk_usage` отдаёт
+    статистику примонтированного тома, а не корневой ФС образа. Но у каждого
+    тома она своя, поэтому одной проверки на всё приложение недостаточно —
+    см. `check_free_space`.
+
+    Если каталога ещё нет (первый запуск), поднимаемся к существующему
+    родителю: иначе OSError выглядел бы как «диск переполнен».
+    """
     import shutil
 
+    probe = path
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+
     try:
-        return shutil.disk_usage(path).free
+        return shutil.disk_usage(probe).free
     except OSError:
         return 0
+
+
+def same_volume(a: Path, b: Path) -> bool:
+    """Лежат ли пути на одном томе. Нужно, чтобы не требовать место дважды."""
+    try:
+        return a.stat().st_dev == b.stat().st_dev
+    except OSError:
+        # Не смогли определить — считаем разными: лишняя проверка безопаснее
+        # пропущенной, а цена ошибки здесь только в чуть более строгом пороге.
+        return False
+
+
+def check_free_space(tmp_dir: Path, target_dir: Path, min_free_bytes: int) -> str | None:
+    """Проверяет обе точки, куда файл попадёт: временную папку и библиотеку.
+
+    Проверять только временную папку было ошибкой: файл скачивается в неё, а
+    затем переезжает в библиотеку, и это, как правило, разные тома (в compose
+    `./data` и медиатека монтируются отдельно). Нехватка места в библиотеке
+    обнаруживалась бы уже после того, как сотни мегабайт скачаны.
+
+    Возвращает текст ошибки или None, если места достаточно.
+    """
+    checks: list[tuple[str, Path]] = [("временной папке", tmp_dir)]
+    if not same_volume(tmp_dir, target_dir):
+        checks.append(("папке библиотеки", target_dir))
+
+    for label, path in checks:
+        free = free_space_bytes(path)
+        if free < min_free_bytes:
+            return (
+                f"Недостаточно места в {label} ({path}): "
+                f"свободно {free / (1 << 30):.1f} ГБ, требуется минимум "
+                f"{min_free_bytes / (1 << 30):.0f} ГБ"
+            )
+    return None

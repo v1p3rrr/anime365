@@ -22,6 +22,7 @@ import { useEffect, useState } from 'react'
 
 import { api } from '../api/client'
 import { ErrorState } from '../components/ErrorState'
+import scrollClasses from './ScrollPage.module.css'
 
 interface SettingItem {
   key: string
@@ -35,6 +36,8 @@ interface SettingItem {
   secret: boolean
   /** Меняется только на сервере: allowlist зеркал из браузера править нельзя. */
   server_only: boolean
+  /** Замер по последнему реальному прогону, а не число, зашитое в справку. */
+  hint: string | null
   choices: string[] | null
   value: unknown
   default?: unknown
@@ -148,8 +151,10 @@ export function SettingsPage() {
     .find((s) => s.key === 'ui_password')
 
   return (
-    <Stack gap="md" style={{ overflowY: 'auto', minHeight: 0 }}>
-      <Group justify="space-between">
+    <Stack gap="md" className={scrollClasses.scrollPage}>
+      {/* wrap обязателен: на 375px заголовок и кнопка в одну строку не влезают,
+          и кнопка уезжала за правый край. */}
+      <Group justify="space-between" wrap="wrap" gap="xs">
         <Title order={3}>Настройки</Title>
         <Button
           leftSection={<IconDeviceFloppy size={16} />}
@@ -178,7 +183,7 @@ export function SettingsPage() {
       </Alert>
 
       {query.data?.groups.map((group) => (
-        <Card key={group.key} withBorder padding="sm" style={{ flexShrink: 0 }}>
+        <Card key={group.key} withBorder padding="sm">
           <Group justify="space-between" mb="xs">
             <Text fw={600}>{group.label}</Text>
             {group.key === 'api' && (
@@ -219,7 +224,9 @@ interface FieldProps {
 
 function SettingField({ item, draftValue, onChange, onReset }: FieldProps) {
   const label = (
-    <Group gap={6} wrap="nowrap">
+    // wrap, а не nowrap: на узком экране бейджи сжимались до «ПО УМОЛЧА…»
+    // и переставали что-либо сообщать. Пусть лучше переносятся на строку ниже.
+    <Group gap={6} wrap="wrap">
       <Text size="sm">{item.label}</Text>
       <Tooltip label={`Переменная окружения: ${item.env}`}>
         <Badge size="xs" variant="light" color={SOURCE_COLORS[item.source]}>
@@ -246,12 +253,26 @@ function SettingField({ item, draftValue, onChange, onReset }: FieldProps) {
   // нельзя по смыслу защиты.
   const locked = item.server_only
 
+  // Справка статична, подсказка — замер по последнему прогону на этой машине.
+  // Разделяем их визуально, чтобы было видно, где описание, а где факт.
+  const description = item.hint ? (
+    <>
+      {item.help}
+      {item.help && ' '}
+      <Text component="span" size="xs" c="dimmed" fs="italic">
+        {item.hint}
+      </Text>
+    </>
+  ) : (
+    item.help
+  )
+
   if (item.type === 'bool') {
     const checked = draftValue !== undefined ? draftValue === 'true' : Boolean(item.value)
     return (
       <Switch
         label={label}
-        description={item.help}
+        description={description}
         checked={checked}
         disabled={locked}
         onChange={(event) => onChange(String(event.currentTarget.checked))}
@@ -263,7 +284,7 @@ function SettingField({ item, draftValue, onChange, onReset }: FieldProps) {
     return (
       <PasswordInput
         label={label}
-        description={item.help}
+        description={description}
         placeholder={item.is_set ? 'задано, введите новое чтобы изменить' : 'не задано'}
         value={draftValue ?? ''}
         disabled={locked}
@@ -277,7 +298,7 @@ function SettingField({ item, draftValue, onChange, onReset }: FieldProps) {
     return (
       <Select
         label={label}
-        description={item.help}
+        description={description}
         data={item.choices}
         value={draftValue ?? String(item.value ?? '')}
         disabled={locked}
@@ -291,7 +312,7 @@ function SettingField({ item, draftValue, onChange, onReset }: FieldProps) {
     return (
       <NumberInput
         label={label}
-        description={item.help}
+        description={description}
         value={draftValue !== undefined ? Number(draftValue) : Number(item.value ?? 0)}
         disabled={locked}
         onChange={(value) => onChange(String(value))}
@@ -304,7 +325,7 @@ function SettingField({ item, draftValue, onChange, onReset }: FieldProps) {
   return (
     <TextInput
       label={label}
-      description={item.help}
+      description={description}
       value={draftValue ?? current}
       disabled={locked}
       onChange={(event) => onChange(event.currentTarget.value)}

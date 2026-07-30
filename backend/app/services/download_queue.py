@@ -33,7 +33,7 @@ from app.services.anime365 import Anime365Error, SubscriptionRequired
 from app.services.downloader import (
     DownloadCancelled,
     Downloader,
-    free_space_bytes,
+    check_free_space,
     pick_download_url,
 )
 from app.services.naming import (
@@ -433,9 +433,16 @@ class DownloadQueue:
             return
 
         tmp_dir = Path(settings.get_str("download_tmp"))
-        min_free = settings.get_int("min_free_space_gb") * (1 << 30)
-        if free_space_bytes(tmp_dir) < min_free:
-            _fail_with_backoff(task_id, "Недостаточно свободного места")
+        # Проверяем оба тома: файл скачивается во временную папку и переезжает
+        # в библиотеку, а в compose это разные монтирования. Проверка только
+        # временной папки обнаруживала бы нехватку места уже после загрузки.
+        problem = check_free_space(
+            tmp_dir,
+            Path(root.path) / folder.rel_path,
+            settings.get_int("min_free_space_gb") * (1 << 30),
+        )
+        if problem:
+            _fail_with_backoff(task_id, problem)
             return
 
         async with Downloader() as downloader:
