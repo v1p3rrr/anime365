@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -142,7 +143,53 @@ class Downloader:
 
         Возвращает итоговый размер. Файл пишется во временный `.part`, чтобы
         оборванная загрузка не выглядела как готовый файл.
+
+        При включённом `try_direct_cdn` сначала пробуется прямой хост зоны
+        BunnyCDN в обход прокси. Это эксперимент: если он не отвечает ДО того,
+        как записан хоть один байт, молча уходим на обычную ссылку. Пробовать
+        после первых байтов нельзя — подписи одноразовые, и повторный запрос
+        по любой из ссылок вернёт ноль.
         """
+        assert self._client is not None, "используйте загрузчик через async with"
+
+        if expect == "video" and settings.get_bool("try_direct_cdn"):
+            direct = direct_cdn_url(url)
+            if direct:
+                try:
+                    started = time.monotonic()
+                    size = await self._fetch_once(
+                        direct, destination, on_progress, should_stop, expect
+                    )
+                    elapsed = max(time.monotonic() - started, 1e-6)
+                    log.info(
+                        "Прямой CDN сработал: %.1f МБ за %.1f с (%.1f МБ/с)",
+                        size / (1 << 20),
+                        elapsed,
+                        size / (1 << 20) / elapsed,
+                    )
+                    return size
+                except DownloadCancelled:
+                    raise
+                except Exception as exc:
+                    part = destination.with_suffix(destination.suffix + ".part")
+                    written = part.stat().st_size if part.exists() else 0
+                    if written:
+                        # Байты уже пошли — значит, дело не в недоступности хоста.
+                        # Откатываться поздно: подпись израсходована.
+                        raise
+                    log.warning("Прямой CDN не сработал (%s), иду через прокси", exc)
+
+        return await self._fetch_once(url, destination, on_progress, should_stop, expect)
+
+    async def _fetch_once(
+        self,
+        url: str,
+        destination: Path,
+        on_progress: ProgressCallback | None = None,
+        should_stop: Callable[[], bool] | None = None,
+        expect: str = "video",
+    ) -> int:
+        """Одна попытка загрузки по конкретной ссылке."""
         assert self._client is not None, "используйте загрузчик через async with"
 
         if not is_allowed_target(url):
@@ -291,3 +338,39 @@ def check_free_space(tmp_dir: Path, target_dir: Path, min_free_bytes: int) -> st
                 f"{min_free_bytes / (1 << 30):.0f} ГБ"
             )
     return None
+
+
+# Прокси перед BunnyCDN и сама зона. Ссылка вида
+#   https://ru-549959.quantum-phantom-moon.ru/s/q1561620/route/?m=…&r=…
+# указывает на nginx, за которым стоит зона q1561620. Та же зона напрямую —
+# https://moon-q1561620.b-cdn.net/route/?m=…&r=…  (префикс /s/{zone} убирается,
+# с ним Bunny отвечает 404).
+_PROXY_PATH_RE = re.compile(r"^/s/(?P<zone>[a-z0-9]+)(?P<rest>/.*)$", re.IGNORECASE)
+_PROXY_HOST_SUFFIX = ".quantum-phantom-moon.ru"
+
+
+def direct_cdn_url(url: str) -> str | None:
+    """Прямая ссылка на зону BunnyCDN в обход прокси-хоста.
+
+    ⚠️ Это **эксперимент**, а не оптимизация. На тестовом файле прямой хост был
+    быстрее в 5.6 раза, но воспроизвести замер на реальном видео не удалось:
+    подписи `m=`/`r=` одноразовые, повторный запрос отдаёт ноль байт. Плюс все
+    замеры сделаны не из сети пользователя.
+
+    Возвращает None, если ссылка не похожа на прокси-ссылку — тогда идём как
+    обычно, без всяких переписываний.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    if not parts.netloc.lower().endswith(_PROXY_HOST_SUFFIX):
+        return None
+
+    match = _PROXY_PATH_RE.match(parts.path)
+    if not match:
+        return None
+
+    zone = match.group("zone")
+    return urlunsplit(
+        ("https", f"moon-{zone}.b-cdn.net", match.group("rest"), parts.query, "")
+    )

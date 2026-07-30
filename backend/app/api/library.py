@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
@@ -524,4 +525,77 @@ def mapping_report() -> dict[str, Any]:
             }
             for m, f, s in weakest
         ],
+    }
+
+
+@router.post("/series/{series_id}/probe-streams")
+async def probe_streams(series_id: int) -> dict[str, Any]:
+    """Определяет языки дорожек через ffprobe для файлов тайтла.
+
+    Обычно не нужен: Jellyfin пишет список дорожек в `<streamdetails>` внутри
+    `.nfo`, и это бесплатно. ffprobe же открывает каждый файл, поэтому работает
+    только по кнопке, только для одного тайтла и только для тех файлов, у
+    которых данных ещё нет.
+    """
+    from app.core.config import settings
+    from app.services.audio import AudioError, ffmpeg_available, probe_stream_languages
+
+    if not settings.get_bool("enable_ffprobe"):
+        raise HTTPException(
+            409,
+            "Определение дорожек через ffprobe выключено. Включите его в настройках, "
+            "если у части файлов нет .nfo или в нём нет streamdetails",
+        )
+    if not ffmpeg_available():
+        raise HTTPException(503, "В образе нет ffmpeg")
+
+    with session_scope() as session:
+        folder_ids = select(TitleMapping.folder_id).where(TitleMapping.series_id == series_id)
+        rows = session.execute(
+            select(
+                LibraryFile.id,
+                LibraryFile.filename,
+                LibraryFolder.rel_path,
+                LibraryRoot.path,
+                LibraryFile.streams,
+            )
+            .join(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
+            .join(LibraryRoot, LibraryFolder.root_id == LibraryRoot.id)
+            .where(LibraryFile.folder_id.in_(folder_ids), LibraryFile.kind == "video")
+        ).all()
+
+    # ⚠️ Отбор по «нет данных» делаем в Python, а не условием в SQL.
+    # SQLAlchemy пишет Python None в JSON-колонку как строку 'null', а не как
+    # SQL NULL, поэтому `streams.is_(None)` не совпадает ни с одной строкой —
+    # проверка молча отбирала бы ноль кандидатов.
+    # Данные из .nfo при этом приоритетнее: они уже есть и достались даром.
+    rows = [row for row in rows if not row.streams]
+
+    probed = failed = 0
+    last_error: str | None = None
+
+    for file_id, filename, rel_path, root_path, _ in rows:
+        path = Path(root_path) / rel_path / filename
+        if not path.is_file():
+            failed += 1
+            continue
+        try:
+            streams = await probe_stream_languages(path)
+        except AudioError as exc:
+            failed += 1
+            last_error = str(exc)
+            log.warning("ffprobe не осилил %s: %s", filename, exc)
+            continue
+
+        with session_scope() as session:
+            row = session.get(LibraryFile, file_id)
+            if row is not None:
+                row.streams = streams
+        probed += 1
+
+    return {
+        "candidates": len(rows),
+        "probed": probed,
+        "failed": failed,
+        "reason": last_error if failed and not probed else None,
     }

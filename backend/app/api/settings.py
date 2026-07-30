@@ -277,3 +277,21 @@ def env_example() -> Response:
 def password_is_hashed() -> bool:
     """Диагностика: пароль из ENV лежит в открытом виде, из UI — хешем."""
     return settings.get_str("ui_password").startswith(HASH_PREFIX)
+
+
+@router.post("/test-jellyfin")
+async def test_jellyfin() -> dict[str, Any]:
+    """Проверка адреса и ключа Jellyfin.
+
+    Без неё узнать, что ключ неверен, можно было бы только из логов — а туда
+    после каждой загрузки никто не смотрит.
+    """
+    from app.services.jellyfin import jellyfin
+
+    if not settings.get_bool("enable_jellyfin"):
+        return {"ok": False, "reason": "Интеграция с Jellyfin выключена"}
+
+    result = await jellyfin.refresh()
+    if result.get("ok"):
+        result["message"] = "Jellyfin принял запрос на обновление библиотеки"
+    return result

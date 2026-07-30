@@ -91,3 +91,54 @@ class TestStreamEndpointIsProtected:
             path = getattr(route, "path", "")
             if "/stream/" in path:
                 assert "{url" not in path
+
+
+class TestDirectCdnRewrite:
+    """Переписывание прокси-ссылки на прямой хост зоны BunnyCDN.
+
+    Это эксперимент за выключенным тогглом: на тестовом файле прямой хост был
+    быстрее в 5.6 раза, но на реальном видео замер воспроизвести не удалось —
+    подписи одноразовые. Поэтому важно, чтобы переписывание было точным, а
+    неподходящие ссылки не трогались вовсе.
+    """
+
+    def test_proxy_link_becomes_direct_zone(self) -> None:
+        from app.services.downloader import direct_cdn_url
+
+        result = direct_cdn_url(
+            "https://ru-549959.quantum-phantom-moon.ru/s/q1561620/route/?m=1&r=abc"
+        )
+        # Префикс /s/{zone} обязан исчезнуть: с ним Bunny отвечает 404.
+        assert result == "https://moon-q1561620.b-cdn.net/route/?m=1&r=abc"
+
+    def test_query_with_signature_is_preserved(self) -> None:
+        from app.services.downloader import direct_cdn_url
+
+        result = direct_cdn_url(
+            "https://ru-1.quantum-phantom-moon.ru/s/q42/a/b?m=xyz&r=1&extra=2"
+        )
+        # Подпись потерять нельзя — без неё CDN отдаст отказ.
+        assert result.endswith("?m=xyz&r=1&extra=2")
+
+    def test_result_stays_within_allowlist(self) -> None:
+        from app.services.downloader import direct_cdn_url, is_allowed_target
+
+        result = direct_cdn_url("https://ru-1.quantum-phantom-moon.ru/s/q42/route/?m=1")
+        # Переписывание не должно уводить за пределы разрешённых хостов.
+        assert is_allowed_target(result)
+
+    def test_non_proxy_links_untouched(self) -> None:
+        from app.services.downloader import direct_cdn_url
+
+        # Зеркало сайта, а не CDN — переписывать нечего.
+        assert direct_cdn_url("https://smotret-anime.app/translations/mp4/1") is None
+        # Прокси-хост, но путь другой формы — гадать не будем.
+        assert direct_cdn_url("https://ru-1.quantum-phantom-moon.ru/other/path") is None
+        # Уже прямая ссылка.
+        assert direct_cdn_url("https://moon-q1.b-cdn.net/route/?m=1") is None
+
+    def test_lookalike_host_is_not_rewritten(self) -> None:
+        from app.services.downloader import direct_cdn_url
+
+        # Похожий, но чужой домен трогать нельзя.
+        assert direct_cdn_url("https://quantum-phantom-moon.ru.evil.com/s/q1/x") is None

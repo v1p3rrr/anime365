@@ -141,6 +141,26 @@ export function SettingsPage() {
       }),
   })
 
+  const checkJellyfin = useMutation({
+    mutationFn: () => api.post<{ ok: boolean; reason?: string; message?: string }>(
+      '/settings/test-jellyfin',
+    ),
+    onSuccess: (result) =>
+      notifications.show({
+        color: result.ok ? 'teal' : 'red',
+        title: result.ok ? 'Jellyfin отвечает' : 'Jellyfin не отвечает',
+        message: result.ok ? (result.message ?? '') : (result.reason ?? 'неизвестная причина'),
+        autoClose: result.ok ? 5000 : 12000,
+      }),
+    onError: (error: Error) =>
+      notifications.show({
+        color: 'red',
+        title: 'Проверка не удалась',
+        message: error.message,
+        autoClose: 12000,
+      }),
+  })
+
   if (query.isLoading) {
     return (
       <Group justify="center" p="xl">
@@ -200,6 +220,16 @@ export function SettingsPage() {
         <Card key={group.key} withBorder padding="sm">
           <Group justify="space-between" mb="xs">
             <Text fw={600}>{group.label}</Text>
+            {group.key === 'features' && (
+              <Button
+                size="compact-xs"
+                variant="light"
+                onClick={() => checkJellyfin.mutate()}
+                loading={checkJellyfin.isPending}
+              >
+                Проверить Jellyfin
+              </Button>
+            )}
             {group.key === 'api' && (
               <Button
                 size="compact-xs"

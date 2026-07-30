@@ -198,3 +198,49 @@ async def extract_audio(source: Path, stream: AudioStream, target: Path) -> None
     if not target.exists() or target.stat().st_size == 0:
         target.unlink(missing_ok=True)
         raise AudioError("ffmpeg отработал без ошибки, но файл пустой")
+
+
+async def probe_stream_languages(source: Path) -> dict[str, list[str]]:
+    """Языки звуковых дорожек и вшитых субтитров — то же, что даёт `.nfo`.
+
+    Нужно там, где `.nfo` нет или в нём нет `<streamdetails>`. Формат ответа
+    совпадает с тем, что пишет парсер `.nfo`, поэтому потребителям всё равно,
+    откуда пришли данные.
+
+    Данные из `.nfo` при этом остаются приоритетными: они бесплатны, а ffprobe
+    открывает каждый файл.
+    """
+    if not ffmpeg_available():
+        raise AudioError("В образе нет ffmpeg — определение дорожек недоступно")
+
+    code, stdout, stderr = await _run(
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=codec_type:stream_tags=language",
+        "-of",
+        "json",
+        str(source),
+    )
+    if code != 0:
+        raise AudioError(f"ffprobe не смог прочитать файл: {stderr.decode(errors='replace')[:300]}")
+
+    try:
+        payload = json.loads(stdout or b"{}")
+    except json.JSONDecodeError as exc:
+        raise AudioError(f"Не разобрать ответ ffprobe: {exc}") from exc
+
+    audio: list[str] = []
+    subtitles: list[str] = []
+    for item in payload.get("streams") or []:
+        lang = normalize_lang((item.get("tags") or {}).get("language"))
+        if lang is None:
+            continue
+        target = audio if item.get("codec_type") == "audio" else (
+            subtitles if item.get("codec_type") == "subtitle" else None
+        )
+        if target is not None and lang not in target:
+            target.append(lang)
+
+    return {"audio_languages": audio, "subtitle_languages": subtitles}

@@ -891,6 +891,13 @@ class DownloadQueue:
         _finish(task_id, TaskStatus.DONE)
         log.info("Готово: %s", destination.name)
 
+        # Просим Jellyfin пересканировать: иначе серия появится у него только
+        # по его собственному расписанию. Вызов схлопывается — батч из полусотни
+        # серий даст одно обновление, а не полсотни.
+        from app.services.jellyfin import jellyfin
+
+        jellyfin.schedule()
+
     @staticmethod
     def _apply_ownership(path: Path) -> None:
         """Права на созданный файл, чтобы Jellyfin мог его прочитать."""

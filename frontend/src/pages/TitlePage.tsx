@@ -59,6 +59,34 @@ export function TitlePage() {
       notifications.show({ color: 'red', title: 'Не удалось изменить', message: error.message }),
   })
 
+  // ffprobe открывает каждый файл, поэтому только по кнопке и только для
+  // тех, у кого данных о дорожках ещё нет.
+  const probe = useMutation({
+    mutationFn: () =>
+      api.post<{ candidates: number; probed: number; failed: number; reason: string | null }>(
+        `/library/series/${seriesId}/probe-streams`,
+      ),
+    onSuccess: (result) => {
+      notifications.show({
+        color: result.probed ? 'teal' : 'yellow',
+        title: 'Дорожки определены',
+        message:
+          result.candidates === 0
+            ? 'У всех файлов данные о дорожках уже есть — из .nfo.'
+            : `Обработано ${result.probed} из ${result.candidates}` +
+              (result.failed ? `, не вышло: ${result.failed}` : ''),
+      })
+      queryClient.invalidateQueries({ queryKey: ['title', seriesId] })
+    },
+    onError: (error: Error) =>
+      notifications.show({
+        color: 'red',
+        title: 'Не удалось определить дорожки',
+        message: error.message,
+        autoClose: 12000,
+      }),
+  })
+
   const refine = useMutation({
     mutationFn: () =>
       api.post<{ episodes: number; refined: number; failed: number; reason: string | null }>(
@@ -240,6 +268,17 @@ export function TitlePage() {
           <Text size="sm" fw={600}>
             Доступное качество
           </Text>
+          <Tooltip label="Определить языки дорожек через ffprobe — для файлов без данных в .nfo">
+            <Button
+              size="compact-xs"
+              variant="subtle"
+              color="gray"
+              onClick={() => probe.mutate()}
+              loading={probe.isPending}
+            >
+              Дорожки файлов
+            </Button>
+          </Tooltip>
           {quality.buckets.length > 0 && quality.is_estimate && (
             <Tooltip label="Запросит точные ступени по одному переводу на серию">
               <Button
