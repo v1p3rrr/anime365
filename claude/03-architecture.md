@@ -1,5 +1,60 @@
 # Архитектура
 
+> Состояние на 2026-07-30. Ниже описано то, что **реально написано**; чего ещё нет — помечено.
+
+## Что где лежит (фактически)
+
+```
+backend/app/
+├─ core/
+│  ├─ settings_registry.py   ✅ единый реестр настроек
+│  ├─ config.py              ✅ склейка дефолт < ENV < UI
+│  ├─ db.py                  ✅ SQLite WAL
+│  ├─ migrations.py          ✅ дописывание недостающих колонок
+│  ├─ bootstrap.py           ✅ инициализация при старте
+│  └─ logging_setup.py       ✅ вырезание секретов из логов
+├─ models/
+│  ├─ catalog.py             ✅ series, episode, translation, embed-кэш, scan_run
+│  ├─ library.py             ✅ корни, папки, файлы, маппинг тайтлов и эпизодов
+│  ├─ downloads.py           ✅ очередь задач
+│  └─ settings.py            ✅ app_user, app_setting
+├─ services/
+│  ├─ anime365.py            ✅ клиент API, зеркала, rewrite хоста
+│  ├─ catalog_sync.py        ✅ три режима синхронизации
+│  ├─ fts.py                 ✅ полнотекстовый поиск
+│  ├─ coverage.py            ✅ сводка переводов, диапазоны, качество
+│  ├─ title_service.py       ✅ сборка страницы тайтла
+│  ├─ filename_rules.py      ✅ разбор имён по YAML-правилам
+│  ├─ nfo_parser.py          ✅ разбор всех видов .nfo
+│  ├─ matcher.py             ✅ каскады сопоставления
+│  ├─ library_scan.py        ✅ обход файловой системы
+│  ├─ library_service.py     ✅ сохранение результатов + маппинг
+│  ├─ library_watcher.py     ✅ слежение через inotify
+│  ├─ mapping_info.py        ✅ плашка привязки, покрытие, основная папка
+│  ├─ naming.py              ✅ построение имён файлов
+│  ├─ downloader.py          ✅ докачка по Range, allowlist хостов
+│  └─ download_queue.py      ✅ воркеры, ретраи, постобработка
+├─ api/                      ✅ health, catalog, title, library, downloads, maintenance
+│                            ⬜ settings, events (SSE)
+└─ workers/scheduler.py      ✅ APScheduler + запуск слежения
+
+frontend/src/
+├─ pages/
+│  ├─ CatalogPage.tsx        ✅
+│  ├─ TitlePage.tsx          ✅ (кнопки загрузки — ⬜)
+│  ├─ LibraryPage.tsx        ✅
+│  ├─ QueuePage.tsx          ⬜ заглушка
+│  └─ SettingsPage.tsx       ⬜ заглушка
+├─ components/               ✅ карточка, сетка, фильтры, сводка переводов,
+│                               плашка привязки, модалки привязки, показ ошибок
+├─ api/                      ✅ client, title, library
+└─ stores/preferences.ts     ✅ настройки отображения в localStorage
+```
+
+Чего нет вовсе: `postprocess.py` отдельным модулем (логика внутри `download_queue`),
+`core/events.py` и SSE, `core/security.py` (пароль, CSP, CSRF), `quality.py` и
+`episode_type.py` (их функции разошлись по `coverage.py` и `downloader.py`).
+
 ## Стек
 
 | Слой | Выбор | Почему |
