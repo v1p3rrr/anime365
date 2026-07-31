@@ -16,7 +16,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable
 
 import httpx
@@ -305,8 +305,70 @@ def free_space_bytes(path: Path) -> int:
         return 0
 
 
+def parse_mountinfo(raw: str, target: PurePosixPath) -> str | None:
+    """Какому монтированию из `/proc/self/mountinfo` принадлежит путь.
+
+    Вынесено отдельной чистой функцией ради проверяемости: сам `_mount_id`
+    зовёт `Path.resolve()`, а тот на Windows приписывает букву диска и делает
+    посикс-пути из теста бессмысленными.
+    """
+    best_id: str | None = None
+    best_len = -1
+    for line in raw.splitlines():
+        fields = line.split(" ")
+        # mount_id parent_id major:minor root mount_point ...
+        if len(fields) < 5:
+            continue
+        mount_id, point = fields[0], fields[4]
+        # Пробелы и табы в путях ядро экранирует восьмеричными кодами.
+        point = point.replace("\\040", " ").replace("\\011", "\t")
+        candidate = PurePosixPath(point)
+        if target == candidate or candidate in target.parents:
+            # Побеждает самая длинная точка монтирования: вложенные монтирования
+            # перекрывают внешние.
+            if len(point) > best_len:
+                best_id, best_len = mount_id, len(point)
+    return best_id
+
+
+def _mount_id(path: Path) -> str | None:
+    """Идентификатор монтирования, в котором лежит путь.
+
+    Возвращает None, если `mountinfo` недоступен — то есть везде, кроме Linux.
+    """
+    try:
+        raw = Path("/proc/self/mountinfo").read_text(encoding="utf-8", errors="replace")
+        target = PurePosixPath(path.resolve())
+    except (OSError, ValueError):
+        return None
+    return parse_mountinfo(raw, target)
+
+
 def same_volume(a: Path, b: Path) -> bool:
-    """Лежат ли пути на одном томе. Нужно, чтобы не требовать место дважды."""
+    """Переедет ли файл из `a` в `b` переименованием, без копирования байт.
+
+    Совпадения `st_dev` для этого **недостаточно**, и это не теория: проверено
+    на двух bind-монтированиях одной хостовой папки — `st_dev` у них общий (69),
+    а `os.rename` падает с `EXDEV`. Причина в ядре: при переименовании
+    сравниваются не суперблоки, а `vfsmount`, то есть сами монтирования. Два
+    отдельных `-v` в docker — это два монтирования, даже если за ними один диск
+    и одна файловая система.
+
+    Отсюда практический вывод для развёртывания: отдельный том под загрузки
+    делает перемещение копированием. Чтобы оно было мгновенным, временная папка
+    должна лежать **внутри того же монтирования**, что и библиотека.
+
+    Здесь это важно ради учёта места: при копировании файл какое-то время
+    существует в двух экземплярах, и на этой файловой системе нужен двойной
+    запас. Раньше проверка по `st_dev` в такой конфигурации требовала место
+    один раз — то есть была слишком мягкой ровно там, где нужна строгость.
+
+    Вне Linux `mountinfo` нет, и мы откатываемся на `st_dev`: на одиночной
+    машине разработчика это верно, а docker у нас всегда Linux.
+    """
+    left, right = _mount_id(a), _mount_id(b)
+    if left is not None and right is not None:
+        return left == right
     try:
         return a.stat().st_dev == b.stat().st_dev
     except OSError:

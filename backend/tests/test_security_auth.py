@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.core.config import settings
@@ -325,6 +327,52 @@ class TestFreeSpaceCheck:
 
         # Оба пути на одном томе — требовать место дважды неправильно.
         assert len(seen) == 1
+
+    def test_separate_mounts_need_space_twice(self, tmp_path, monkeypatch) -> None:
+        """Два монтирования одной ФС — это копирование, значит место нужно дважды.
+
+        Случай неочевидный и проверен экспериментально: у двух bind-монтирований
+        одной хостовой папки `st_dev` совпадает, но `os.rename` падает с `EXDEV`,
+        потому что ядро сравнивает монтирования, а не суперблоки. Проверка по
+        `st_dev` в такой конфигурации требовала запас один раз вместо двух.
+        """
+        from app.services import downloader
+
+        downloads = tmp_path / "downloads"
+        library = tmp_path / "library"
+        downloads.mkdir()
+        library.mkdir()
+
+        # st_dev у них заведомо одинаковый — это один и тот же tmp_path.
+        assert downloads.stat().st_dev == library.stat().st_dev
+
+        monkeypatch.setattr(
+            downloader,
+            "_mount_id",
+            lambda path: "40" if "downloads" in str(path) else "41",
+        )
+        assert downloader.same_volume(downloads, library) is False
+
+        seen: list[str] = []
+        monkeypatch.setattr(downloader, "free_space_bytes", lambda path: seen.append(str(path)) or 1 << 40)
+        downloader.check_free_space(downloads, library, min_free_bytes=1)
+        assert len(seen) == 2
+
+    def test_deepest_mount_wins(self) -> None:
+        """Вложенное монтирование перекрывает внешнее — побеждает самое длинное."""
+        from pathlib import PurePosixPath
+
+        from app.services.downloader import parse_mountinfo
+
+        mountinfo = "\n".join(
+            [
+                "31 25 0:27 / /media rw,relatime shared:14 - ext4 /dev/sda1 rw",
+                "42 31 0:27 / /media/anime rw,relatime shared:20 - ext4 /dev/sdb1 rw",
+            ]
+        )
+        assert parse_mountinfo(mountinfo, PurePosixPath("/media/anime/library/show")) == "42"
+        assert parse_mountinfo(mountinfo, PurePosixPath("/media/other/show")) == "31"
+        assert parse_mountinfo(mountinfo, PurePosixPath("/data/tmp")) is None
 
 
 class TestSettingsHelpIsNotStale:
