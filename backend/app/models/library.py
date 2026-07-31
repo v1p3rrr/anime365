@@ -107,6 +107,19 @@ class LibraryFile(Base):
     # Дорожки внутри контейнера из .nfo — подсказка о вшитых субтитрах и озвучке.
     streams: Mapped[dict | None] = mapped_column(JSON)
 
+    # Когда файл проверяли через ffprobe. Отличает «проверили, дорожек не
+    # нашли» от «ещё не проверяли»: без этой отметки пустой `streams` означал
+    # бы и то и другое, и каждый скан заново открывал бы одни и те же файлы.
+    #
+    # Вместе с `mtime` даёт правило пропуска: файл не трогаем, пока он не
+    # изменился. На диске 5400 rpm, с которого одновременно качают и стримят,
+    # лишние обращения — это отобранная у загрузок головка.
+    probed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    # `mtime` на момент проверки. Файл могли заменить на месте под тем же
+    # именем — тогда прежние дорожки уже неверны.
+    probed_mtime: Mapped[float | None] = mapped_column(Float)
+
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     mtime: Mapped[float | None] = mapped_column(Float)
     # Файл не удалось отнести ни к одной серии — показываем в отчёте.
@@ -154,6 +167,44 @@ class TitleMapping(Base):
 
     __table_args__ = (
         UniqueConstraint("series_id", "folder_id", name="uq_mapping_series_folder"),
+    )
+
+
+class EpisodeTarget(Base):
+    """Куда складывать загрузки КОНКРЕТНОЙ серии, если не туда, куда остальные.
+
+    Не путать с `EpisodeMapping`: та связывает серию с уже существующим файлом
+    («вот этот файл на диске — и есть третья серия»). Здесь наоборот — папка
+    назначения для того, чего ещё нет.
+
+    Зачем понадобилось. Сезон обычно лежит одной папкой, но бывает, что одну
+    серию хочется положить отдельно: она в другом переводе, или в другом
+    качестве, или это спешл, которому место в `Specials/`. Раньше выбора не
+    было вовсе — всё уезжало в основную папку тайтла.
+
+    Одна строка на серию, а не на роль: разводить видео и субтитры одной серии
+    по разным папкам смысла нет — Jellyfin ищет субтитры рядом с видео, и
+    развести их значило бы разорвать эту связь.
+    """
+
+    __tablename__ = "episode_target"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    series_id: Mapped[int] = mapped_column(
+        ForeignKey("series.id", ondelete="CASCADE"), index=True
+    )
+    episode: Mapped[float] = mapped_column(Float)
+    folder_id: Mapped[int] = mapped_column(
+        ForeignKey("library_folder.id", ondelete="CASCADE")
+    )
+
+    created_by_user_id: Mapped[int] = mapped_column(Integer, default=DEFAULT_USER_ID)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        # Одна серия — одно назначение. Второе молча переопределяло бы первое,
+        # и предсказать, куда уедет файл, стало бы нельзя.
+        UniqueConstraint("series_id", "episode", name="uq_episode_target"),
     )
 
 

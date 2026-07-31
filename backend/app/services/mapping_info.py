@@ -25,6 +25,26 @@ ROLE_LABELS = {
 }
 
 
+def title_folder_paths(series_id: int) -> list[str]:
+    """Относительные пути папок тайтла, основная первой.
+
+    Лёгкий помощник для тех, кому нужны только пути: `get_title_mappings()`
+    попутно считает покрытие и читает `.nfo`, а здесь это лишняя работа.
+
+    Порядок важен: сопоставление с внешней библиотекой берёт первое совпавшее,
+    и основная привязка должна проверяться раньше побочных.
+    """
+    with session_scope() as session:
+        rows = session.execute(
+            select(LibraryFolder.rel_path, TitleMapping.is_primary)
+            .join(TitleMapping, TitleMapping.folder_id == LibraryFolder.id)
+            .where(TitleMapping.series_id == series_id)
+        ).all()
+
+    rows.sort(key=lambda row: (not row.is_primary, row.rel_path))
+    return [row.rel_path for row in rows if row.rel_path]
+
+
 def get_title_mappings(series_id: int) -> list[dict[str, Any]]:
     """Все папки, привязанные к тайтлу, с указанием происхождения связи."""
     # Основная папка нужна загрузке: без неё при нескольких папках непонятно,
@@ -264,6 +284,21 @@ def get_local_files(series_id: int) -> list[dict[str, Any]]:
             }
             for mapping, file, folder in rows
         ]
+
+
+def count_content_episodes(series_id: int) -> int:
+    """Сколько у тайтла серий, которые считаются контентом.
+
+    Трейлеры и реклама не в счёт. Нужно, чтобы отличить одиночный фильм от
+    связки из нескольких — раскладываются они по-разному.
+    """
+    with session_scope() as session:
+        return session.execute(
+            select(func.count(Episode.id)).where(
+                Episode.series_id == series_id,
+                Episode.episode_type.not_in(NON_CONTENT_EPISODE_TYPES),
+            )
+        ).scalar() or 0
 
 
 def count_mapped_series() -> int:

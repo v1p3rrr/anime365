@@ -31,17 +31,25 @@ RUN apt-get update && \
 WORKDIR /app
 
 COPY backend/pyproject.toml ./
+# ⚠️ Список продублирован из pyproject.toml намеренно — ради кэша слоёв: иначе
+# любая правка исходников тянула бы переустановку всех зависимостей.
+#
+# Цена дубля уже была заплачена: списки разошлись, и в образе не оказалось ни
+# `socksio` (SOCKS5-прокси не работал вовсе, хотя описан в документации), ни
+# `iso639-lang`. Чтобы это не повторилось молча, расхождение ловит тест
+# `tests/test_dockerfile_deps.py` — он сверяет этот блок с pyproject.
 RUN pip install --no-cache-dir \
         "fastapi==0.115.6" \
         "uvicorn[standard]==0.34.0" \
         "sqlalchemy==2.0.36" \
-        "httpx[http2]==0.28.1" \
+        "httpx[http2,socks]==0.28.1" \
         "apscheduler==3.11.0" \
         "pyyaml==6.0.2" \
         "rapidfuzz==3.11.0" \
         "watchdog==6.0.0" \
         "argon2-cffi==23.1.0" \
-        "python-multipart==0.0.20"
+        "python-multipart==0.0.20" \
+        "iso639-lang==2.6.0"
 
 COPY backend/app ./app
 # Правила разбора имён кладём внутрь образа. Том ./config — необязательный

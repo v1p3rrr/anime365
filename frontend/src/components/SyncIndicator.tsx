@@ -5,6 +5,7 @@ import { notifications } from '@mantine/notifications'
 
 import { catalogApi } from '../api/client'
 import { useT, type TranslationKey } from '../i18n'
+import { useApiError } from '../i18n/apiError'
 
 /** Ключ словаря по виду джобы, который приходит с сервера. */
 const MODE_KEYS: Record<string, string> = {
@@ -21,6 +22,7 @@ interface Props {
 export function SyncIndicator({ filteredTotal }: Props) {
   const queryClient = useQueryClient()
   const { t, locale } = useT()
+  const apiError = useApiError()
 
   const statusQuery = useQuery({
     queryKey: ['catalog-status'],
@@ -38,7 +40,7 @@ export function SyncIndicator({ filteredTotal }: Props) {
       queryClient.invalidateQueries({ queryKey: ['genres'] })
     },
     onError: (error: Error) => {
-      notifications.show({ color: 'red', title: t('sync.failed'), message: error.message })
+      notifications.show({ color: 'red', title: t('sync.failed'), message: apiError(error) })
     },
   })
 

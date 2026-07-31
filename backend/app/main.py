@@ -24,8 +24,10 @@ from app.api import (
     settings as settings_api,
     stream,
     title,
+    users,
 )
 from app.core import middleware
+from app.core import proxy
 from app.core.bootstrap import bootstrap
 from app.core.db import check_connection
 from app.core.logging_setup import setup_logging
@@ -41,6 +43,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 async def lifespan(_app: FastAPI):
     setup_logging()
     log.info("Anime365 Downloader запускается")
+    proxy.log_status()
 
     if not check_connection():
         log.error("БД недоступна — сервис поднимется, но работать не сможет")
@@ -79,6 +82,7 @@ app.include_router(events.router, prefix="/api")
 app.include_router(settings_api.router, prefix="/api")
 app.include_router(stream.router, prefix="/api")
 app.include_router(maintenance.router, prefix="/api")
+app.include_router(users.router, prefix="/api")
 
 
 if STATIC_DIR.is_dir():

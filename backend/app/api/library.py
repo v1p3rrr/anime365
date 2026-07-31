@@ -6,14 +6,21 @@ import logging
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+
+from app.api.deps import rate_limit
+from app.core import errors
+from app.core.errors import ApiError
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 
 from app.core.db import session_scope
+from app.core.permissions import Permission, require
+from app.services.stream_probe import stream_probe
 from app.models.catalog import ScanRun, Series
 from app.models.library import (
     EpisodeMapping,
+    EpisodeTarget,
     LibraryFile,
     LibraryFolder,
     LibraryRoot,
@@ -29,6 +36,25 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/library", tags=["library"])
 
 
+def _container_folder_ids():
+    """Папки-контейнеры: своих видео нет, а подпапку держит тот же скан.
+
+    Вынесено в одно место намеренно. Правило появилось в списке нераспознанного,
+    а счётчики в `/status` остались считать по-старому — и статистика говорила
+    «без привязки: 1» при пустом разделе. Расхождение заметил пользователь.
+    """
+    mapped_ids = select(TitleMapping.folder_id)
+    parents_of_mapped = select(LibraryFolder.parent_id).where(
+        LibraryFolder.parent_id.is_not(None),
+        LibraryFolder.id.in_(mapped_ids),
+    )
+    return select(LibraryFolder.id).where(
+        LibraryFolder.id.not_in(mapped_ids),
+        LibraryFolder.id.in_(parents_of_mapped),
+        LibraryFolder.video_count == 0,
+    )
+
+
 @router.get("/status")
 def library_status() -> dict[str, Any]:
     """Состояние корней и последнего сканирования."""
@@ -39,7 +65,15 @@ def library_status() -> dict[str, Any]:
         ).scalar_one_or_none()
 
         mapped = session.execute(select(func.count(func.distinct(TitleMapping.folder_id)))).scalar() or 0
-        total_folders = session.execute(select(func.count(LibraryFolder.id))).scalar() or 0
+        # Контейнеры из общего числа исключаем: они не «ждут привязки», привязку
+        # с них снимает сам скан. Считать их непривязанными значит показывать
+        # долг, которого нет, и звать чинить то, что в порядке.
+        containers = session.execute(
+            select(func.count()).select_from(_container_folder_ids().subquery())
+        ).scalar() or 0
+        total_folders = (
+            session.execute(select(func.count(LibraryFolder.id))).scalar() or 0
+        ) - containers
         needs_confirm = session.execute(
             select(func.count(TitleMapping.id)).where(TitleMapping.needs_confirmation.is_(True))
         ).scalar() or 0
@@ -82,18 +116,21 @@ def library_status() -> dict[str, Any]:
         }
 
 
-@router.post("/scan")
+@router.post(
+    "/scan",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
 def start_scan(
     full: Annotated[
         bool, Query(description="Разобрать все папки заново, не полагаясь на mtime")
     ] = False,
 ) -> dict[str, Any]:
     if library_scanner.running:
-        raise HTTPException(409, "Сканирование уже идёт")
+        raise ApiError(409, errors.SCAN_RUNNING, "Сканирование уже идёт")
     try:
         return library_scanner.scan_all(full=full)
     except RuntimeError as exc:
-        raise HTTPException(409, str(exc)) from exc
+        raise ApiError(409, errors.SCAN_REJECTED, str(exc), reason=str(exc)) from exc
 
 
 @router.get("/unmapped")
@@ -108,10 +145,16 @@ def unmapped_folders(
     """
     with session_scope() as session:
         mapped_ids = select(TitleMapping.folder_id)
+        # Папка-контейнер не «нераспознана»: привязку с неё снимает сам скан,
+        # когда тот же тайтл держит подпапка с файлами (см. D-62). Правило одно
+        # на список и на счётчики — см. `_container_folder_ids`.
         stmt = (
             select(LibraryFolder, LibraryRoot)
             .join(LibraryRoot, LibraryFolder.root_id == LibraryRoot.id)
-            .where(LibraryFolder.id.not_in(mapped_ids))
+            .where(
+                LibraryFolder.id.not_in(mapped_ids),
+                LibraryFolder.id.not_in(_container_folder_ids()),
+            )
         )
         if only_with_video:
             stmt = stmt.where(LibraryFolder.video_count > 0)
@@ -184,6 +227,154 @@ def unmatched_files(limit: Annotated[int, Query(ge=1, le=500)] = 200) -> list[di
         ]
 
 
+@router.get(
+    "/jellyfin-audit",
+    # Обходит библиотеку Jellyfin целиком, поэтому не чаще, чем нужно человеку.
+    dependencies=[Depends(rate_limit("jellyfin_audit", limit=10, window=60))],
+)
+async def jellyfin_audit() -> dict[str, Any]:
+    """Какие наши файлы Jellyfin не распознал.
+
+    Готового ответа у Jellyfin нет: он не сообщает, что пропустил, — он просто
+    этого не показывает. Считается разностью множеств на нашей стороне.
+    """
+    from app.services.jellyfin_audit import audit
+
+    return await audit()
+
+
+@router.get("/audio")
+def audio_library() -> list[dict[str, Any]]:
+    """Вся фонотека, сгруппированная по тайтлам."""
+    from app.services.audio_library import library
+
+    return library()
+
+
+@router.get("/jellyfin/collections")
+async def list_jellyfin_collections(
+    series_id: Annotated[int | None, Query(description="Отметить те, где тайтл уже состоит")] = None,
+) -> dict[str, Any]:
+    """Коллекции, которые уже есть в Jellyfin.
+
+    Нужны, чтобы добавлять в существующую, а не плодить одноимённые: у Jellyfin
+    нет запрета на две коллекции с одним названием, и разъехались бы они молча.
+
+    С `series_id` дополнительно помечаем те, где тайтл уже лежит — иначе человек
+    добавляет его во второй раз, не зная об этом. Состав приходится спрашивать
+    по коллекции: `Ancestors` у элемента коллекцию не показывает (проверено),
+    но коллекций единицы, так что обход дешёвый.
+    """
+    from app.services.jellyfin import jellyfin
+
+    if not jellyfin.turned_on or not jellyfin.configured:
+        return {"available": False, "collections": []}
+
+    rows = await jellyfin.collections()
+    if rows is None:
+        return {"available": False, "collections": [], "unreachable": True}
+
+    if series_id is not None:
+        found, _ = await _resolve_items([series_id])
+        item_id = found[0] if found else None
+        if item_id:
+            for row in rows:
+                row["contains"] = item_id in await jellyfin.collection_members(row["id"])
+
+    return {"available": True, "collections": rows}
+
+
+async def _resolve_items(series_ids: list[int]) -> tuple[list[str], list[int]]:
+    """Тайтлы -> элементы Jellyfin. Второй список — кого не нашли."""
+    from app.services.jellyfin import jellyfin
+    from app.services.mapping_info import title_folder_paths
+
+    found: list[str] = []
+    missing: list[int] = []
+    for series_id in series_ids:
+        rel_paths = title_folder_paths(series_id)
+        item = await jellyfin.find_item(rel_paths) if rel_paths else None
+        if item:
+            found.append(item["id"])
+        else:
+            missing.append(series_id)
+    return found, missing
+
+
+def _require_jellyfin() -> None:
+    from app.services.jellyfin import jellyfin
+
+    if not jellyfin.turned_on:
+        raise ApiError(409, errors.JELLYFIN_DISABLED, "Интеграция с Jellyfin выключена")
+    if not jellyfin.configured:
+        raise ApiError(409, errors.JELLYFIN_DISABLED, "Не задан адрес или ключ Jellyfin")
+
+
+class AddToCollectionRequest(BaseModel):
+    collection_id: Annotated[str, Field(min_length=1, max_length=64)]
+    series_ids: list[int] = Field(min_length=1, max_length=50)
+
+
+@router.post(
+    "/jellyfin/collections/add",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
+async def add_to_jellyfin_collection(payload: AddToCollectionRequest) -> dict[str, Any]:
+    """Добавляет тайтлы в существующую коллекцию."""
+    from app.services.jellyfin import jellyfin
+
+    _require_jellyfin()
+    found, missing = await _resolve_items(payload.series_ids)
+    if not found:
+        raise ApiError(
+            404,
+            errors.JELLYFIN_NOTHING_FOUND,
+            "Ни один из тайтлов не найден в Jellyfin — добавлять нечего",
+        )
+    if not await jellyfin.add_to_collection(payload.collection_id, found):
+        raise ApiError(502, errors.JELLYFIN_UNAVAILABLE, "Jellyfin не принял добавление")
+    return {"added": len(found), "missing": missing}
+
+
+class CollectionRequest(BaseModel):
+    name: Annotated[str, Field(min_length=1, max_length=200)]
+    #: Тайтлы, которые надо собрать вместе. Каждый ищется в Jellyfin по пути.
+    series_ids: list[int] = Field(min_length=1, max_length=50)
+
+
+@router.post(
+    "/jellyfin/collection",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
+async def create_jellyfin_collection(payload: CollectionRequest) -> dict[str, Any]:
+    """Собирает коллекцию в Jellyfin из указанных тайтлов.
+
+    Запасной путь, а не основной: обычно Jellyfin делает это сам по данным
+    TMDB. Кнопка нужна там, где TMDB тайтл не знает — а такое бывает.
+
+    Тайтлы, которых Jellyfin у себя не нашёл, в коллекцию не попадают, и об
+    этом сообщается отдельным числом: молча собрать половину и отчитаться
+    успехом было бы хуже.
+    """
+    from app.services.jellyfin import jellyfin
+
+    _require_jellyfin()
+    found, missing = await _resolve_items(payload.series_ids)
+
+    if not found:
+        raise ApiError(
+            404,
+            errors.JELLYFIN_NOTHING_FOUND,
+            "Ни один из тайтлов не найден в Jellyfin — собирать нечего",
+        )
+
+    result = await jellyfin.create_collection(payload.name, found)
+    if result is None:
+        raise ApiError(502, errors.JELLYFIN_UNAVAILABLE, "Jellyfin не создал коллекцию")
+
+    return {"created": len(found), "missing": missing, "collection": result}
+
+
 @router.get("/mappings")
 def list_mappings(limit: Annotated[int, Query(ge=1, le=1000)] = 500) -> list[dict[str, Any]]:
     """Все связи папка-тайтл с указанием, чем именно они получены."""
@@ -222,15 +413,18 @@ class ManualMapping(BaseModel):
     series_id: int
 
 
-@router.post("/mappings")
+@router.post(
+    "/mappings",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
 def create_mapping(payload: ManualMapping) -> dict[str, Any]:
     """Ручная привязка. Помечается is_manual и не перетирается сканированием."""
     with session_scope() as session:
         folder = session.get(LibraryFolder, payload.folder_id)
         if folder is None:
-            raise HTTPException(404, "Папка не найдена")
+            raise ApiError(404, errors.FOLDER_NOT_FOUND, "Папка не найдена")
         if session.get(Series, payload.series_id) is None:
-            raise HTTPException(404, "Тайтл не найден")
+            raise ApiError(404, errors.SERIES_NOT_FOUND, "Тайтл не найден")
 
         existing = session.execute(
             select(TitleMapping).where(
@@ -264,7 +458,10 @@ class PrimaryRequest(BaseModel):
     series_id: int
 
 
-@router.post("/mappings/{mapping_id}/primary")
+@router.post(
+    "/mappings/{mapping_id}/primary",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
 def make_primary(mapping_id: int, payload: PrimaryRequest) -> dict[str, Any]:
     """Назначает папку основной — туда будут складываться загрузки.
 
@@ -273,28 +470,34 @@ def make_primary(mapping_id: int, payload: PrimaryRequest) -> dict[str, Any]:
     какая из них «рабочая» — решает пользователь.
     """
     if not set_primary_mapping(payload.series_id, mapping_id):
-        raise HTTPException(404, "Связь не найдена у этого тайтла")
+        raise ApiError(404, errors.MAPPING_NOT_FOUND, "Связь не найдена у этого тайтла")
     return {"id": mapping_id, "is_primary": True}
 
 
-@router.post("/mappings/{mapping_id}/confirm")
+@router.post(
+    "/mappings/{mapping_id}/confirm",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
 def confirm_mapping(mapping_id: int) -> dict[str, Any]:
     """Подтверждение нечёткого совпадения — оно становится ручным."""
     with session_scope() as session:
         mapping = session.get(TitleMapping, mapping_id)
         if mapping is None:
-            raise HTTPException(404, "Связь не найдена")
+            raise ApiError(404, errors.MAPPING_NOT_FOUND, "Связь не найдена")
         mapping.needs_confirmation = False
         mapping.is_manual = True
         return {"id": mapping_id, "confirmed": True}
 
 
-@router.delete("/mappings/{mapping_id}")
+@router.delete(
+    "/mappings/{mapping_id}",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
 def delete_mapping(mapping_id: int) -> dict[str, Any]:
     with session_scope() as session:
         mapping = session.get(TitleMapping, mapping_id)
         if mapping is None:
-            raise HTTPException(404, "Связь не найдена")
+            raise ApiError(404, errors.MAPPING_NOT_FOUND, "Связь не найдена")
         session.delete(mapping)
     return {"deleted": mapping_id}
 
@@ -310,7 +513,7 @@ def parse_test(
     видно, что каким правилом разобралось и что осталось нераспознанным.
     """
     if len(names) > 5000:
-        raise HTTPException(400, "За раз не более 5000 имён")
+        raise ApiError(400, errors.TOO_MANY_NAMES, "За раз не более 5000 имён", max=5000)
 
     rules = get_rules()
     parsed: list[dict[str, Any]] = []
@@ -337,7 +540,10 @@ def parse_test(
     }
 
 
-@router.post("/reload-rules")
+@router.post(
+    "/reload-rules",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
 def reload_parsing_rules() -> dict[str, Any]:
     """Перечитывает config/filename_rules.yaml без перезапуска сервиса."""
     rules = reload_rules()
@@ -400,7 +606,200 @@ class ManualEpisodeMapping(BaseModel):
     role: str | None = Field(None, pattern="^(video|sub_ru|sub_ja|sub_en|sub_unknown)$")
 
 
-@router.post("/episode-mappings")
+class EpisodeTargetRequest(BaseModel):
+    series_id: int
+    episode: float
+    folder_id: int
+
+
+@router.get("/episode-targets/{series_id}")
+def list_episode_targets(series_id: int) -> dict[str, Any]:
+    """Серии этого тайтла, у которых своя папка назначения.
+
+    Нужно интерфейсу: об этом надо предупредить прямо на странице тайтла, а не
+    прятать в отдельный экран — иначе батч «все серии» разложит файлы не туда,
+    куда ожидает пользователь, и понять это можно будет только по факту.
+    """
+    with session_scope() as session:
+        rows = session.execute(
+            select(EpisodeTarget, LibraryFolder, LibraryRoot)
+            .join(LibraryFolder, EpisodeTarget.folder_id == LibraryFolder.id)
+            .join(LibraryRoot, LibraryFolder.root_id == LibraryRoot.id)
+            .where(EpisodeTarget.series_id == series_id)
+            .order_by(EpisodeTarget.episode)
+        ).all()
+
+        return {
+            "targets": [
+                {
+                    "id": target.id,
+                    "episode": target.episode,
+                    "folder_id": folder.id,
+                    "rel_path": folder.rel_path,
+                    "root_path": root.path,
+                    "full_path": f"{root.path}/{folder.rel_path}",
+                    "writable": root.is_writable,
+                }
+                for target, folder, root in rows
+            ]
+        }
+
+
+@router.get("/episode-targets/{series_id}/folders")
+def episode_target_folders(series_id: int) -> list[dict[str, Any]]:
+    """Папки, куда можно направить отдельную серию.
+
+    Берём не все папки библиотеки, а окрестность тайтла: привязанные к нему
+    плюс их соседи по родителю. Соседи нужны обязательно — типичный случай это
+    `Specials` рядом с `Season 1`, а она привязана к другому `series_id` и в
+    список «папок тайтла» не попала бы.
+
+    Полный список папок библиотеки здесь был бы бесполезен: их тысячи, и
+    выбирать серии папку из другого сериала незачем.
+    """
+    with session_scope() as session:
+        own = (
+            session.execute(
+                select(LibraryFolder)
+                .join(TitleMapping, TitleMapping.folder_id == LibraryFolder.id)
+                .where(TitleMapping.series_id == series_id)
+            )
+            .scalars()
+            .all()
+        )
+        if not own:
+            return []
+
+        # Родители и соседи: и сама папка тайтла, и сёстры вроде Specials.
+        parent_ids = {f.parent_id for f in own if f.parent_id} | {f.id for f in own}
+        siblings = (
+            session.execute(
+                select(LibraryFolder).where(
+                    LibraryFolder.parent_id.in_(parent_ids)
+                    | LibraryFolder.id.in_(parent_ids)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        by_id = {f.id: f for f in [*own, *siblings]}
+        roots = {
+            r.id: r
+            for r in session.execute(
+                select(LibraryRoot).where(
+                    LibraryRoot.id.in_({f.root_id for f in by_id.values()})
+                )
+            ).scalars()
+        }
+
+        out = []
+        for folder in by_id.values():
+            root = roots.get(folder.root_id)
+            out.append(
+                {
+                    "folder_id": folder.id,
+                    "rel_path": folder.rel_path,
+                    "name": folder.name,
+                    "season_number": folder.season_number,
+                    "video_count": folder.video_count,
+                    # Том только для чтения показываем, но выбрать не даём:
+                    # назначение туда не упадёт сейчас — оно упадёт при загрузке.
+                    "writable": bool(root and root.is_writable),
+                    "is_title_folder": any(f.id == folder.id for f in own),
+                }
+            )
+        out.sort(key=lambda item: item["rel_path"])
+        return out
+
+
+@router.delete(
+    "/episode-targets/series/{series_id}",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
+def clear_episode_targets(series_id: int) -> dict[str, int]:
+    """Снимает все назначения тайтла разом.
+
+    Отдельно от построчного сброса намеренно: у длинного сериала назначений
+    бывает два десятка, и убирать их по одному — это двадцать подтверждений.
+    """
+    with session_scope() as session:
+        rows = (
+            session.execute(select(EpisodeTarget).where(EpisodeTarget.series_id == series_id))
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            session.delete(row)
+        return {"deleted": len(rows)}
+
+
+@router.post(
+    "/episode-targets",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
+def create_episode_target(payload: EpisodeTargetRequest) -> dict[str, Any]:
+    """Назначает серии отдельную папку — вместо общей папки тайтла.
+
+    Не путать с `episode-mappings`: та связывает серию с уже существующим
+    файлом. Здесь речь о том, куда положить то, чего ещё нет.
+    """
+    with session_scope() as session:
+        folder = session.get(LibraryFolder, payload.folder_id)
+        if folder is None:
+            raise ApiError(404, errors.FOLDER_NOT_FOUND, "Папка не найдена")
+
+        root = session.get(LibraryRoot, folder.root_id)
+        if root is not None and not root.is_writable:
+            raise ApiError(
+                409,
+                errors.ROOT_READ_ONLY,
+                f"Папка {root.path} смонтирована только для чтения — загрузка невозможна",
+                path=root.path,
+            )
+
+        existing = session.execute(
+            select(EpisodeTarget).where(
+                EpisodeTarget.series_id == payload.series_id,
+                EpisodeTarget.episode == payload.episode,
+            )
+        ).scalar_one_or_none()
+
+        if existing is not None:
+            # Переназначение, а не вторая запись: две папки на одну серию
+            # означали бы, что предсказать место файла нельзя.
+            existing.folder_id = payload.folder_id
+            session.flush()
+            return {"id": existing.id, "created": False}
+
+        target = EpisodeTarget(
+            series_id=payload.series_id,
+            episode=payload.episode,
+            folder_id=payload.folder_id,
+        )
+        session.add(target)
+        session.flush()
+        return {"id": target.id, "created": True}
+
+
+@router.delete(
+    "/episode-targets/{target_id}",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
+def delete_episode_target(target_id: int) -> dict[str, Any]:
+    """Снимает назначение — серия вернётся в общую папку тайтла."""
+    with session_scope() as session:
+        target = session.get(EpisodeTarget, target_id)
+        if target is None:
+            raise ApiError(404, errors.MAPPING_NOT_FOUND, "Назначение не найдено")
+        session.delete(target)
+    return {"deleted": target_id}
+
+
+@router.post(
+    "/episode-mappings",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
 def create_episode_mapping(payload: ManualEpisodeMapping) -> dict[str, Any]:
     """Привязывает конкретный файл к конкретной серии вручную.
 
@@ -411,9 +810,9 @@ def create_episode_mapping(payload: ManualEpisodeMapping) -> dict[str, Any]:
     with session_scope() as session:
         file = session.get(LibraryFile, payload.file_id)
         if file is None:
-            raise HTTPException(404, "Файл не найден")
+            raise ApiError(404, errors.FILE_NOT_FOUND, "Файл не найден")
         if session.get(Series, payload.series_id) is None:
-            raise HTTPException(404, "Тайтл не найден")
+            raise ApiError(404, errors.SERIES_NOT_FOUND, "Тайтл не найден")
 
         role = payload.role
         if role is None:
@@ -422,7 +821,7 @@ def create_episode_mapping(payload: ManualEpisodeMapping) -> dict[str, Any]:
             elif file.kind == "subtitle":
                 role = SUB_ROLE.get(file.lang or "", "sub_unknown")
             else:
-                raise HTTPException(400, "Привязывать можно только видео и субтитры")
+                raise ApiError(400, errors.BIND_KIND_UNSUPPORTED, "Привязывать можно только видео и субтитры")
 
         # Прежние связи этого файла с этим тайтлом убираем целиком: файл — это
         # одна серия в одной роли, а не несколько сразу.
@@ -444,13 +843,16 @@ def create_episode_mapping(payload: ManualEpisodeMapping) -> dict[str, Any]:
         return {"id": mapping.id, "episode": payload.episode, "role": role}
 
 
-@router.delete("/episode-mappings/{mapping_id}")
+@router.delete(
+    "/episode-mappings/{mapping_id}",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
 def delete_episode_mapping(mapping_id: int) -> dict[str, Any]:
     """Снимает ручную привязку. Автоматическая вернётся на следующем скане."""
     with session_scope() as session:
         mapping = session.get(EpisodeMapping, mapping_id)
         if mapping is None:
-            raise HTTPException(404, "Связь не найдена")
+            raise ApiError(404, errors.MAPPING_NOT_FOUND, "Связь не найдена")
         session.delete(mapping)
     return {"deleted": mapping_id}
 
@@ -482,7 +884,14 @@ def mapping_report() -> dict[str, Any]:
             key = f"{low}–{min(low + 9, 100)}"
             buckets[key] = buckets.get(key, 0) + count
 
-        total_folders = session.execute(select(func.count(LibraryFolder.id))).scalar_one()
+        # Тот же вычет контейнеров, что и в /status: три места считали одно и то
+        # же по-разному, и статистика расходилась со списком.
+        containers = session.execute(
+            select(func.count()).select_from(_container_folder_ids().subquery())
+        ).scalar_one()
+        total_folders = (
+            session.execute(select(func.count(LibraryFolder.id))).scalar_one() - containers
+        )
         mapped_folders = session.execute(
             select(func.count(func.distinct(TitleMapping.folder_id)))
         ).scalar_one()
@@ -528,8 +937,14 @@ def mapping_report() -> dict[str, Any]:
     }
 
 
-@router.post("/series/{series_id}/probe-streams")
-async def probe_streams(series_id: int) -> dict[str, Any]:
+@router.post(
+    "/series/{series_id}/probe-streams",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
+async def probe_streams(
+    series_id: int,
+    force: Annotated[bool, Query(description="Перепроверить и уже проверенные файлы")] = False,
+) -> dict[str, Any]:
     """Определяет языки дорожек через ffprobe для файлов тайтла.
 
     Обычно не нужен: Jellyfin пишет список дорожек в `<streamdetails>` внутри
@@ -538,64 +953,21 @@ async def probe_streams(series_id: int) -> dict[str, Any]:
     которых данных ещё нет.
     """
     from app.core.config import settings
-    from app.services.audio import AudioError, ffmpeg_available, probe_stream_languages
+    from app.services.audio import ffmpeg_available
 
     if not settings.get_bool("enable_ffprobe"):
-        raise HTTPException(
+        raise ApiError(
             409,
+            errors.FFPROBE_DISABLED,
             "Определение дорожек через ffprobe выключено. Включите его в настройках, "
             "если у части файлов нет .nfo или в нём нет streamdetails",
         )
     if not ffmpeg_available():
-        raise HTTPException(503, "В образе нет ffmpeg")
+        raise ApiError(503, errors.FFMPEG_MISSING, "В образе нет ffmpeg")
+    if stream_probe.running:
+        raise ApiError(409, errors.SCAN_RUNNING, "Определение дорожек уже идёт")
 
-    with session_scope() as session:
-        folder_ids = select(TitleMapping.folder_id).where(TitleMapping.series_id == series_id)
-        rows = session.execute(
-            select(
-                LibraryFile.id,
-                LibraryFile.filename,
-                LibraryFolder.rel_path,
-                LibraryRoot.path,
-                LibraryFile.streams,
-            )
-            .join(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
-            .join(LibraryRoot, LibraryFolder.root_id == LibraryRoot.id)
-            .where(LibraryFile.folder_id.in_(folder_ids), LibraryFile.kind == "video")
-        ).all()
-
-    # ⚠️ Отбор по «нет данных» делаем в Python, а не условием в SQL.
-    # SQLAlchemy пишет Python None в JSON-колонку как строку 'null', а не как
-    # SQL NULL, поэтому `streams.is_(None)` не совпадает ни с одной строкой —
-    # проверка молча отбирала бы ноль кандидатов.
-    # Данные из .nfo при этом приоритетнее: они уже есть и достались даром.
-    rows = [row for row in rows if not row.streams]
-
-    probed = failed = 0
-    last_error: str | None = None
-
-    for file_id, filename, rel_path, root_path, _ in rows:
-        path = Path(root_path) / rel_path / filename
-        if not path.is_file():
-            failed += 1
-            continue
-        try:
-            streams = await probe_stream_languages(path)
-        except AudioError as exc:
-            failed += 1
-            last_error = str(exc)
-            log.warning("ffprobe не осилил %s: %s", filename, exc)
-            continue
-
-        with session_scope() as session:
-            row = session.get(LibraryFile, file_id)
-            if row is not None:
-                row.streams = streams
-        probed += 1
-
-    return {
-        "candidates": len(rows),
-        "probed": probed,
-        "failed": failed,
-        "reason": last_error if failed and not probed else None,
-    }
+    # Тот же сервис, что и у фоновой джобы: одна логика отбора кандидатов и
+    # одна запись результата. Здесь он вызывается для одного тайтла, поэтому
+    # ждать ответа приемлемо — файлов десятки, а не тысячи.
+    return await stream_probe.run(series_id=series_id, force=force)

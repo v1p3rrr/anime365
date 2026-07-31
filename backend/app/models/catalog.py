@@ -194,6 +194,12 @@ class TranslationEmbed(Base):
     # Реально доступные ступени скачивания, например [1080, 720, 360].
     download_heights: Mapped[list] = mapped_column(JSON, default=list)
 
+    # Вес файла по каждой ступени: {"1080": 229376000, "720": 83960238}.
+    # Заполняется отдельно от ступеней: чтобы узнать размер, нужен HEAD-запрос
+    # на CDN по каждой ступени, а ступени приходят одним ответом embed.
+    # Ключи строковые — JSON других не знает.
+    download_sizes: Mapped[dict] = mapped_column(JSON, default=dict)
+
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -211,6 +217,61 @@ class ScanRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
     stats: Mapped[dict | None] = mapped_column(JSON)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class SeriesRelations(Base):
+    """Порядок просмотра франшизы — из Шикимори.
+
+    Ключ — `mal_id`, а не наш `series_id`: связи приходят в терминах Шикимори,
+    и часть узлов относится к тайтлам, которых у нас в каталоге нет вовсе.
+    Привязка к `series` сделала бы такие узлы негде хранить.
+
+    Узлы лежат готовым списком: разбирать граф `links` каждый раз незачем —
+    порядок просмотра уже выражен полем `weight` у самих узлов.
+    """
+
+    __tablename__ = "series_relations"
+
+    mal_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    nodes: Mapped[list] = mapped_column(JSON, default=list)
+    checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class SeriesTranslations(Base):
+    """Какие типы переводов есть у тайтла НА САЙТЕ.
+
+    Не путать с покрытием библиотеки: там считается, что уже скачано, а здесь —
+    что вообще доступно к скачиванию. Для фильтра «покажи тайтлы с японскими
+    субтитрами» нужно именно второе.
+
+    Отдельная таблица, а не поля в `series`, по двум причинам. Данные приходят
+    другим путём (по запросу на тайтл, а не из списочной выдачи) и обновляются
+    своим расписанием, поэтому полный рескан каталога не должен их затирать.
+    И `checked_at` здесь про конкретно эту проверку: у `series` своей отметки
+    свежести нет.
+
+    Счётчики, а не флаги: «есть RU-озвучка» и «есть 27 RU-озвучек» — разные
+    сообщения, а фильтру `> 0` считается так же дёшево, как `is true`.
+    """
+
+    __tablename__ = "series_translations"
+
+    series_id: Mapped[int] = mapped_column(
+        ForeignKey("series.id", ondelete="CASCADE"), primary_key=True, autoincrement=False
+    )
+
+    sub_ja: Mapped[int] = mapped_column(Integer, default=0)
+    sub_ru: Mapped[int] = mapped_column(Integer, default=0)
+    sub_en: Mapped[int] = mapped_column(Integer, default=0)
+    raw_ja: Mapped[int] = mapped_column(Integer, default=0)
+    voice_ru: Mapped[int] = mapped_column(Integer, default=0)
+    voice_en: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Все переводы тайтла, включая те, что не попали ни в один из шести типов
+    # (украинская озвучка, voiceOth). Расхождение с суммой — не ошибка.
+    total: Mapped[int] = mapped_column(Integer, default=0)
+
+    checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
 Index("ix_translation_series_lang", Translation.series_id, Translation.type_lang)

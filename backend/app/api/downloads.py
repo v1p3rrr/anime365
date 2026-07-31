@@ -7,14 +7,21 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+
+from app.core import errors
+from app.core.errors import ApiError
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from app.api.deps import rate_limit
 from app.core.db import session_scope
+from app.core.permissions import Permission, require
+from app.models.catalog import Episode, Translation
 from app.models.downloads import ACTIVE_KEY, ACTIVE_STATUSES, DownloadTask, TaskStatus
 from app.models.library import LibraryFolder, LibraryRoot, TitleMapping
+from app.services.anime365 import Anime365Error, SubscriptionRequired
 from app.services.download_queue import QueueError, download_queue, enqueue
+from app.services.title_service import cached_has_subtitles, get_embed
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +40,12 @@ class BatchRequest(BaseModel):
     translation_ids: list[int] = Field(min_length=1, max_length=2000)
     kind: str = Field("video", pattern="^(video|subtitle|both|audio)$")
     height: int | None = None
+    #: Пропустить серии, у которых нужное уже лежит локально.
+    #:
+    #: Отбор идёт на сервере, а не на клиенте: «что уже есть» он и так считает
+    #: для списка серий, и вторая копия этой логики на фронте неизбежно
+    #: разошлась бы с первой.
+    only_missing: bool = False
 
 
 def _task_dict(task: DownloadTask) -> dict[str, Any]:
@@ -79,19 +92,59 @@ def _check_target_writable(series_id: int) -> None:
         ).scalar_one_or_none()
 
     if root is not None and not root.is_writable:
-        raise HTTPException(
+        raise ApiError(
             409,
+            errors.ROOT_READ_ONLY,
             f"Папка {root.path} смонтирована только для чтения — загрузка невозможна. "
             "Перемонтируйте том без флага :ro",
+            path=root.path,
         )
 
 
-@router.post("")
-def create_task(payload: EnqueueRequest) -> dict[str, Any]:
+# Вшитые субтитры растеризованы в кадры: отдельной дорожки в файле нет
+# (проверено ffprobe — только video и audio), извлечь их нечем. Значит отказ
+# окончательный, а не «попробуйте позже», и интерфейс вправе погасить кнопку
+# навсегда. Код нужен, чтобы фронт опознал случай, не разбирая текст.
+HARDSUB_CODE = "hardsub"
+HARDSUB_MESSAGE = (
+    "У этого перевода субтитры вшиты в видео — отдельного файла не существует. "
+    "Скачайте видео: субтитры уже в картинке."
+)
+
+
+async def _reject_hardsub(translation_id: int) -> None:
+    """Отказывает сразу, если у перевода нет файла субтитров.
+
+    Проверяем на постановке, а не в воркере: иначе задача уходит в очередь и
+    падает через несколько секунд, что выглядит как случайный сбой. Здесь же
+    пользователь получает объяснение в ответ на своё нажатие.
+
+    Один запрос к API на неизвестный перевод — приемлемо: это явное действие,
+    а повторные нажатия попадут уже в кэш.
+    """
+    try:
+        info = await get_embed(translation_id)
+    except (Anime365Error, SubscriptionRequired):
+        # Не смогли проверить — пропускаем дальше. Задача упадёт в воркере со
+        # своим сообщением, и это лучше, чем отказать по недоказанной причине.
+        return
+
+    if not info["has_subtitles"]:
+        raise ApiError(409, errors.HARDSUB, HARDSUB_MESSAGE)
+
+
+@router.post(
+    "",
+    dependencies=[Depends(require(Permission.DOWNLOADS))],
+)
+async def create_task(payload: EnqueueRequest) -> dict[str, Any]:
+    if payload.kind == "subtitle":
+        await _reject_hardsub(payload.translation_id)
+
     try:
         result = enqueue(payload.translation_id, payload.kind, payload.height)
     except QueueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise ApiError(400, errors.QUEUE_REJECTED, str(exc), reason=str(exc)) from exc
 
     # Звук уходит в корень фонотеки, а не в библиотеку: её доступность
     # на запись для такой задачи значения не имеет.
@@ -108,6 +161,46 @@ def _series_of(translation_id: int) -> int:
         return translation.series_id if translation else 0
 
 
+def _already_local(translation_ids: list[int]) -> dict[int, set[str]]:
+    """Что из запрошенного уже лежит локально — по каждому переводу.
+
+    Ключ — id перевода, значение — набор ролей (`video`, `subtitle`), которые
+    для его серии уже есть на диске.
+
+    Роли локальных файлов разложены по языкам (`sub_ru`, `sub_ja`, …), а батч
+    оперирует видом загрузки. Субтитры любого языка считаем закрывающими
+    «субтитры»: батч ставится на конкретного автора и язык, и если субтитры к
+    этой серии уже есть, повторная закачка того же языка — почти всегда не то,
+    чего хотят, нажимая «скачать отсутствующие».
+    """
+    from app.services.title_service import get_local_files
+
+    with session_scope() as session:
+        rows = session.execute(
+            select(Translation.id, Translation.series_id, Episode.episode_num)
+            .join(Episode, Translation.episode_id == Episode.id)
+            .where(Translation.id.in_(translation_ids))
+        ).all()
+
+    by_series: dict[int, dict[float, set[str]]] = {}
+    out: dict[int, set[str]] = {}
+    for translation_id, series_id, episode_num in rows:
+        if episode_num is None:
+            continue
+        if series_id not in by_series:
+            local: dict[float, set[str]] = {}
+            for item in get_local_files(series_id):
+                role = item["role"]
+                local.setdefault(item["episode"], set()).add(
+                    "video" if role == "video" else "subtitle"
+                )
+            by_series[series_id] = local
+        roles = by_series[series_id].get(episode_num)
+        if roles:
+            out[translation_id] = roles
+    return out
+
+
 @router.post(
     "/batch",
     # Один батч — до 2000 задач. Десяток таких подряд забьёт диск быстрее,
@@ -118,11 +211,26 @@ def create_batch(payload: BatchRequest) -> dict[str, Any]:
     """Пакетная постановка: «все видео», «все субтитры», «видео и субтитры»."""
     kinds = ["video", "subtitle"] if payload.kind == "both" else [payload.kind]
 
-    created = skipped = failed = 0
+    created = skipped = failed = hardsub = 0
+    already = 0
     errors: list[str] = []
+
+    have = _already_local(payload.translation_ids) if payload.only_missing else {}
 
     for translation_id in payload.translation_ids:
         for kind in kinds:
+            if payload.only_missing and kind in have.get(translation_id, ()):
+                already += 1
+                skipped += 1
+                continue
+            # Про вшитые субтитры спрашиваем только кэш: в батче переводов
+            # бывают сотни, и запрос к API на каждый превратил бы постановку
+            # очереди в многоминутную операцию. Непроверенные уйдут в очередь
+            # и упадут по одному — это по-прежнему честнее, чем задержка.
+            if kind == "subtitle" and cached_has_subtitles(translation_id) is False:
+                hardsub += 1
+                skipped += 1
+                continue
             try:
                 result = enqueue(translation_id, kind, payload.height)
                 created += 1 if result["created"] else 0
@@ -132,7 +240,18 @@ def create_batch(payload: BatchRequest) -> dict[str, Any]:
                 if len(errors) < 10:
                     errors.append(f"{translation_id}: {exc}")
 
-    return {"created": created, "skipped": skipped, "failed": failed, "errors": errors}
+    return {
+        "created": created,
+        "skipped": skipped,
+        "failed": failed,
+        # Отдельным числом, а не в общей куче пропущенных: «эти субтитры скачать
+        # нельзя в принципе» — не то же самое, что «уже в очереди».
+        "hardsub_skipped": hardsub,
+        # Тоже отдельным числом: «это уже лежит на диске» — не ошибка и не
+        # «уже в очереди», и в сводке это должно читаться как успех.
+        "already_local": already,
+        "errors": errors,
+    }
 
 
 @router.get("")
@@ -162,12 +281,15 @@ def list_tasks(
         }
 
 
-@router.post("/{task_id}/retry")
+@router.post(
+    "/{task_id}/retry",
+    dependencies=[Depends(require(Permission.DOWNLOADS))],
+)
 def retry_task(task_id: int) -> dict[str, Any]:
     with session_scope() as session:
         task = session.get(DownloadTask, task_id)
         if task is None:
-            raise HTTPException(404, "Задача не найдена")
+            raise ApiError(404, errors.TASK_NOT_FOUND, "Задача не найдена")
         task.status = TaskStatus.QUEUED
         task.attempts = 0
         task.retry_after = None
@@ -177,12 +299,15 @@ def retry_task(task_id: int) -> dict[str, Any]:
     return {"id": task_id, "status": TaskStatus.QUEUED}
 
 
-@router.post("/{task_id}/pause")
+@router.post(
+    "/{task_id}/pause",
+    dependencies=[Depends(require(Permission.DOWNLOADS))],
+)
 def pause_task(task_id: int) -> dict[str, Any]:
     with session_scope() as session:
         task = session.get(DownloadTask, task_id)
         if task is None:
-            raise HTTPException(404, "Задача не найдена")
+            raise ApiError(404, errors.TASK_NOT_FOUND, "Задача не найдена")
         if task.status == TaskStatus.QUEUED:
             task.status = TaskStatus.PAUSED
         elif task.status == TaskStatus.DOWNLOADING:
@@ -191,24 +316,30 @@ def pause_task(task_id: int) -> dict[str, Any]:
     return {"id": task_id, "paused": True}
 
 
-@router.post("/{task_id}/resume")
+@router.post(
+    "/{task_id}/resume",
+    dependencies=[Depends(require(Permission.DOWNLOADS))],
+)
 def resume_task(task_id: int) -> dict[str, Any]:
     with session_scope() as session:
         task = session.get(DownloadTask, task_id)
         if task is None:
-            raise HTTPException(404, "Задача не найдена")
+            raise ApiError(404, errors.TASK_NOT_FOUND, "Задача не найдена")
         if task.status == TaskStatus.PAUSED:
             task.status = TaskStatus.QUEUED
             task.retry_after = None
     return {"id": task_id, "resumed": True}
 
 
-@router.post("/{task_id}/cancel")
+@router.post(
+    "/{task_id}/cancel",
+    dependencies=[Depends(require(Permission.DOWNLOADS))],
+)
 def cancel_task(task_id: int) -> dict[str, Any]:
     with session_scope() as session:
         task = session.get(DownloadTask, task_id)
         if task is None:
-            raise HTTPException(404, "Задача не найдена")
+            raise ApiError(404, errors.TASK_NOT_FOUND, "Задача не найдена")
         if task.status in ACTIVE_STATUSES:
             download_queue.cancel(task_id)
         else:
@@ -218,19 +349,28 @@ def cancel_task(task_id: int) -> dict[str, Any]:
     return {"id": task_id, "cancelled": True}
 
 
-@router.post("/pause-all")
+@router.post(
+    "/pause-all",
+    dependencies=[Depends(require(Permission.DOWNLOADS))],
+)
 def pause_all() -> dict[str, Any]:
     download_queue.pause_all()
     return {"paused": True}
 
 
-@router.post("/resume-all")
+@router.post(
+    "/resume-all",
+    dependencies=[Depends(require(Permission.DOWNLOADS))],
+)
 def resume_all() -> dict[str, Any]:
     download_queue.resume_all()
     return {"paused": False}
 
 
-@router.post("/clear-finished")
+@router.post(
+    "/clear-finished",
+    dependencies=[Depends(require(Permission.DOWNLOADS))],
+)
 def clear_finished() -> dict[str, Any]:
     """Убирает из списка завершённые задачи — историю чистить полезно."""
     from sqlalchemy import delete

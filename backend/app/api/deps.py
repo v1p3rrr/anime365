@@ -12,6 +12,9 @@ from collections.abc import Callable
 
 from fastapi import HTTPException, Request
 
+from app.core import errors
+from app.core.errors import ApiError
+
 from app.core.security import rate_limiter
 
 
@@ -21,9 +24,12 @@ def rate_limit(name: str, limit: int, window: float) -> Callable[[Request], None
     def dependency(request: Request) -> None:
         client = request.client.host if request.client else "unknown"
         if not rate_limiter.allow(f"{name}:{client}", limit, window):
-            raise HTTPException(
+            raise ApiError(
                 429,
+                errors.RATE_LIMITED,
                 f"Слишком часто. Разрешено {limit} запросов за {int(window)} с — подождите немного.",
+                limit=limit,
+                window=int(window),
             )
 
     return dependency

@@ -14,10 +14,12 @@ import { IconSearch } from '@tabler/icons-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
-import { formatBytes, libraryApi } from '../api/library'
+import { libraryApi } from '../api/library'
 import { ErrorState } from './ErrorState'
 import pathClasses from './PathLine.module.css'
 import { useT } from '../i18n'
+import { useFormat } from '../i18n/format'
+import { useApiError } from '../i18n/apiError'
 
 interface Props {
   opened: boolean
@@ -34,6 +36,8 @@ interface Props {
  */
 export function BindFolderModal({ opened, seriesId, seriesTitle, onClose }: Props) {
   const { t } = useT()
+  const format = useFormat()
+  const apiError = useApiError()
   const queryClient = useQueryClient()
   const [filter, setFilter] = useState('')
 
@@ -60,7 +64,7 @@ export function BindFolderModal({ opened, seriesId, seriesTitle, onClose }: Prop
       onClose()
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: t('bindFolder.failed'), message: error.message }),
+      notifications.show({ color: 'red', title: t('bindFolder.failed'), message: apiError(error) }),
   })
 
   return (
@@ -87,8 +91,7 @@ export function BindFolderModal({ opened, seriesId, seriesTitle, onClose }: Prop
 
         {folders.data?.length === 0 && (
           <Text size="sm" c="dimmed">
-            Свободных папок нет — все уже привязаны. Чтобы перенести привязку, сначала отвяжите
-            папку от прежнего тайтла.
+{t('bindFolder.allTaken')}
           </Text>
         )}
 
@@ -110,11 +113,11 @@ export function BindFolderModal({ opened, seriesId, seriesTitle, onClose }: Prop
                 </Badge>
                 {folder.season_number != null && (
                   <Badge size="xs" variant="light">
-                    сезон {folder.season_number}
+                    {t('bindFolder.season', { n: folder.season_number })}
                   </Badge>
                 )}
                 <Text size="xs" c="dimmed">
-                  {folder.video_count} видео · {formatBytes(folder.size_bytes)}
+                  {t('bindFolder.videosAndSize', { count: folder.video_count, size: format.size(folder.size_bytes) })}
                   {folder.nfo_title ? ` · ${folder.nfo_title}` : ''}
                 </Text>
               </Group>

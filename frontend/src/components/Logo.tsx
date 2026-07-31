@@ -1,6 +1,8 @@
 import { Text } from '@mantine/core'
 import { useState } from 'react'
 
+import classes from './Logo.module.css'
+
 /**
  * Логотип в шапке.
  *
@@ -33,17 +35,11 @@ export function Logo({ height = 28 }: Props) {
 
   return (
     <img
+      className={classes.logo}
       src={LOGO_URL}
       alt="Anime365 Downloader"
       onError={() => setFailed(true)}
-      style={{
-        height,
-        width: 'auto',
-        // Логотип не должен растягивать шапку на узком экране.
-        maxWidth: '52vw',
-        objectFit: 'contain',
-        display: 'block',
-      }}
+      style={{ height }}
     />
   )
 }

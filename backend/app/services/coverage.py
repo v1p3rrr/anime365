@@ -240,6 +240,67 @@ def resolve_height(preferred: int, available: list[int]) -> int | None:
     return max(suitable) if suitable else max(available)
 
 
+def median_duration(durations: Iterable[float]) -> float | None:
+    """Длительность серии по её переводам — медианой, а не средним.
+
+    Данные шумные: у одной и той же серии Фрирен встречаются и 50 секунд, и два
+    часа. Это не ошибка выгрузки, а реальность — под одной серией лежат и
+    обрезки, и склейки нескольких серий, и записи целого блока вещания.
+    Среднее такие выбросы утащат куда угодно, медиана их просто не заметит.
+
+    Замерено на кэше: у Zombieland Saga медианы всех серий совпадают до секунды
+    (23м 42с), у Фрирен разброс медиан меньше двух минут при разбросе исходных
+    значений от 12 минут до двух часов.
+    """
+    values = sorted(d for d in durations if d and d > 0)
+    if not values:
+        return None
+    middle = len(values) // 2
+    if len(values) % 2:
+        return values[middle]
+    return (values[middle - 1] + values[middle]) / 2
+
+
+def auto_is_movie(series_type: str, content_episodes: int) -> bool:
+    """Раскладывать ли тайтл как фильм, когда пользователь не решил сам.
+
+    `type == "movie"` достаточно, включая связки из нескольких частей.
+
+    Раньше связку уводили в сериалы — из-за коллизии имён: у фильма в имени
+    файла нет номера серии, и обе части получали одно имя. **Решение изменено
+    по возражению пользователя**, и возражение верное: части многосерийного
+    фильма — самостоятельные фильмы. Их крутили в кинотеатрах отдельно, у них
+    отдельные страницы на AniList, и место им в библиотеке фильмов.
+
+    Коллизия решается не подменой типа, а именем ПАПКИ: каждая часть получает
+    свою (`… (2025) - 1`, `… (2025) - 2`), см. `is_multipart_movie`.
+
+    Связывать части между собой нам не нужно: Jellyfin делает это сам
+    коллекциями по данным TMDB. Проверено на библиотеке пользователя — у
+    коллекции Heaven's Feel стоит `Tmdb: 390636`, то есть она создана
+    автоматически, а не руками.
+    """
+    return series_type == "movie"
+
+
+def is_multipart_movie(series_type: str, content_episodes: int) -> bool:
+    """Фильм из нескольких частей — каждой нужна своя папка.
+
+    Одиночному фильму номер части в имени не нужен и только мешал бы Jellyfin
+    сопоставить его с TMDB.
+    """
+    return series_type == "movie" and content_episodes > 1
+
+
+def resolve_is_movie(
+    treat_as_movie: bool | None, series_type: str, content_episodes: int
+) -> bool:
+    """Решение пользователя, а при его отсутствии — автоопределение."""
+    if treat_as_movie is not None:
+        return treat_as_movie
+    return auto_is_movie(series_type, content_episodes)
+
+
 def effective_episode_total(number_of_episodes: int, api_episodes: int, local_max: int = 0) -> int:
     """Сколько серий считать «всеми».
 

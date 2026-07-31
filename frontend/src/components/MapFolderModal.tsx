@@ -21,6 +21,8 @@ import { libraryApi, type UnmappedFolder } from '../api/library'
 import { ErrorState } from './ErrorState'
 import pathClasses from './PathLine.module.css'
 import { useT } from '../i18n'
+import { useApiError } from '../i18n/apiError'
+import { useTitleName } from '../i18n/titles'
 
 interface Props {
   folder: UnmappedFolder | null
@@ -36,6 +38,8 @@ interface Props {
  */
 export function MapFolderModal({ folder, onClose }: Props) {
   const { t } = useT()
+  const apiError = useApiError()
+  const titleName = useTitleName()
   const queryClient = useQueryClient()
   const [query, setQuery] = useState('')
   const [debounced] = useDebouncedValue(query, 300)
@@ -68,7 +72,7 @@ export function MapFolderModal({ folder, onClose }: Props) {
       onClose()
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: t('mapFolder.failed'), message: error.message }),
+      notifications.show({ color: 'red', title: t('mapFolder.failed'), message: apiError(error) }),
   })
 
   return (
@@ -80,8 +84,8 @@ export function MapFolderModal({ folder, onClose }: Props) {
               {folder.rel_path}
             </Text>
             <Text size="xs" c="dimmed">
-              {folder.video_count} видео
-              {folder.season_number != null ? ` · сезон ${folder.season_number}` : ''}
+              {t('mapFolder.videos', { count: folder.video_count })}
+              {folder.season_number != null ? t('mapFolder.seasonSuffix', { n: folder.season_number }) : ''}
               {folder.nfo_title
                 ? t('mapFolder.withNfo', { title: folder.nfo_title })
                 : t('mapFolder.noNfo')}
@@ -89,8 +93,7 @@ export function MapFolderModal({ folder, onClose }: Props) {
             </Text>
             {folder.season_number != null && folder.season_number > 0 && (
               <Text size="xs" c="dimmed" mt={2}>
-                В Anime365 каждый сезон — отдельный тайтл, поэтому привязывать нужно
-                именно к нужному сезону, а не к первому.
+                {t('mapFolder.seasonHint')}
               </Text>
             )}
           </Alert>
@@ -135,11 +138,11 @@ export function MapFolderModal({ folder, onClose }: Props) {
                   )}
                   <div style={{ minWidth: 0 }}>
                     <Text size="sm" fw={500} style={{ wordBreak: 'break-word' }}>
-                      {card.title_ru ?? card.title_romaji}
+                      {titleName.primary(card, `#${card.id}`)}
                     </Text>
-                    {card.title_ru && card.title_romaji && (
+                    {titleName.secondary(card) && (
                       <Text size="xs" c="dimmed" style={{ wordBreak: 'break-word' }}>
-                        {card.title_romaji}
+                        {titleName.secondary(card)}
                       </Text>
                     )}
                     <Group gap={4} mt={2}>
@@ -153,7 +156,7 @@ export function MapFolderModal({ folder, onClose }: Props) {
                       )}
                       {card.number_of_episodes > 0 && (
                         <Badge size="xs" variant="light" color="gray">
-                          {card.number_of_episodes} эп.
+                          {card.number_of_episodes} {t('common.episodes')}
                         </Badge>
                       )}
                     </Group>
@@ -165,7 +168,7 @@ export function MapFolderModal({ folder, onClose }: Props) {
 
           <Group justify="flex-end">
             <Button variant="default" onClick={onClose}>
-              Отмена
+              {t('common.cancel')}
             </Button>
           </Group>
         </Stack>

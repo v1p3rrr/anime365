@@ -16,8 +16,17 @@ export interface EpisodeItem {
   episode_title: string
   episode_type: string
   is_content: boolean
+  /** Страница серии на сайте. null — переводов нет, выводить адрес не из чего. */
+  url: string | null
   /** Что уже лежит локально: video, sub_ru, sub_ja, sub_en. */
   have: string[]
+  /**
+   * Языки звука локального видео. Пустой список при наличии видео означает
+   * «определить не удалось» — тогда панель загрузки ничего не прячет.
+   */
+  audio_langs: string[]
+  /** Секунды; медиана по переводам серии. null — данных нет. */
+  duration: number | null
   /** Переводы этой серии — из них выбирается, что скачать. */
   translations: EpisodeTranslation[]
 }
@@ -107,8 +116,32 @@ export interface LocalCoverage {
   has_local_files: boolean
 }
 
+/**
+ * Куда уедет загрузка, если тайтл ещё не привязан к папке.
+ *
+ * Заполнено только при отсутствии привязки: папка создаётся сама при первой
+ * загрузке, и её имя надо показать до нажатия, а не после.
+ */
+export interface ProposedFolder {
+  folder_name: string
+  /** Откуда взято написание: en | romaji | ru. Null — подходящего не нашлось. */
+  name_source: string | null
+  root_path: string
+  root_kind: string
+  full_path: string
+  /** false — том только для чтения, папку создать не выйдет. */
+  writable: boolean
+  /**
+   * Многосерийный фильм: единой папки не будет вовсе, у каждой части своя.
+   * `folder_name` показан для первой — об этом надо сказать вслух, иначе
+   * человек ждёт одну папку и получает три.
+   */
+  per_part: boolean
+}
+
 export interface TitlePageData {
   mappings: TitleMappingInfo[]
+  proposed_folder: ProposedFolder | null
   local: LocalCoverage
   series: {
     id: number
@@ -133,6 +166,8 @@ export interface TitlePageData {
   genres: Array<{ id: number; title: string }>
   episodes: EpisodeItem[]
   total_episodes: number
+  /** Типичная длительность серии в секундах — медиана серийных медиан. */
+  typical_duration: number | null
   summary: SummarySection[]
   quality: QualitySummary
 }
@@ -142,13 +177,65 @@ export interface EmbedInfo {
   /** false у перевода с субтитрами означает, что они вшиты в видео. */
   has_subtitles: boolean
   heights: number[]
+  /**
+   * Вес файла по ступеням: `{ "1080": 229376000 }`. Ключи строковые — так их
+   * отдаёт JSON. Ступени без размера просто отсутствуют: узнать вес удаётся
+   * не всегда, и это не повод прятать саму ступень.
+   */
+  sizes: Record<string, number>
   from_cache: boolean
+}
+
+/** Узел франшизы: тайтл из линейки, свой или чужой. */
+export interface RelationNode {
+  mal_id: number
+  name: string | null
+  /** Русская подпись типа с Шикимори: «TV Сериал», «Фильм». Не код. */
+  kind: string | null
+  year: number | null
+  shikimori_url: string | null
+  /** null — тайтла нет в нашем каталоге, внутрь вести некуда. */
+  series_id: number | null
+  /** Наши названия — чтобы показать на языке интерфейса. */
+  titles: Record<string, string> | null
+}
+
+export interface RelationsResponse {
+  nodes: RelationNode[]
+  /** false — у тайтла нет mal_id, спрашивать связи не у чего. */
+  available: boolean
+}
+
+export interface JellyfinLink {
+  available: boolean
+  /** Ссылка на страницу тайтла в веб-интерфейсе Jellyfin. */
+  url?: string
+  item_id?: string
+  /** Series | Season | Movie — на что именно указывает ссылка. */
+  item_type?: string
+  /**
+   * Почему ссылки нет. Каждая причина чинится по-своему, поэтому их четыре,
+   * а не одно «нет»: disabled — тумблер выключен, not_configured — включён,
+   * но нет адреса или ключа, not_mapped — тайтл не привязан к папке,
+   * not_found — Jellyfin ещё не видел эту папку.
+   */
+  reason?: 'disabled' | 'not_configured' | 'not_mapped' | 'not_found'
+  /** Для not_configured: каких именно настроек не хватает. */
+  missing?: Array<'url' | 'api_key'>
 }
 
 export const titleApi = {
   page: (id: number, refresh = false) =>
     api.get<TitlePageData>(`/series/${id}${refresh ? '?refresh=true' : ''}`),
-  embed: (translationId: number) => api.get<EmbedInfo>(`/translations/${translationId}/embed`),
+  embed: (translationId: number, options?: { withSizes?: boolean }) =>
+    api.get<EmbedInfo>(
+      `/translations/${translationId}/embed${options?.withSizes ? '?with_sizes=true' : ''}`,
+    ),
+  relations: (seriesId: number) =>
+    api.get<RelationsResponse>(`/series/${seriesId}/relations`),
+  jellyfin: (seriesId: number) => api.get<JellyfinLink>(`/series/${seriesId}/jellyfin`),
+  audio: (seriesId: number) =>
+    api.get<{ tracks: import('./library').AudioTrack[] }>(`/series/${seriesId}/audio`),
   unbind: (mappingId: number) => api.del<{ deleted: number }>(`/library/mappings/${mappingId}`),
   makePrimary: (mappingId: number, seriesId: number) =>
     api.post<unknown>(`/library/mappings/${mappingId}/primary`, { series_id: seriesId }),

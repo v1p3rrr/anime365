@@ -17,6 +17,11 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+# Приведение языков переехало в отдельный модуль: словаря на три языка не
+# хватало — всё остальное он молча выбрасывал. Реэкспорт оставлен, чтобы
+# вызывающие места не переписывать.
+from app.services.languages import normalize_lang  # noqa: F401
+
 log = logging.getLogger(__name__)
 
 
@@ -46,27 +51,9 @@ CONTAINER_BY_CODEC: dict[str, str] = {
 
 FALLBACK_CONTAINER = ".mka"
 
-# ISO 639-2/B и прочие написания, которые встречаются в дорожках, к нашим кодам.
-LANG_ALIASES: dict[str, str] = {
-    "rus": "ru",
-    "ru": "ru",
-    "jpn": "ja",
-    "jap": "ja",
-    "ja": "ja",
-    "eng": "en",
-    "en": "en",
-}
-
-
 def container_for_codec(codec: str) -> str:
     """Расширение под кодек. Неизвестное — в Matroska, она принимает всё."""
     return CONTAINER_BY_CODEC.get((codec or "").lower(), FALLBACK_CONTAINER)
-
-
-def normalize_lang(raw: str | None) -> str | None:
-    if not raw:
-        return None
-    return LANG_ALIASES.get(raw.strip().lower())
 
 
 @dataclass(frozen=True)

@@ -8,7 +8,9 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
-    "lint": "eslint src --ext ts,tsx"
+    "lint": "eslint src --ext ts,tsx",
+    "prebuild": "node scripts/copy-libass.mjs",
+    "predev": "node scripts/copy-libass.mjs"
   },
   "dependencies": {
     "@mantine/core": "7.15.3",
@@ -17,7 +19,8 @@
     "@tabler/icons-react": "3.26.0",
     "@tanstack/react-query": "5.62.11",
     "@tanstack/react-virtual": "3.11.2",
-    "jassub": "^2.5.11",
+    "artplayer": "^5.4.0",
+    "artplayer-plugin-libass": "^1.0.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "react-router-dom": "7.1.1"

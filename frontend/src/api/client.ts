@@ -12,6 +12,21 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    /**
+     * Машинный код случая, если сервер его прислал.
+     *
+     * Нужен там, где интерфейс обязан отреагировать иначе, чем просто показать
+     * текст: например, отказ «субтитры вшиты» окончателен, и кнопку после него
+     * надо погасить. Разбирать ради этого сообщение нельзя — оно переводится.
+     */
+    public code?: string,
+    /**
+     * Значения для подстановки в переведённое сообщение (путь, имя, число).
+     *
+     * Приходят отдельно от текста намеренно: собранную строку не разобрать, а
+     * переводы отличаются порядком слов — склеить их из кусков нельзя.
+     */
+    public params?: Record<string, string | number>,
   ) {
     super(message)
   }
@@ -42,9 +57,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     let detail = response.statusText
+    let code: string | undefined
+    let params: Record<string, string | number> | undefined
     try {
       const body = await response.json()
-      detail = body.detail ?? detail
+      // detail бывает строкой (валидация FastAPI и сторонние ответы) или
+      // объектом { code, message, params } — так отвечает наш ApiError.
+      // Сообщение в нём русское и служит запасным вариантом: показываем его,
+      // когда код клиенту незнаком, чтобы новый код на сервере не оставлял
+      // пользователя с пустым местом вместо объяснения.
+      if (body.detail && typeof body.detail === 'object' && !Array.isArray(body.detail)) {
+        detail = body.detail.message ?? detail
+        code = body.detail.code
+        params = body.detail.params
+      } else if (typeof body.detail === 'string') {
+        detail = body.detail
+      }
     } catch {
       // Тело может быть не JSON — тогда довольствуемся статусом.
     }
@@ -53,14 +81,49 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       // «Требуется вход» в каждой карточке вместо формы пароля.
       window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
     }
-    throw new ApiError(response.status, detail)
+    throw new ApiError(response.status, detail, code, params)
   }
 
   return response.json() as Promise<T>
 }
 
+/**
+ * То же самое, но ответ — текст, а не JSON.
+ *
+ * Нужен субтитрам: `.ass` приходит текстом, а вот **ошибки у него те же
+ * самые**, в том числе `{code, message, params}`. Разбирать их отдельным
+ * `fetch` уже пробовали — получилось «[object Object]» вместо причины, потому
+ * что `detail` объект, а его клали прямо в `new Error()`.
+ */
+async function requestText(path: string): Promise<string> {
+  const response = await fetch(`/api${path}`, { credentials: 'same-origin' })
+  if (!response.ok) {
+    // Ошибку разбираем ровно как в request(): тело у неё JSON, даже когда
+    // успешный ответ — текст.
+    let detail = response.statusText
+    let code: string | undefined
+    let params: Record<string, string | number> | undefined
+    try {
+      const body = await response.json()
+      if (body.detail && typeof body.detail === 'object' && !Array.isArray(body.detail)) {
+        detail = body.detail.message ?? detail
+        code = body.detail.code
+        params = body.detail.params
+      } else if (typeof body.detail === 'string') {
+        detail = body.detail
+      }
+    } catch {
+      // не JSON — довольствуемся статусом
+    }
+    if (response.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
+    throw new ApiError(response.status, detail, code, params)
+  }
+  return response.text()
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
+  getText: (path: string) => requestText(path),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) }),
   put: <T>(path: string, body?: unknown) =>
@@ -83,8 +146,11 @@ export interface LocalBadges {
 
 export interface CatalogCard {
   id: number
+  /** Все четыре названия: какое показать, решает язык интерфейса (см. i18n/titles). */
   title_ru: string | null
   title_romaji: string | null
+  title_en: string | null
+  title_ja: string | null
   type: string
   type_title: string
   year: number | null
@@ -101,8 +167,12 @@ export interface CatalogCard {
 }
 
 export interface CatalogIdsResponse {
+  /** Окно идентификаторов, а не вся выборка. */
   ids: number[]
+  /** Полный размер выборки — по нему считаются страницы и конец подгрузки. */
   total: number
+  offset: number
+  limit: number
 }
 
 export interface GenreItem {
@@ -142,8 +212,21 @@ export interface CatalogFilters {
   local?: 'only' | 'missing'
   /** Только нечёткие привязки, ждущие подтверждения. */
   mappingProblem?: boolean
+  /**
+   * Какие типы перевода должны быть НА САЙТЕ (не в библиотеке).
+   *
+   * Данные собирает фоновая джоба; тайтлы, до которых она ещё не дошла, под
+   * фильтр не подпадают — мы про них просто ничего не знаем.
+   */
+  has?: string[]
+  /** Требовать все выбранные типы сразу, а не любой из них. */
+  hasAll?: boolean
   sort?: SortField
   sortDir?: 'asc' | 'desc'
+  /** Смещение окна выдачи. Полный размер выборки приходит в `total`. */
+  offset?: number
+  /** Сколько идентификаторов запросить за раз. Потолок сервера — 500. */
+  limit?: number
 }
 
 export type SortField = 'id' | 'year' | 'score' | 'title'
@@ -171,8 +254,14 @@ function buildParams(filters: CatalogFilters): string {
   if (filters.scoreFrom !== undefined) params.set('score_from', String(filters.scoreFrom))
   if (filters.local) params.set('local', filters.local)
   if (filters.mappingProblem) params.set('mapping_problem', 'true')
+  if (filters.has?.length) {
+    for (const type of filters.has) params.append('has', type)
+    if (filters.hasAll) params.set('has_all', 'true')
+  }
   if (filters.sort) params.set('sort', filters.sort)
   if (filters.sortDir) params.set('sort_dir', filters.sortDir)
+  if (filters.offset) params.set('offset', String(filters.offset))
+  if (filters.limit) params.set('limit', String(filters.limit))
   return params.toString()
 }
 

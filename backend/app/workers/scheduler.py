@@ -17,6 +17,8 @@ from app.core.config import settings
 from app.services.catalog_sync import catalog_sync
 from app.services.library_service import library_scanner
 from app.services.library_watcher import WatcherState, library_watcher
+from app.services.stream_probe import stream_probe
+from app.services.translation_scan import scan_interval_hours, scan_rpm, scan_scope, translation_scan
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +57,40 @@ def _on_library_changed(folders: set) -> None:
         library_scanner.scan_all()
     except Exception:
         log.exception("Пересканирование после изменений в файловой системе не удалось")
+
+
+async def _translation_job() -> None:
+    """Сбор сведений о доступных типах перевода.
+
+    Не пересекается с синхронизацией каталога намеренно: обе ходят на сайт, и
+    одновременный запуск удвоил бы частоту запросов ровно тогда, когда мы её и
+    стараемся держать низкой.
+    """
+    if catalog_sync.running:
+        log.info("Синхронизация каталога идёт, сбор сведений о переводах отложен")
+        return
+    try:
+        await translation_scan.run()
+    except Exception:
+        log.exception("Сбор сведений о переводах не удался")
+
+
+async def _stream_probe_job() -> None:
+    """Определение дорожек — следом за сканом библиотеки.
+
+    Отдельной джобой, а не внутри скана: скан синхронный и быстрый (секунды),
+    а этот обход растянут паузами и может идти минутами. Смешивать их значило
+    бы держать признак «идёт сканирование» всё это время.
+
+    Тумблер проверяется внутри сервиса, поэтому при выключенном ffprobe джоба
+    просто ничего не делает и не стоит ничего.
+    """
+    if library_scanner.running:
+        return
+    try:
+        await stream_probe.run()
+    except Exception:
+        log.exception("Определение дорожек не удалось")
 
 
 def _library_job() -> None:
@@ -98,6 +134,15 @@ def start_scheduler() -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
     )
+    # Идёт по тому же расписанию, что и сверочный скан, но отдельной задачей:
+    # к этому моменту скан уже расставил файлы, и остаётся добрать дорожки.
+    scheduler.add_job(
+        _stream_probe_job,
+        IntervalTrigger(hours=settings.get_int("library_scan_hours")),
+        id="stream_probe",
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.add_job(
         _library_job,
         IntervalTrigger(hours=settings.get_int("library_scan_hours")),
@@ -105,6 +150,17 @@ def start_scheduler() -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
     )
+
+    # Ноль часов отключает джобу целиком: у кого библиотека не растёт, лишние
+    # запросы к сайту не нужны вовсе.
+    if scan_interval_hours() > 0:
+        scheduler.add_job(
+            _translation_job,
+            IntervalTrigger(hours=scan_interval_hours()),
+            id="translation_scan",
+            max_instances=1,
+            coalesce=True,
+        )
 
     scheduler.start()
     _scheduler = scheduler
@@ -124,6 +180,15 @@ def start_scheduler() -> AsyncIOScheduler:
         settings.get_int("catalog_full_refresh_hours"),
         settings.get_int("library_scan_hours"),
     )
+    if scan_interval_hours() > 0:
+        log.info(
+            "Сбор сведений о переводах каждые %d ч, охват %s, темп %d запросов в минуту",
+            scan_interval_hours(),
+            scan_scope(),
+            scan_rpm(),
+        )
+    else:
+        log.info("Сбор сведений о переводах выключен (A365_TRANSLATION_SCAN_HOURS=0)")
     return scheduler
 
 

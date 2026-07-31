@@ -1,15 +1,17 @@
-import { Alert, Group, Loader, Stack, Text, Title } from '@mantine/core'
+import { Alert, Group, Loader, Pagination, Stack, Text, Title } from '@mantine/core'
 import { useDebouncedValue, useDisclosure } from '@mantine/hooks'
 import { useQuery } from '@tanstack/react-query'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { catalogApi, type CatalogFilters as Filters } from '../api/client'
-import { DEFAULT_BADGES, type BadgeKey } from '../components/CatalogCard'
+import { type BadgeKey } from '../components/CatalogCard'
 import { CatalogFilters } from '../components/CatalogFilters'
 import { CatalogGrid } from '../components/CatalogGrid'
 import { ErrorState } from '../components/ErrorState'
 import { OnlineSearchModal } from '../components/OnlineSearchModal'
 import { SyncIndicator } from '../components/SyncIndicator'
+import { useCatalogIds } from '../hooks/useCatalogIds'
+import { useCatalogUrlState } from '../hooks/useCatalogUrlState'
 import { useVirtualCatalog } from '../hooks/useVirtualCatalog'
 import { usePreferences } from '../stores/preferences'
 import { useT } from '../i18n'
@@ -19,22 +21,44 @@ interface Props {
 }
 
 export function CatalogPage({ onlyAiring = false }: Props) {
-  const [searchInput, setSearchInput] = useState('')
+  // Состояние каталога живёт в адресе страницы: иначе «назад» со страницы
+  // тайтла возвращает в пустой каталог, а ссылкой на подборку не поделиться.
+  // По умолчанию сортируем по оценке: в каталоге 29 тысяч тайтлов, и первым
+  // экраном полезнее видеть лучшее, а не самое свежедобавленное.
+  const { state, update } = useCatalogUrlState()
+  const { filters, page } = state
+
+  // Поле ввода — отдельным состоянием, чтобы адрес не переписывался на каждую
+  // букву. В адрес уходит уже отлежавшееся значение.
+  const [searchInput, setSearchInput] = useState(state.search)
   // Каждый символ не должен порождать запрос: список id считается по всей выборке.
   const [debouncedSearch] = useDebouncedValue(searchInput, 350)
 
-  // По умолчанию сортируем по оценке: в каталоге 29 тысяч тайтлов, и первым
-  // экраном полезнее видеть лучшее, а не самое свежедобавленное.
-  const [filters, setFilters] = useState<Filters>({ sort: 'score', sortDir: 'desc' })
+  useEffect(() => {
+    if (debouncedSearch !== state.search) update({ search: debouncedSearch, page: 1 })
+  }, [debouncedSearch, state.search, update])
+
+  const setFilters = useCallback(
+    (next: Filters) => {
+      // Смена фильтра начинает выборку заново: страница 7 в новой выборке —
+      // это другие тайтлы, и оставлять её значило бы показать пустоту.
+      update({ filters: next, page: 1 })
+    },
+    [update],
+  )
+  const setPage = useCallback((next: number) => update({ page: next }), [update])
+
   const [onlineOpened, { open: openOnline, close: closeOnline }] = useDisclosure(false)
-  const { prefs, toggleEnBadges } = usePreferences()
+  const { prefs } = usePreferences()
   const { t, locale } = useT()
 
-  // Значок английских субтитров по ТЗ выключен по умолчанию: у большинства
-  // они не нужны, а лишний бейдж на каждой карточке — шум.
-  const visibleBadges: BadgeKey[] = prefs.showEnBadges
-    ? [...DEFAULT_BADGES, 'sub_en']
-    : DEFAULT_BADGES
+  // Значки наличия идут от тех же типов переводов, что и кнопки загрузки:
+  // значок субтитров, для которых нельзя ничего скачать, обещал бы несбыточное.
+  // Видео здесь всегда — это не тип перевода, а сам файл.
+  const visibleBadges: BadgeKey[] = [
+    'video',
+    ...(['sub_ja', 'sub_ru', 'sub_en'] as const).filter((type) => prefs.types.includes(type)),
+  ]
 
   const effectiveFilters = useMemo<Filters>(
     () => ({
@@ -51,13 +75,16 @@ export function CatalogPage({ onlyAiring = false }: Props) {
     staleTime: 30 * 60 * 1000,
   })
 
-  const idsQuery = useQuery({
-    queryKey: ['catalog-ids', effectiveFilters],
-    queryFn: () => catalogApi.ids(effectiveFilters),
+  const catalog = useCatalogIds({
+    filters: effectiveFilters,
+    mode: prefs.paging,
+    pageSize: prefs.pageSize,
+    page,
   })
 
-  const ids = useMemo(() => idsQuery.data?.ids ?? [], [idsQuery.data])
+  const ids = catalog.ids
   const { cards, ensureRange } = useVirtualCatalog(ids)
+  const pageCount = Math.max(1, Math.ceil(catalog.total / prefs.pageSize))
 
   const handleRangeChange = useCallback(
     (start: number, end: number) => ensureRange(start, end),
@@ -102,14 +129,14 @@ export function CatalogPage({ onlyAiring = false }: Props) {
       <Group justify="space-between" align="center">
         <Group gap="sm" align="baseline">
           <Title order={3}>{onlyAiring ? t('catalog.ongoing') : t('catalog.title')}</Title>
-          {idsQuery.data && (
+          {!catalog.isLoading && (
             <Text c="dimmed" size="sm">
-              {t('catalog.found', { count: idsQuery.data.total.toLocaleString(locale) })}
+              {t('catalog.found', { count: catalog.total.toLocaleString(locale) })}
             </Text>
           )}
-          {idsQuery.isFetching && <Loader size="xs" />}
+          {(catalog.isLoading || catalog.isLoadingMore) && <Loader size="xs" />}
         </Group>
-        <SyncIndicator filteredTotal={idsQuery.data?.total} />
+        <SyncIndicator filteredTotal={catalog.total} />
       </Group>
 
       <CatalogFilters
@@ -120,8 +147,6 @@ export function CatalogPage({ onlyAiring = false }: Props) {
         onSearchInput={setSearchInput}
         hideAiringToggle={onlyAiring}
         onSearchOnline={openOnline}
-        showEnBadges={prefs.showEnBadges}
-        onToggleEnBadges={toggleEnBadges}
       />
 
       <OnlineSearchModal
@@ -130,11 +155,11 @@ export function CatalogPage({ onlyAiring = false }: Props) {
         onClose={closeOnline}
       />
 
-      {idsQuery.isError && (
+      {catalog.isError && (
         <ErrorState
-          error={idsQuery.error}
+          error={catalog.error}
           title={t('catalog.loadFailed')}
-          onRetry={() => idsQuery.refetch()}
+          onRetry={catalog.refetch}
         />
       )}
 
@@ -142,7 +167,7 @@ export function CatalogPage({ onlyAiring = false }: Props) {
         <ErrorState compact error={genresQuery.error} onRetry={() => genresQuery.refetch()} />
       )}
 
-      {idsQuery.isSuccess && ids.length === 0 && (
+      {!catalog.isLoading && !catalog.isError && ids.length === 0 && (
         <Alert color="gray" title={t('common.nothingFound')} style={{ flexShrink: 0 }}>
           {emptyReason}
         </Alert>
@@ -154,7 +179,29 @@ export function CatalogPage({ onlyAiring = false }: Props) {
           cards={cards}
           onRangeChange={handleRangeChange}
           visibleBadges={visibleBadges}
+          hasMore={catalog.hasMore}
+          onLoadMore={catalog.loadMore}
+          // В режиме подгрузки прокрутку не трогаем: список растёт снизу,
+          // и возврат наверх отменял бы то, ради чего человек и крутил.
+          scrollResetKey={prefs.paging === 'pages' ? page : undefined}
         />
+      )}
+
+      {/* Номера страниц только в своём режиме: при подгрузке прокруткой они
+          противоречили бы происходящему — список уже вырос. */}
+      {prefs.paging === 'pages' && pageCount > 1 && (
+        <Group justify="center" style={{ flexShrink: 0 }}>
+          <Pagination
+            total={pageCount}
+            value={page}
+            onChange={setPage}
+            // 1 … 98 99 [100] 101 102 … 300: две соседние с каждой стороны плюс
+            // первая и последняя. Больше не помещается на 375 пикселях.
+            siblings={2}
+            boundaries={1}
+            size="sm"
+          />
+        </Group>
       )}
     </Stack>
   )

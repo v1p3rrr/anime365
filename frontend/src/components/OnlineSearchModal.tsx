@@ -5,11 +5,14 @@ import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { ErrorState } from './ErrorState'
 import { useT } from '../i18n'
+import { useTitleName } from '../i18n/titles'
 
 interface OnlineResult {
   id: number
   title_ru: string | null
   title_romaji: string | null
+  title_en: string | null
+  title_ja: string | null
   type: string
   year: number | null
   poster_url_small: string | null
@@ -33,6 +36,7 @@ interface Props {
 export function OnlineSearchModal({ query, opened, onClose }: Props) {
   const navigate = useNavigate()
   const { t } = useT()
+  const titleName = useTitleName()
 
   const search = useQuery({
     queryKey: ['search-online', query],
@@ -98,7 +102,7 @@ export function OnlineSearchModal({ query, opened, onClose }: Props) {
                 <Stack gap={0} style={{ minWidth: 0 }}>
                   <Group gap={6} wrap="nowrap">
                     <Text size="sm" fw={500} truncate>
-                      {result.title_ru || result.title_romaji || `#${result.id}`}
+                      {titleName.primary(result, `#${result.id}`)}
                     </Text>
                     {result.was_new && (
                       <Badge size="xs" color="teal" variant="light">
@@ -107,7 +111,9 @@ export function OnlineSearchModal({ query, opened, onClose }: Props) {
                     )}
                   </Group>
                   <Text size="xs" c="dimmed" truncate>
-                    {[result.title_romaji, result.type, result.year].filter(Boolean).join(' · ')}
+                    {[titleName.secondary(result), result.type, result.year]
+                      .filter(Boolean)
+                      .join(' · ')}
                   </Text>
                 </Stack>
               </Group>

@@ -1,11 +1,13 @@
-import { Button, Menu, Select, Stack, Switch, Text, Tooltip } from '@mantine/core'
+import { Button, Group, Menu, Select, Stack, Switch, Text, Tooltip } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
 import { IconChevronDown, IconDownload } from '@tabler/icons-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { downloadsApi } from '../api/downloads'
-import { useT } from '../i18n'
+import { useT, type TranslationKey } from '../i18n'
+import { useApiError } from '../i18n/apiError'
+import type { Emphasis } from './DownloadButton'
 import type { AuthorGroup } from '../api/title'
 
 interface Props {
@@ -15,6 +17,61 @@ interface Props {
   contentEpisodes: Set<number>
   disabled?: boolean
   disabledReason?: string
+  /** Видео по тайтлу уже собрано целиком — вариант с видео можно приглушить. */
+  hasVideo?: boolean
+  /** Субтитры этого языка по тайтлу уже собраны целиком. */
+  hasSubs?: boolean
+}
+
+type BatchWhat = 'subtitle' | 'video' | 'both'
+
+const BATCH_LABEL: Record<BatchWhat, TranslationKey> = {
+  subtitle: 'batch.subsOnly',
+  video: 'batch.videoOnly',
+  both: 'batch.videoAndSubs',
+}
+
+const BATCH_STYLE: Record<Emphasis, { variant: string; color?: string }> = {
+  primary: { variant: 'filled' },
+  secondary: { variant: 'light' },
+  dimmed: { variant: 'subtle', color: 'gray' },
+}
+
+/**
+ * Порядок и яркость вариантов батча — по тем же правилам, что и у отдельной
+ * серии. Держать их разными нельзя: это один и тот же выбор, сделанный сразу
+ * на весь тайтл вместо одной серии.
+ */
+function batchActions(
+  hasVideo: boolean,
+  hasSubs: boolean,
+): Array<{ what: BatchWhat; emphasis: Emphasis }> {
+  if (!hasVideo && !hasSubs) {
+    return [
+      { what: 'both', emphasis: 'primary' },
+      { what: 'subtitle', emphasis: 'secondary' },
+      { what: 'video', emphasis: 'secondary' },
+    ]
+  }
+  if (!hasVideo) {
+    return [
+      { what: 'video', emphasis: 'primary' },
+      { what: 'subtitle', emphasis: 'dimmed' },
+      { what: 'both', emphasis: 'dimmed' },
+    ]
+  }
+  if (!hasSubs) {
+    return [
+      { what: 'subtitle', emphasis: 'primary' },
+      { what: 'both', emphasis: 'dimmed' },
+      { what: 'video', emphasis: 'dimmed' },
+    ]
+  }
+  return [
+    { what: 'subtitle', emphasis: 'dimmed' },
+    { what: 'both', emphasis: 'dimmed' },
+    { what: 'video', emphasis: 'dimmed' },
+  ]
 }
 
 /** Ступени качества. Подписи собираются из словаря: «до 720p» переводится. */
@@ -33,9 +90,12 @@ export function BatchDownload({
   contentEpisodes,
   disabled,
   disabledReason,
+  hasVideo = false,
+  hasSubs = false,
 }: Props) {
   const queryClient = useQueryClient()
   const { t } = useT()
+  const apiError = useApiError()
   const [height, setHeight] = useState('1080')
   const [includeExtras, setIncludeExtras] = useState(false)
 
@@ -45,10 +105,18 @@ export function BatchDownload({
   const ids = includeExtras ? [...group.translation_ids, ...extras] : group.translation_ids
 
   const run = useMutation({
-    mutationFn: (what: 'video' | 'subtitle' | 'both') =>
-      downloadsApi.batch(ids, what, what === 'subtitle' ? undefined : Number(height)),
+    mutationFn: ({ what, onlyMissing }: { what: BatchWhat; onlyMissing: boolean }) =>
+      downloadsApi.batch(
+        ids,
+        what,
+        what === 'subtitle' ? undefined : Number(height),
+        onlyMissing,
+      ),
     onSuccess: (result) => {
       const parts = [t('batch.added', { count: result.created })]
+      if (result.already_local) {
+        parts.push(t('batch.alreadyLocal', { count: result.already_local }))
+      }
       if (result.skipped) parts.push(t('batch.skipped', { count: result.skipped }))
       if (result.failed) parts.push(t('batch.failed', { count: result.failed }))
       notifications.show({
@@ -67,7 +135,7 @@ export function BatchDownload({
       queryClient.invalidateQueries({ queryKey: ['downloads'] })
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: t('batch.failedTitle'), message: error.message }),
+      notifications.show({ color: 'red', title: t('batch.failedTitle'), message: apiError(error) }),
   })
 
   const label = String(ids.length)
@@ -127,24 +195,59 @@ export function BatchDownload({
           <Stack gap={4}>
             {kind === 'sub' ? (
               // У субтитров есть и своё видео, поэтому предлагаем оба варианта:
-              // только файлы субтитров либо видео вместе с ними.
+              // только файлы субтитров либо видео вместе с ними. Порядок и
+              // яркость зависят от того, что уже закрыто по тайтлу целиком:
+              // приглушённое — это «можно, но у вас и так есть».
               <>
-                <Button size="compact-xs" onClick={() => run.mutate('subtitle')}>
-                  {t('batch.subsOnly')}
-                </Button>
-                <Button size="compact-xs" variant="light" onClick={() => run.mutate('video')}>
-                  {t('batch.videoOnly')}
-                </Button>
-                <Button size="compact-xs" variant="light" onClick={() => run.mutate('both')}>
-                  {t('batch.videoAndSubs')}
-                </Button>
+                {batchActions(hasVideo, hasSubs).map((action) => (
+                  // Две кнопки на каждый вариант: «все» и «только те, чего нет
+                  // локально». Второе — обычный сценарий дозагрузки, и без него
+                  // приходилось ставить весь тайтл и ждать, пока очередь сама
+                  // отсеет уже скачанное.
+                  <Group key={action.what} gap={4} wrap="nowrap">
+                    <Button
+                      size="compact-xs"
+                      variant={BATCH_STYLE[action.emphasis].variant}
+                      color={BATCH_STYLE[action.emphasis].color}
+                      style={{ flex: 1 }}
+                      onClick={() => run.mutate({ what: action.what, onlyMissing: false })}
+                    >
+                      {t(BATCH_LABEL[action.what])}
+                    </Button>
+                    <Tooltip label={t('batch.missingHint')}>
+                      <Button
+                        size="compact-xs"
+                        variant="subtle"
+                        color={BATCH_STYLE[action.emphasis].color}
+                        onClick={() => run.mutate({ what: action.what, onlyMissing: true })}
+                      >
+                        {t('batch.missingShort')}
+                      </Button>
+                    </Tooltip>
+                  </Group>
+                ))}
               </>
             ) : (
               // Озвучка и RAW — это видеодорожка, отдельного файла субтитров
               // у такого перевода не бывает, поэтому вариант один.
-              <Button size="compact-xs" onClick={() => run.mutate('video')}>
-                {t('batch.allVideo')}
-              </Button>
+              <Group gap={4} wrap="nowrap">
+                <Button
+                  size="compact-xs"
+                  style={{ flex: 1 }}
+                  onClick={() => run.mutate({ what: 'video', onlyMissing: false })}
+                >
+                  {t('batch.allVideo')}
+                </Button>
+                <Tooltip label={t('batch.missingHint')}>
+                  <Button
+                    size="compact-xs"
+                    variant="subtle"
+                    onClick={() => run.mutate({ what: 'video', onlyMissing: true })}
+                  >
+                    {t('batch.missingShort')}
+                  </Button>
+                </Tooltip>
+              </Group>
             )}
           </Stack>
         </Stack>

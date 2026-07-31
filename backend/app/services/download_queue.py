@@ -30,6 +30,7 @@ from app.models.catalog import Series, Translation
 from app.models.downloads import ACTIVE_KEY, ACTIVE_STATUSES, DownloadTask, TaskStatus
 from app.models.library import (
     EpisodeMapping,
+    EpisodeTarget,
     LibraryFile,
     LibraryFolder,
     LibraryRoot,
@@ -47,6 +48,7 @@ from app.services.naming import (
     audio_name,
     build_target_name,
     folder_name_for_title,
+    folder_name_source,
     pick_neighbour,
     unique_path,
 )
@@ -69,8 +71,44 @@ class NoTargetFolder(QueueError):
     """Тайтл не привязан ни к одной папке — складывать некуда."""
 
 
+def _resolve_layout(series, series_id: int) -> bool:
+    """Раскладывать тайтл как фильм или как сериал.
+
+    `movie` — фильм, включая связку из нескольких частей: каждая часть получает
+    свою папку (см. `_layout_with_part`). Решение пользователя перевешивает
+    автоопределение.
+    """
+    from app.services.coverage import resolve_is_movie
+    from app.services.mapping_info import count_content_episodes
+
+    return resolve_is_movie(series.treat_as_movie, series.type, count_content_episodes(series_id))
+
+
+def _layout_with_part(series, series_id: int, episode: float | None) -> tuple[bool, int | None]:
+    """Раскладка и номер части, который надо дописать к имени папки.
+
+    Номер появляется только у многосерийного фильма. У одиночного он не нужен и
+    мешал бы Jellyfin сопоставить папку с TMDB — а без такого сопоставления не
+    соберётся и коллекция, которой Jellyfin связывает части между собой.
+
+    Решение пользователя «считать сериалом» отменяет и номер: в сериале части
+    и так разойдутся по S01E01 и S01E02.
+    """
+    from app.services.coverage import is_multipart_movie
+    from app.services.mapping_info import count_content_episodes
+
+    is_movie = _resolve_layout(series, series_id)
+    if not is_movie or episode is None:
+        return is_movie, None
+    if not is_multipart_movie(series.type, count_content_episodes(series_id)):
+        return is_movie, None
+    return is_movie, int(episode)
+
+
 def _primary_folder(series_id: int) -> tuple[LibraryFolder, LibraryRoot] | None:
     """Основная папка тайтла — куда складывать скачанное."""
+    # Импорт локальный: mapping_info тянет за собой модели библиотеки, а те —
+    # обратно очередь, и на уровне модуля получился бы цикл.
     from app.services.mapping_info import ensure_primary_mapping
 
     ensure_primary_mapping(series_id)
@@ -90,14 +128,155 @@ def _primary_folder(series_id: int) -> tuple[LibraryFolder, LibraryRoot] | None:
         return folder, root
 
 
-def ensure_target_folder(series_id: int) -> tuple[LibraryFolder, LibraryRoot] | None:
-    """Папка для загрузки: существующая привязка либо новая папка.
+def why_no_folder(series_id: int, is_movie: bool) -> str:
+    """Почему складывать некуда — конкретной причиной, а не общей фразой.
+
+    Причин несколько, и чинятся они по-разному: корня нет вовсе, корень
+    смонтирован только для чтения, том отвалился, у тайтла нет пригодного
+    названия. Одна фраза на все случаи заставляла гадать, что именно проверять.
+    """
+    root_kind = "movie" if is_movie else "series"
+    with session_scope() as session:
+        roots = (
+            session.execute(select(LibraryRoot).where(LibraryRoot.kind == root_kind))
+            .scalars()
+            .all()
+        )
+        setting = "movies_root" if is_movie else "series_root"
+        if not roots:
+            return (
+                f"Библиотека {'фильмов' if is_movie else 'сериалов'} не настроена: "
+                f"задайте {setting} в настройках и дождитесь сканирования"
+            )
+        available = [r for r in roots if r.is_available]
+        if not available:
+            return (
+                f"Корень {roots[0].path} недоступен — проверьте, что том примонтирован"
+            )
+        writable = [r for r in available if r.is_writable]
+        if not writable:
+            return (
+                f"Корень {available[0].path} смонтирован только для чтения. "
+                "Загрузка требует записи: перемонтируйте его без :ro"
+            )
+    return (
+        "У тайтла нет названия, пригодного для имени папки. "
+        "Привяжите папку вручную в плашке на странице тайтла"
+    )
+
+
+def propose_folder(series_id: int) -> dict[str, Any] | None:
+    """Куда уедет загрузка, если тайтл ещё не привязан к папке.
+
+    Ровно тот же расчёт, что делает `ensure_target_folder`, но БЕЗ побочных
+    эффектов: ничего не создаётся и не привязывается. Нужен, чтобы показать
+    имя будущей папки до нажатия «скачать», а не после — иначе о том, куда
+    легли файлы, узнают уже по факту.
+
+    Возвращает `None`, когда предлагать нечего: тайтл уже привязан, подходящего
+    корня нет или он только для чтения. Во всех этих случаях в интерфейсе
+    уместно другое сообщение, а не имя папки.
+    """
+    if _primary_folder(series_id) is not None:
+        return None
+
+    with session_scope() as session:
+        series = session.get(Series, series_id)
+        if series is None:
+            return None
+        titles = dict(series.titles or {})
+        # Связка фильмов тоже уходит в киношную библиотеку — каждой части своя
+        # папка. См. coverage.auto_is_movie и _layout_with_part.
+        is_movie = _resolve_layout(series, series_id)
+        year = series.year
+        series_type = series.type
+
+    from app.services.coverage import is_multipart_movie
+    from app.services.mapping_info import count_content_episodes
+
+    # У многосерийного фильма единой папки не будет вовсе: каждая часть получает
+    # свою. Показать здесь имя без номера значило бы пообещать не то, что
+    # создастся, — а этот расчёт для того и существует, чтобы узнать заранее.
+    per_part = is_movie and is_multipart_movie(series_type, count_content_episodes(series_id))
+
+    folder_name = folder_name_for_title(
+        titles, year=year, is_movie=is_movie, part=1 if per_part else None
+    )
+    if not folder_name:
+        return None
+
+    root_kind = "movie" if is_movie else "series"
+    with session_scope() as session:
+        root = session.execute(
+            select(LibraryRoot).where(
+                LibraryRoot.kind == root_kind, LibraryRoot.is_available.is_(True)
+            )
+        ).scalars().first()
+        if root is None:
+            return None
+        root_path, writable = root.path, root.is_writable
+
+    return {
+        "folder_name": folder_name,
+        # Имя показано для первой части; у остальных отличается номером.
+        # Интерфейс обязан сказать это вслух, иначе человек ждёт одну папку.
+        "per_part": per_part,
+        # Откуда взято написание: en | romaji | ru. Интерфейс называет источник
+        # прямо, а не пересказывает правило — оно уже применено.
+        "name_source": folder_name_source(titles),
+        "root_path": root_path,
+        "root_kind": root_kind,
+        "full_path": str(Path(root_path) / folder_name),
+        # Папка на томе только для чтения не создастся — сказать об этом надо
+        # заранее, а не после того, как задача упадёт в очереди.
+        "writable": writable,
+    }
+
+
+def episode_target_folder(
+    series_id: int, episode: float | None
+) -> tuple[LibraryFolder, LibraryRoot] | None:
+    """Персональная папка серии, если её назначили.
+
+    Возвращает `None`, когда назначения нет, — это самый частый случай, и
+    вызывающий просто идёт обычным путём.
+    """
+    if episode is None:
+        return None
+
+    with session_scope() as session:
+        row = session.execute(
+            select(EpisodeTarget, LibraryFolder, LibraryRoot)
+            .join(LibraryFolder, EpisodeTarget.folder_id == LibraryFolder.id)
+            .join(LibraryRoot, LibraryFolder.root_id == LibraryRoot.id)
+            .where(EpisodeTarget.series_id == series_id, EpisodeTarget.episode == episode)
+        ).first()
+        if row is None:
+            return None
+        _, folder, root = row
+        session.expunge(folder)
+        session.expunge(root)
+        return folder, root
+
+
+def ensure_target_folder(
+    series_id: int, episode: float | None = None
+) -> tuple[LibraryFolder, LibraryRoot] | None:
+    """Папка для загрузки: назначение серии, привязка тайтла либо новая папка.
+
+    Порядок именно такой. Назначение отдельной серии перевешивает общую папку
+    тайтла — в этом весь его смысл: серию попросили положить отдельно, и
+    батч «все серии» не должен это отменять.
 
     Тайтла может не быть в библиотеке вовсе — это штатный случай, когда качают
     что-то новое. Тогда создаём папку по названию тайтла в подходящем корне
     (фильмы отдельно от сериалов) и сразу привязываем: дальше всё работает как
     с любой другой папкой, включая маппинг серий и подсчёт наличия.
     """
+    override = episode_target_folder(series_id, episode)
+    if override is not None:
+        return override
+
     existing = _primary_folder(series_id)
     if existing is not None:
         return existing
@@ -110,12 +289,13 @@ def ensure_target_folder(series_id: int) -> tuple[LibraryFolder, LibraryRoot] | 
         # Решение пользователя перевешивает тип из каталога: у тайтла с
         # type=movie и несколькими эпизодами это связка фильмов, которую
         # Radarr фильмом не считает, и класть её надо к сериалам.
-        is_movie = (
-            series.treat_as_movie if series.treat_as_movie is not None else series.type == "movie"
-        )
+        # Одиночный movie — фильм; связка из нескольких — сериал, иначе части
+        # Связка фильмов тоже уходит в киношную библиотеку — каждой части
+        # своя папка. См. coverage.auto_is_movie и _layout_with_part.
+        is_movie, part = _layout_with_part(series, series_id, episode)
         year = series.year
 
-    folder_name = folder_name_for_title(titles, year=year, is_movie=is_movie)
+    folder_name = folder_name_for_title(titles, year=year, is_movie=is_movie, part=part)
     if not folder_name:
         log.error("У тайтла %s нет пригодного названия для папки", series_id)
         return None
@@ -226,6 +406,41 @@ def already_downloaded(translation_id: int) -> bool:
         )
 
 
+def existing_audio_path(translation_id: int) -> Path | None:
+    """Путь к уже извлечённой дорожке этого перевода, если она на месте.
+
+    Проверяем по завершённой задаче, а не по имени файла: имя зависит от
+    расширения, а оно известно только после разбора источника — то есть уже
+    после того, как видео при необходимости скачано. Проверять там было бы
+    поздно: самая дорогая часть работы к тому моменту сделана.
+
+    Файл на диске проверяем обязательно: запись о задаче могла пережить
+    удаление файла руками, и тогда «уже скачано» было бы неправдой.
+    """
+    with session_scope() as session:
+        rows = (
+            session.execute(
+                select(DownloadTask)
+                .where(
+                    DownloadTask.translation_id == translation_id,
+                    DownloadTask.kind == "audio",
+                    DownloadTask.status.in_([TaskStatus.DONE, TaskStatus.ALREADY_EXISTS]),
+                )
+                .order_by(DownloadTask.id.desc())
+            )
+            .scalars()
+            .all()
+        )
+
+    for task in rows:
+        if not task.target_path:
+            continue
+        path = Path(task.target_path)
+        if path.is_file():
+            return path
+    return None
+
+
 def enqueue(
     translation_id: int,
     kind: str,
@@ -240,6 +455,19 @@ def enqueue(
 
         series = session.get(Series, translation.series_id)
         series_title = (series.titles or {}).get("romaji") or (series.title if series else "")
+
+        # Дорожка этого перевода уже извлечена и лежит на месте. Второй раз
+        # она дала бы файл с тем же именем — то есть дубль рядом.
+        if kind == "audio":
+            existing_audio = existing_audio_path(translation_id)
+            if existing_audio is not None:
+                return {
+                    "id": None,
+                    "status": TaskStatus.ALREADY_EXISTS,
+                    "created": False,
+                    "already_exists": True,
+                    "path": str(existing_audio),
+                }
 
         # Уже стоит в очереди или качается — второй раз не ставим.
         existing = session.execute(
@@ -449,14 +677,17 @@ class DownloadQueue:
             return
 
         # Папки может не быть вовсе — тогда создаём её по названию тайтла.
-        target = ensure_target_folder(snapshot["series_id"])
+        # Номер серии обязателен: без него персональное назначение не найдётся,
+        # и файл уедет в общую папку вопреки тому, что попросил пользователь.
+        target = ensure_target_folder(snapshot["series_id"], snapshot.get("episode"))
         if target is None:
-            _finish(
-                task_id,
-                TaskStatus.FAILED,
-                "Некуда складывать: тайтл не привязан к папке, и создать новую не вышло. "
-                "Проверьте, что корень библиотеки доступен на запись",
-            )
+            # Называем настоящую причину: «не вышло создать папку» заставляло
+            # гадать между ненастроенным корнем, режимом только для чтения и
+            # отвалившимся томом.
+            with session_scope() as session:
+                series = session.get(Series, snapshot["series_id"])
+                is_movie = _resolve_layout(series, snapshot["series_id"]) if series else False
+            _finish(task_id, TaskStatus.FAILED, why_no_folder(snapshot["series_id"], is_movie))
             return
 
         folder, root = target
@@ -603,6 +834,14 @@ class DownloadQueue:
             )
             return
 
+        # Та же проверка, что и на постановке: между ними файл мог появиться —
+        # например, задачу поставили дважды, пока первая ещё шла.
+        already = existing_audio_path(snapshot["translation_id"])
+        if already is not None:
+            log.info("Дорожка уже извлечена: %s", already.name)
+            _finish(task_id, TaskStatus.ALREADY_EXISTS)
+            return
+
         target_dir = _audio_target_folder(snapshot["series_id"])
         if target_dir is None:
             _finish(task_id, TaskStatus.FAILED, "Не удалось определить папку в корне фонотеки")
@@ -661,6 +900,14 @@ class DownloadQueue:
                 extension=stream.extension,
             )
             filename = audio_name(ctx)
+
+            # Последний рубеж: запись о прошлой задаче могли удалить, а файл
+            # остался. Перезаписывать его молча нельзя.
+            if (target_dir / filename).is_file():
+                log.info("Дорожка уже лежит в фонотеке: %s", filename)
+                _finish(task_id, TaskStatus.ALREADY_EXISTS)
+                return
+
             tmp_audio = tmp_dir / f"a365-audio-{task_id}{stream.extension}"
 
             try:
@@ -962,10 +1209,14 @@ def _audio_target_folder(series_id: int) -> Path | None:
             return None
         titles = dict(series.titles or {})
         year = series.year
-        is_movie = (
-            series.treat_as_movie if series.treat_as_movie is not None else series.type == "movie"
-        )
+        # Одиночный movie — фильм; связка из нескольких — сериал, иначе части
+        # Связка фильмов тоже уходит в киношную библиотеку — каждой части
+        # своя папка. См. coverage.auto_is_movie и _layout_with_part.
+        is_movie = _resolve_layout(series, series_id)
 
+    # Номер части здесь намеренно не нужен: в имени звукового файла номер серии
+    # уже есть, коллизии нет, а дробить фонотеку по частям значило бы разложить
+    # два файла по двум папкам без всякой пользы.
     folder_name = folder_name_for_title(titles, year=year, is_movie=is_movie)
     if not folder_name:
         return None

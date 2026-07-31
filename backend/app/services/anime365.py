@@ -49,6 +49,28 @@ class Anime365Error(RuntimeError):
     pass
 
 
+class RateLimited(Anime365Error):
+    """Сайт попросил сбавить темп. Внутреннее: наружу не выходит."""
+
+    def __init__(self, retry_after: float | None) -> None:
+        super().__init__("429 от Anime365")
+        self.retry_after = retry_after
+
+
+# Явного лимита у API не замечено, но если он появится — молча падать нельзя:
+# фоновый скан обходит сотни тайтлов, и одна отповедь не повод бросать проход.
+RATE_LIMIT_RETRIES = 4
+RATE_LIMIT_BACKOFF = 5.0
+
+
+class TokenMissing(Anime365Error):
+    """Токен вообще не задан.
+
+    Отдельно от `SubscriptionRequired`: там токен есть, но не принят — надо
+    проверять подписку. Здесь задавать нечего, и совет ровно один.
+    """
+
+
 class SubscriptionRequired(Anime365Error):
     """403 от embed: нет токена либо истекла премиум-подписка."""
 
@@ -99,6 +121,46 @@ class RateLimiter:
             self._last = time.monotonic()
 
 
+def _payload_error_code(error: Any) -> int | None:
+    """Числовой код из ошибки в теле ответа, если он там есть."""
+    if not isinstance(error, dict):
+        return None
+    code = error.get("code")
+    return code if isinstance(code, int) else None
+
+
+def _error_from_payload(error: Any, path: str) -> Anime365Error:
+    """Разбирает ошибку, пришедшую В ТЕЛЕ ответа.
+
+    Anime365 отвечает на неавторизованный запрос статусом 200 и телом вида
+    `{"error": {"code": 403, "message": "You should login first."}}`. Из-за
+    этого отказ по токену раньше попадал в общую ветку и показывался как
+    «зеркало недоступно, попробуйте сменить» — совет, который уводит в сторону
+    от настоящей причины.
+    """
+    code = None
+    message = ""
+    if isinstance(error, dict):
+        code = error.get("code")
+        message = str(error.get("message") or "")
+
+    if code == 403 or "login" in message.lower():
+        # Различаем два случая: токена нет вовсе — тогда советовать проверять
+        # подписку бессмысленно; токен есть, но отвергнут — тогда дело в нём
+        # самом или в сроке подписки.
+        if not settings.get_str("access_token"):
+            return TokenMissing(
+                "Токен доступа не задан — Anime365 отвечает отказом на любой запрос. "
+                "Задайте access_token в настройках"
+            )
+        return SubscriptionRequired(
+            "Anime365 не принял токен. Проверьте его в настройках и убедитесь, "
+            "что премиум-подписка активна"
+        )
+
+    return Anime365Error(f"API вернул ошибку: {error}")
+
+
 class Anime365Client:
     def __init__(self, client: httpx.AsyncClient | None = None) -> None:
         self._client = client
@@ -124,6 +186,28 @@ class Anime365Client:
     # ------------------------------------------------------------------ #
 
     async def _request(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        """GET с перебором зеркал и отступом при 429.
+
+        Отступ экспоненциальный и уважает заголовок `Retry-After`, если он есть.
+        Повторяем ограниченное число раз: если сайт просит подождать всерьёз,
+        упрямство сделает только хуже.
+        """
+        for attempt in range(RATE_LIMIT_RETRIES + 1):
+            try:
+                return await self._request_once(path, params)
+            except RateLimited as exc:
+                if attempt == RATE_LIMIT_RETRIES:
+                    raise Anime365Error(
+                        f"Anime365 ограничил частоту запросов на {path} и не отпустил "
+                        f"за {RATE_LIMIT_RETRIES} попыток"
+                    ) from exc
+                delay = exc.retry_after or RATE_LIMIT_BACKOFF * (2**attempt)
+                log.warning("429 от Anime365 на %s, ждём %.1f с", path, delay)
+                await asyncio.sleep(delay)
+        # Недостижимо: цикл либо возвращает, либо бросает.
+        raise Anime365Error(f"Не удалось выполнить запрос {path}")
+
+    async def _request_once(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """GET с перебором зеркал.
 
         Зеркала берутся из серверного allowlist. Начинаем с выбранного base_url,
@@ -163,6 +247,15 @@ class Anime365Client:
                 )
             if response.status_code == 404:
                 return None
+            if response.status_code == 429:
+                # Отступ делает вызывающий: перебирать зеркала бессмысленно,
+                # лимит почти наверняка общий на аккаунт, а не на домен.
+                retry_after = response.headers.get("retry-after")
+                try:
+                    delay = float(retry_after) if retry_after else None
+                except ValueError:
+                    delay = None
+                raise RateLimited(delay)
             if response.status_code >= 500:
                 log.warning("Зеркало %s ответило %s", origin, response.status_code)
                 last_error = Anime365Error(f"HTTP {response.status_code}")
@@ -172,7 +265,30 @@ class Anime365Client:
 
             payload = response.json()
             if "error" in payload:
-                raise Anime365Error(f"API вернул ошибку: {payload['error']}")
+                # Anime365 сообщает об ошибке ДВУМЯ способами: статусом ответа и
+                # телом при статусе 200. Второй путь легко просмотреть, и тогда
+                # любая беда выглядит как «сайт недоступен». Приводим оба к
+                # одному виду, чтобы дальше по коду разницы не было.
+                body_code = _payload_error_code(payload["error"])
+
+                if body_code == 404:
+                    # То же, что и HTTP 404: записи нет. Вызывающий разберётся
+                    # сам — у него это штатный случай, а не сбой.
+                    return None
+
+                if body_code == 429:
+                    # Пусть отработает общий отступ, а не падение: лимит —
+                    # состояние временное.
+                    raise RateLimited(None)
+
+                if body_code is not None and body_code >= 500:
+                    # Беда на стороне сайта, а не в запросе. Пробуем зеркало:
+                    # они независимы, и соседнее может ответить.
+                    log.warning("Зеркало %s вернуло в теле ошибку %s", origin, body_code)
+                    last_error = Anime365Error(f"Ошибка {body_code} в ответе")
+                    continue
+
+                raise _error_from_payload(payload["error"], path)
             return payload.get("data")
 
         tried = ", ".join(o.replace("https://", "") for o in origins)
@@ -305,6 +421,55 @@ class Anime365Client:
             if len(batch) < MAX_LIMIT:
                 break
         return out
+
+    async def download_sizes(self, info: EmbedInfo) -> dict[str, int]:
+        """Вес файла по каждой ступени, до начала загрузки.
+
+        Размер не приходит ни в списке переводов, ни в embed — его знает только
+        CDN. Узнаём запросом HEAD: он отдаёт `Content-Length` и не качает тело.
+
+        Часть узлов на HEAD не отвечает, поэтому при неудаче пробуем `Range`
+        на один байт — ответ 206 несёт полный размер в `Content-Range`.
+
+        Ошибки не пробрасываем: вес — справочная величина, и ради неё нельзя
+        ломать выпадашку выбора качества. Не узнали — просто не показали.
+        """
+        assert self._client is not None, "используйте клиент через async with"
+
+        sizes: dict[str, int] = {}
+        for item in info.download:
+            height = item.get("height")
+            url = item.get("url")
+            if not height or not url:
+                continue
+            size = await self._probe_size(url)
+            if size is not None:
+                sizes[str(int(height))] = size
+        return sizes
+
+    async def _probe_size(self, url: str) -> int | None:
+        try:
+            response = await self._client.head(url, follow_redirects=True, timeout=20)
+            length = response.headers.get("content-length")
+            if response.status_code < 400 and length:
+                return int(length)
+        except (httpx.HTTPError, ValueError):
+            pass
+
+        try:
+            response = await self._client.get(
+                url, headers={"Range": "bytes=0-0"}, follow_redirects=True, timeout=20
+            )
+            # `Content-Range: bytes 0-0/83960238` — полный размер после дроби.
+            content_range = response.headers.get("content-range", "")
+            if "/" in content_range:
+                total = content_range.rsplit("/", 1)[1].strip()
+                if total.isdigit():
+                    return int(total)
+        except (httpx.HTTPError, ValueError):
+            pass
+
+        return None
 
     async def embed(self, translation_id: int) -> EmbedInfo:
         """Ссылки на видео и субтитры. Требует токен с активной подпиской.

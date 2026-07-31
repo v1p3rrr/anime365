@@ -25,7 +25,10 @@ const queryClient = new QueryClient({
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <MantineProvider defaultColorScheme="dark">
+    {/* auto — следуем настройке системы, пока пользователь не выберет тему
+        явно кнопкой в шапке. До первой отрисовки атрибут выставляет
+        public/color-scheme.js, иначе тёмная тема мигала бы белым. */}
+    <MantineProvider defaultColorScheme="auto">
       <Notifications />
       <QueryClientProvider client={queryClient}>
         <I18nProvider>

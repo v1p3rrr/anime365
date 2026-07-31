@@ -28,20 +28,21 @@ import { Link } from 'react-router-dom'
 import {
   ACTIVE_STATUSES,
   downloadsApi,
-  formatEta,
-  formatSpeed,
+  etaSeconds,
   STATUS_COLORS,
   type DownloadTask,
   type TaskStatus,
 } from '../api/downloads'
-import { formatBytes } from '../api/library'
 import { ErrorState } from '../components/ErrorState'
 import { useServerEvents, type ServerEvent } from '../hooks/useServerEvents'
+import { useFormat } from '../i18n/format'
 import { useT, type TranslationKey } from '../i18n'
+import { useApiError } from '../i18n/apiError'
 import scrollClasses from './ScrollPage.module.css'
 
 export function QueuePage() {
   const { t } = useT()
+  const apiError = useApiError()
   const statusLabel = (key: string) => t(`status.${key}` as TranslationKey)
   const queryClient = useQueryClient()
   // Прогресс приходит событиями и живёт отдельно от списка: перезапрашивать
@@ -87,7 +88,7 @@ export function QueuePage() {
     mutationFn: ({ fn, id }: { fn: (id: number) => Promise<unknown>; id: number }) => fn(id),
     onSuccess: refresh,
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: t('queue.actionFailed'), message: error.message }),
+      notifications.show({ color: 'red', title: t('queue.actionFailed'), message: apiError(error) }),
   })
 
   const pauseAll = useMutation({ mutationFn: downloadsApi.pauseAll, onSuccess: refresh })
@@ -113,7 +114,7 @@ export function QueuePage() {
       refresh()
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: t('queue.actionFailed'), message: error.message }),
+      notifications.show({ color: 'red', title: t('queue.actionFailed'), message: apiError(error) }),
   })
 
   if (queue.isError) {
@@ -164,7 +165,7 @@ export function QueuePage() {
               onClick={() => resumeAll.mutate()}
               loading={resumeAll.isPending}
             >
-              Возобновить всё
+              {t('queue.resumeAll')}
             </Button>
           ) : (
             <Button
@@ -174,7 +175,7 @@ export function QueuePage() {
               onClick={() => pauseAll.mutate()}
               loading={pauseAll.isPending}
             >
-              Пауза
+              {t('queue.pauseAll')}
             </Button>
           )}
           <Button
@@ -186,14 +187,14 @@ export function QueuePage() {
             loading={clearFinished.isPending}
             disabled={finished.length === 0}
           >
-            Очистить завершённые
+            {t('queue.clearFinished')}
           </Button>
         </Group>
       </Group>
 
       {data?.paused && (
         <Alert color="yellow">
-          Очередь на паузе. Незавершённые файлы сохранены и докачаются с того же места.
+          {t('queue.pausedNote')}
         </Alert>
       )}
 
@@ -202,7 +203,7 @@ export function QueuePage() {
       {failed.length > 0 && (
         <Alert
           color="red"
-          title={`Не удалось скачать: ${failed.length}`}
+          title={t('queue.failedTitle', { count: failed.length })}
           icon={<IconAlertTriangle size={18} />}
         >
           <Stack gap={6}>
@@ -210,7 +211,7 @@ export function QueuePage() {
               <div key={task.id}>
                 <Text size="sm" style={{ wordBreak: 'break-word' }}>
                   {task.series_title}
-                  {task.episode != null && `, серия ${task.episode}`}
+                  {task.episode != null && t('queue.episodeSuffix', { n: task.episode })}
                   {` (${task.kind === 'subtitle' ? t('queue.kindSubtitle') : t('queue.kindVideo')})`}
                 </Text>
                 <Text size="xs" c="dimmed" style={{ wordBreak: 'break-word' }}>
@@ -220,7 +221,7 @@ export function QueuePage() {
             ))}
             {failed.length > 5 && (
               <Text size="xs" c="dimmed">
-                и ещё {failed.length - 5} — весь список ниже
+                {t('queue.andMore', { count: failed.length - 5 })}
               </Text>
             )}
             <Group gap="xs" mt={4}>
@@ -232,7 +233,7 @@ export function QueuePage() {
                 onClick={() => retryAll.mutate()}
                 loading={retryAll.isPending}
               >
-                Повторить все неудачные
+                {t('queue.retryAllFailed')}
               </Button>
             </Group>
           </Stack>
@@ -241,7 +242,7 @@ export function QueuePage() {
 
       {postprocessing > 0 && (
         <Alert color="violet" icon={<Loader size="xs" />}>
-          Идёт раскладка файлов по папкам: {postprocessing}
+          {t('queue.postprocessingNote', { count: postprocessing })}
         </Alert>
       )}
 
@@ -254,10 +255,7 @@ export function QueuePage() {
       </Group>
 
       {tasks.length === 0 && (
-        <Alert color="gray">
-          Очередь пуста. Загрузки ставятся со страницы тайтла — кнопкой у конкретного перевода
-          или батчем в сводке.
-        </Alert>
+        <Alert color="gray">{t('queue.empty')}</Alert>
       )}
 
       {active.length > 0 && <TaskTable title={t('queue.active')} tasks={active} action={action} />}
@@ -302,6 +300,7 @@ function TaskTable({ title, tasks, action }: TableProps) {
 
 function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['action'] }) {
   const { t } = useT()
+  const format = useFormat()
   const statusLabel = (key: string) => t(`status.${key}` as TranslationKey)
   const canPause = task.status === 'downloading' || task.status === 'queued'
   const canResume = task.status === 'paused'
@@ -313,7 +312,7 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
       <Table.Td style={{ wordBreak: 'break-word' }}>
         <Link to={`/series/${task.series_id}`}>{task.series_title || `#${task.series_id}`}</Link>
         <Text size="xs" c="dimmed">
-          {task.episode != null && `серия ${task.episode} · `}
+          {task.episode != null && t('queue.episodePrefix', { n: task.episode })}
           {task.kind === 'video' ? t('queue.kindVideo') : t('queue.kindSubtitle')}
           {task.lang && ` · ${task.lang}`}
           {task.authors && ` · ${task.authors}`}
@@ -339,9 +338,9 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
               animated={task.status === 'downloading'}
             />
             <Text size="xs" c="dimmed">
-              {formatBytes(task.bytes_done)} из {formatBytes(task.bytes_total)}
-              {task.status === 'downloading' && ` · ${formatSpeed(task.speed_bps)}`}
-              {task.status === 'downloading' && t('queue.remaining', { eta: formatEta(task) })}
+              {t('queue.ofBytes', { done: format.size(task.bytes_done), total: format.size(task.bytes_total) })}
+              {task.status === 'downloading' && ` · ${format.speed(task.speed_bps)}`}
+              {task.status === 'downloading' && t('queue.remaining', { eta: format.eta(etaSeconds(task)) })}
             </Text>
           </>
         ) : task.bytes_done > 0 ? (
@@ -353,8 +352,8 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
               animated={task.status === 'downloading'}
             />
             <Text size="xs" c="dimmed">
-              {formatBytes(task.bytes_done)}
-              {task.status === 'downloading' && ` · ${formatSpeed(task.speed_bps)}`}
+              {format.size(task.bytes_done)}
+              {task.status === 'downloading' && ` · ${format.speed(task.speed_bps)}`}
             </Text>
           </>
         ) : (

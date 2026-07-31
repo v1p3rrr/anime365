@@ -52,7 +52,11 @@ class WatcherState:
 @dataclass
 class WatcherStatus:
     state: str = WatcherState.DISABLED
+    #: Машинный код причины — перевод живёт на клиенте. Раньше здесь была
+    #: готовая русская фраза, и в английском интерфейсе она торчала как есть.
     reason: str | None = None
+    #: Подстановки к коду причины: числа и пути, которые нужны в тексте.
+    reason_params: dict = field(default_factory=dict)
     watched_roots: list[str] = field(default_factory=list)
     directories: int = 0
     events_seen: int = 0
@@ -63,6 +67,7 @@ class WatcherStatus:
         return {
             "state": self.state,
             "reason": self.reason,
+            "reason_params": self.reason_params,
             "watched_roots": self.watched_roots,
             "directories": self.directories,
             "events_seen": self.events_seen,
@@ -122,20 +127,19 @@ def read_inotify_limit() -> int | None:
         return None
 
 
-def check_can_watch(roots: list[Path]) -> tuple[bool, str | None, int]:
+def check_can_watch(roots: list[Path]) -> tuple[bool, str | None, int, dict[str, str | int]]:
     """Проверяет, имеет ли смысл запускать слежение.
 
-    Возвращает (можно, причина отказа, число каталогов).
+    Возвращает (можно, КОД причины отказа, число каталогов, подстановки).
+
+    Код, а не готовая фраза: перевод живёт на клиенте, а числа и пути подаются
+    отдельно как подстановки. Раньше сюда собиралась русская строка, и в
+    английском интерфейсе она показывалась как есть.
     """
     for root in roots:
         fs_type = detect_filesystem(root)
         if fs_type and fs_type.lower() in NETWORK_FS:
-            return (
-                False,
-                f"{root} лежит на сетевой файловой системе ({fs_type}): "
-                "события от других хостов не доставляются",
-                0,
-            )
+            return (False, "network_fs", 0, {"root": str(root), "fs": fs_type})
 
     directories = sum(count_directories(root) for root in roots)
 
@@ -143,12 +147,12 @@ def check_can_watch(roots: list[Path]) -> tuple[bool, str | None, int]:
     if limit is not None and directories * WATCH_HEADROOM > limit:
         return (
             False,
-            f"каталогов {directories}, а лимит fs.inotify.max_user_watches всего {limit} "
-            "и он общий с другими сервисами — поднимите лимит или оставьте расписание",
+            "inotify_limit",
             directories,
+            {"directories": directories, "limit": limit},
         )
 
-    return True, None, directories
+    return True, None, directories, {}
 
 
 class _DebouncingHandler(FileSystemEventHandler):
@@ -226,7 +230,7 @@ class LibraryWatcher:
     def start(self) -> WatcherStatus:
         if not settings.get_bool("watch_filesystem"):
             self.status = WatcherStatus(
-                state=WatcherState.DISABLED, reason="выключено в настройках"
+                state=WatcherState.DISABLED, reason="disabled_in_settings"
             )
             return self.status
 
@@ -237,15 +241,18 @@ class LibraryWatcher:
         existing = [r for r in roots if r.is_dir()]
         if not existing:
             self.status = WatcherStatus(
-                state=WatcherState.FALLBACK, reason="ни один корень библиотеки недоступен"
+                state=WatcherState.FALLBACK, reason="no_available_root"
             )
             log.warning("Слежение не запущено: %s", self.status.reason)
             return self.status
 
-        can_watch, reason, directories = check_can_watch(existing)
+        can_watch, reason, directories, params = check_can_watch(existing)
         if not can_watch:
             self.status = WatcherStatus(
-                state=WatcherState.FALLBACK, reason=reason, directories=directories
+                state=WatcherState.FALLBACK,
+                reason=reason,
+                reason_params=params,
+                directories=directories
             )
             log.warning("Слежение недоступно, работаем по расписанию: %s", reason)
             return self.status
@@ -263,7 +270,7 @@ class LibraryWatcher:
             # Упор в лимит проявляется именно здесь, даже если расчёт прошёл.
             self.status = WatcherStatus(
                 state=WatcherState.FALLBACK,
-                reason=f"не удалось подписаться на события: {exc}",
+                reason="subscribe_failed",
                 directories=directories,
             )
             log.warning("Слежение не запустилось: %s", exc)
@@ -288,7 +295,7 @@ class LibraryWatcher:
             self._observer.stop()
             self._observer.join(timeout=5)
             self._observer = None
-        self.status = WatcherStatus(state=WatcherState.DISABLED, reason="остановлено")
+        self.status = WatcherStatus(state=WatcherState.DISABLED, reason="stopped")
 
     def refresh_status(self) -> WatcherStatus:
         if self._handler is not None:

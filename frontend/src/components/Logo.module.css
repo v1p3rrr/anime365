@@ -1,0 +1,7 @@
+.logo {
+  width: auto;
+  /* Логотип не должен растягивать шапку на узком экране. */
+  max-width: 52vw;
+  object-fit: contain;
+  display: block;
+}

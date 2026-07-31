@@ -13,8 +13,11 @@ from app.core.db import session_scope
 from app.core.events import bus
 from app.models.catalog import Episode, Series, Translation, TranslationEmbed
 from app.services.anime365 import Anime365Client, Anime365Error
+from app.services.audio import normalize_lang
 from app.services.coverage import (
     NON_CONTENT_EPISODE_TYPES,
+    median_duration,
+    resolve_is_movie,
     build_quality_summary,
     build_summary,
     effective_episode_total,
@@ -185,7 +188,7 @@ def _translation_dict(row: Translation) -> dict[str, Any]:
         "width": row.width,
         "height": row.height,
         "duration": row.duration,
-        "url": row.url,
+        "url": Anime365Client.rewrite_host(row.url or ""),
         "is_active": row.is_active,
         "_episode_num": None,
         "_episode_type": "",
@@ -202,6 +205,61 @@ def _attach_episode_numbers(translations: list[dict], episodes: list[Episode]) -
         if episode is not None:
             item["_episode_num"] = episode.episode_num
             item["_episode_type"] = episode.episode_type
+
+
+def _local_audio_langs(
+    item: dict[str, Any], lang_by_translation: dict[int, str | None]
+) -> set[str]:
+    """Языки звука одного локального видеофайла.
+
+    Три источника по убыванию надёжности:
+      1. Файл скачан нами — язык известен из самого перевода, гадать не нужно.
+      2. `<streamdetails>` из .nfo — список дорожек, записанный Jellyfin.
+      3. Языковой суффикс в имени файла (`… .ru.mp4`) — так подписывают озвучку.
+
+    Пустое множество означает «не знаем». Это не то же самое, что «японский»:
+    у файла без .nfo и без суффикса дорожка может быть любой, и UI обязан в
+    этом случае показать всё, а не отфильтровать по догадке.
+    """
+    translation_id = item.get("translation_id")
+    if translation_id is not None:
+        lang = lang_by_translation.get(translation_id)
+        if lang in ("ru", "en", "ja"):
+            return {lang}
+
+    streams = item.get("streams") or {}
+    from_nfo = {
+        normalized
+        for raw in streams.get("audio_languages") or []
+        if (normalized := normalize_lang(raw))
+    }
+    if from_nfo:
+        return from_nfo
+
+    suffix = normalize_lang(item.get("lang"))
+    return {suffix} if suffix else set()
+
+
+def _episode_url(translations: list[dict[str, Any]]) -> str | None:
+    """Адрес страницы серии на сайте — из адреса любого её перевода.
+
+    Ссылка перевода выглядит так:
+        https://host/catalog/yuru-yuri-260/2-seriya-57744/ozvuchka-216078
+    Последний сегмент — сам перевод; всё до него и есть страница серии.
+
+    Отдельного поля у эпизода в API нет (проверено обходом ответа), а
+    конструировать адрес по номеру нельзя: в него входит идентификатор эпизода,
+    который из номера не выводится.
+    """
+    for item in translations:
+        # Хвостовой слеш встречается и превратил бы последний сегмент в пустой.
+        url = (item.get("url") or "").rstrip("/")
+        head, _, tail = url.rpartition("/")
+        # Хвост должен быть сегментом перевода, а не пустым (ссылка со слешем
+        # на конце) и не самим адресом (ссылки без пути).
+        if head and tail and "-seriya-" in head:
+            return head
+    return None
 
 
 async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[str, Any] | None:
@@ -235,16 +293,18 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
             "season": series.season,
             "number_of_episodes": series.number_of_episodes,
             "poster_url": series.poster_url,
-            "url": series.url,
+            # ⚠️ Через зеркало, а не как есть. API всегда отдаёт ссылки на
+            # smotret-anime.org, и если он заблокирован или отвечает 404 (а он
+            # отвечает — проверено), ссылка на странице тайтла ведёт в никуда.
+            # Для ссылок скачивания эта замена была с самого начала, для
+            # ссылки на тайтл — нет.
+            "url": Anime365Client.rewrite_host(series.url or ""),
             "mal_score": series.mal_score,
             "is_airing": series.is_airing,
             # None — решение не принято, действует автоопределение по типу.
             "treat_as_movie": series.treat_as_movie,
-            "effective_is_movie": (
-                series.treat_as_movie
-                if series.treat_as_movie is not None
-                else series.type == "movie"
-            ),
+            # Считается ниже, когда известно число содержательных серий.
+            "effective_is_movie": None,
         }
 
     _attach_episode_numbers(translations, episodes)
@@ -252,6 +312,11 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
     # Трейлеры и реклама лежат вперемешку с сериями и имеют собственные номера,
     # поэтому в подсчёт «всего серий» они не входят.
     content_episodes = [e for e in episodes if e.episode_type not in NON_CONTENT_EPISODE_TYPES]
+    # Связка из нескольких movie-эпизодов — не фильм: у частей должны быть
+    # разные имена файлов, а у фильма номера серии в имени нет.
+    series_data["effective_is_movie"] = resolve_is_movie(
+        series_data["treat_as_movie"], series_data["type"], len(content_episodes)
+    )
     total = effective_episode_total(series.number_of_episodes, len(content_episodes))
 
     normalized = [
@@ -265,11 +330,57 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
     mappings = get_title_mappings(series_id)
     local = get_local_coverage(series_id, total)
 
+    # Когда привязки нет, папка создастся сама при первой загрузке. Показать её
+    # имя надо заранее: иначе о том, куда легли файлы, узнают уже по факту.
+    # Импорт локальный — download_queue тянет за собой очередь и воркеры,
+    # а на уровне модуля это дало бы цикл.
+    from app.services.download_queue import propose_folder
+
+    proposed_folder = propose_folder(series_id) if not mappings else None
+
     # Что из ролей уже лежит локально по каждой серии — чтобы в списке серий было
     # видно, чего не хватает, и не приходилось качать уже имеющееся.
     have_by_episode: dict[float, list[str]] = {}
+    # Язык звука локального видео. Нужен, чтобы не предлагать то, что уже есть:
+    # имея оригинальную дорожку, человек смотрит с субтитрами, и озвучки ему
+    # не нужны, а имея озвучку — наоборот, оригинал ещё впереди.
+    audio_by_episode: dict[float, set[str]] = {}
+    lang_by_translation = {t["id"]: t.get("type_lang") for t in normalized}
+
     for item in get_local_files(series_id):
         have_by_episode.setdefault(item["episode"], []).append(item["role"])
+        if item["role"] != "video":
+            continue
+        langs = audio_by_episode.setdefault(item["episode"], set())
+        langs.update(_local_audio_langs(item, lang_by_translation))
+
+    # Длительности по серии: считаются по всем переводам, включая те, что
+    # отфильтрованы по языку. Язык на хронометраж не влияет, а выборка шире —
+    # значит медиана устойчивее.
+    durations_by_episode: dict[float, list[float]] = {}
+    for item in normalized:
+        episode_num = item.get("episode_num")
+        if episode_num is None or not item.get("duration"):
+            continue
+        # Трейлеры отсекаем обязательно: у них СВОЙ episodeInt, и он совпадает
+        # с номером настоящей серии — у Фрирен трейлер длиной 50 секунд лежит
+        # под номером 1 рядом с первой серией. Без фильтра он попадал в ту же
+        # выборку и сдвигал медиану.
+        if item.get("episode_type") in NON_CONTENT_EPISODE_TYPES:
+            continue
+        durations_by_episode.setdefault(episode_num, []).append(item["duration"])
+
+    # Адрес страницы серии на сайте. Считаем по ПОЛНЫМ записям переводов:
+    # в by_episode ниже уходит урезанный набор полей для клиента, и `url`
+    # в него не входит.
+    url_by_episode: dict[float, str] = {}
+    for item in normalized:
+        episode_num = item.get("episode_num")
+        if episode_num is None or episode_num in url_by_episode:
+            continue
+        page = _episode_url([item])
+        if page:
+            url_by_episode[episode_num] = page
 
     # Переводы, сгруппированные по серии: из них строится выбор при загрузке
     # конкретной серии.
@@ -291,6 +402,8 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
     return {
         "series": series_data,
         "mappings": mappings,
+        # Заполнено только при отсутствии привязки — иначе показывать нечего.
+        "proposed_folder": proposed_folder,
         "local": local,
         "titles": titles,
         "all_titles": all_titles,
@@ -306,14 +419,38 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
                 "episode_title": e.episode_title,
                 "episode_type": e.episode_type,
                 "is_content": e.episode_type not in NON_CONTENT_EPISODE_TYPES,
+                # Ссылка на страницу серии на сайте. API её не отдаёт, но схема
+                # видна в ссылках самих переводов, которые мы храним:
+                #   {url тайтла}/{N}-seriya-{id эпизода}/{перевод}
+                # Отрезав хвост перевода, получаем адрес серии. Выведено из
+                # данных, а не угадано — но если переводов нет, ссылки не будет:
+                # выдумывать её мы не станем.
+                "url": url_by_episode.get(e.episode_num),
                 # Что уже есть локально: video, sub_ru, sub_ja, sub_en.
                 "have": sorted(set(have_by_episode.get(e.episode_num, []))),
+                # Языки звука локального видео. Пустой список при наличии видео
+                # означает «не удалось определить» — в этом случае UI не прячет
+                # ничего, потому что скрывать по догадке хуже, чем показать лишнее.
+                "audio_langs": sorted(audio_by_episode.get(e.episode_num, set())),
+                # Секунды. None — переводов с известной длительностью нет.
+                "duration": median_duration(durations_by_episode.get(e.episode_num, [])),
                 # Доступные переводы этой серии — для выбора при загрузке.
                 "translations": by_episode.get(e.episode_num, []),
             }
             for e in episodes
         ],
         "total_episodes": total,
+        # Типичная длительность серии по тайтлу — медиана серийных медиан.
+        # Двойная медиана не даёт одной длинной премьере сдвинуть общую цифру.
+        "typical_duration": median_duration(
+            [
+                d
+                for d in (
+                    median_duration(values) for values in durations_by_episode.values()
+                )
+                if d
+            ]
+        ),
         "summary": build_summary(normalized, total),
         # Точные ступени берём из кэша embed: если пользователь уже нажимал
         # «уточнить», сводка обязана показывать факт, а не прежнюю прикидку.
@@ -321,26 +458,47 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
     }
 
 
-async def get_embed(translation_id: int, force: bool = False) -> dict[str, Any]:
+def cached_has_subtitles(translation_id: int) -> bool | None:
+    """Известно ли уже, вшиты ли субтитры. `None` — не проверяли.
+
+    Только кэш, без сети: используется там, где переводов сотни (батч), и
+    запрос на каждый превратил бы постановку очереди в многоминутную операцию.
+    """
+    with session_scope() as session:
+        cached = session.get(TranslationEmbed, translation_id)
+        return None if cached is None else cached.has_subtitles
+
+
+async def get_embed(
+    translation_id: int, force: bool = False, with_sizes: bool = False
+) -> dict[str, Any]:
     """Ленивая загрузка embed с кэшированием признаков.
 
-    Кэшируем только устойчивое: вшиты ли субтитры и какие ступени доступны.
-    Сами ссылки короткоживущие и подписанные, поэтому воркер загрузки запрашивает
-    embed заново непосредственно перед скачиванием.
+    Кэшируем только устойчивое: вшиты ли субтитры, какие ступени доступны и
+    сколько весит файл на каждой. Сами ссылки короткоживущие и подписанные,
+    поэтому воркер загрузки запрашивает embed заново непосредственно перед
+    скачиванием.
+
+    `with_sizes` стоит отдельного круга запросов к CDN (HEAD на ступень),
+    поэтому включается только когда размеры действительно показывают.
     """
     if not force:
         with session_scope() as session:
             cached = session.get(TranslationEmbed, translation_id)
-            if cached is not None and cached.fetched_at > datetime.utcnow() - EMBED_TTL:
+            fresh = cached is not None and cached.fetched_at > datetime.utcnow() - EMBED_TTL
+            # Размеры досчитываем и на свежем кэше: их могли ещё не запрашивать.
+            if fresh and (not with_sizes or cached.download_sizes):
                 return {
                     "translation_id": translation_id,
                     "has_subtitles": cached.has_subtitles,
                     "heights": cached.download_heights,
+                    "sizes": cached.download_sizes or {},
                     "from_cache": True,
                 }
 
     async with Anime365Client() as client:
         info = await client.embed(translation_id)
+        sizes = await client.download_sizes(info) if with_sizes else {}
 
     with session_scope() as session:
         session.merge(
@@ -349,6 +507,7 @@ async def get_embed(translation_id: int, force: bool = False) -> dict[str, Any]:
                 has_subtitles=info.subtitles_url is not None,
                 subtitles_url=info.subtitles_url,
                 download_heights=info.heights,
+                download_sizes=sizes,
                 fetched_at=datetime.utcnow(),
             )
         )
@@ -357,6 +516,7 @@ async def get_embed(translation_id: int, force: bool = False) -> dict[str, Any]:
         "translation_id": translation_id,
         "has_subtitles": info.subtitles_url is not None,
         "heights": info.heights,
+        "sizes": sizes,
         "from_cache": False,
     }
 

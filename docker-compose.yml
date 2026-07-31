@@ -18,6 +18,19 @@ services:
       - path: .env
         required: false
 
+    environment:
+      # Прокси для всех исходящих запросов к Anime365 — каталог, embed, скачивание
+      # и проксирование видео в плеер. Пусто, если переменная не задана на хосте:
+      # так один и тот же compose работает и с VPN, и без него.
+      #
+      # HTTPS_PROXY достаточно: весь трафик к сайту идёт по https. ALL_PROXY нужен
+      # для SOCKS5 (`socks5://host:1080`), в том числе socks5h — с разрешением имён
+      # на стороне прокси, что для обхода блокировок по DNS обычно и требуется.
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - ALL_PROXY=${ALL_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-}
+
     volumes:
       - ./config:/config
       - ./data:/data

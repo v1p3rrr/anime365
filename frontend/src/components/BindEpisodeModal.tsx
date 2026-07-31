@@ -5,9 +5,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { api } from '../api/client'
-import { formatBytes } from '../api/library'
 import { ErrorState } from './ErrorState'
 import { useT } from '../i18n'
+import { useFormat } from '../i18n/format'
+import { useApiError } from '../i18n/apiError'
 
 interface LocalFile {
   file_id: number
@@ -42,6 +43,8 @@ interface Props {
  */
 export function BindEpisodeModal({ opened, onClose, seriesId, episode, episodeLabel }: Props) {
   const { t } = useT()
+  const format = useFormat()
+  const apiError = useApiError()
   const queryClient = useQueryClient()
   const [filter, setFilter] = useState('')
 
@@ -65,7 +68,7 @@ export function BindEpisodeModal({ opened, onClose, seriesId, episode, episodeLa
       onClose()
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: t('bindEpisode.failed'), message: error.message }),
+      notifications.show({ color: 'red', title: t('bindEpisode.failed'), message: apiError(error) }),
   })
 
   const visible = (files.data ?? []).filter((f) =>
@@ -113,7 +116,7 @@ export function BindEpisodeModal({ opened, onClose, seriesId, episode, episodeLa
                     {file.filename}
                   </Text>
                   <Text size="xs" c="dimmed" truncate>
-                    {file.folder} · {formatBytes(file.size_bytes)}
+                    {file.folder} · {format.size(file.size_bytes)}
                     {file.matched_rule_id && t('bindEpisode.rule', { id: file.matched_rule_id })}
                   </Text>
                 </Stack>

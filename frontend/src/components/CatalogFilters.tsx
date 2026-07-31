@@ -32,6 +32,9 @@ import {
   type SortField,
 } from '../api/client'
 import { useT, type TranslationKey } from '../i18n'
+import { LangTag } from './Flag'
+import { LANG_COLORS } from '../api/title'
+import { splitType, TRANSLATION_TYPES } from '../stores/preferences'
 
 interface Props {
   filters: Filters
@@ -42,9 +45,6 @@ interface Props {
   /** На вкладке онгоингов фильтр «только онгоинги» бессмыслен — он там уже применён. */
   hideAiringToggle?: boolean
   onSearchOnline: () => void
-  /** Значок английских субтитров на карточках — настройка своя у каждого. */
-  showEnBadges: boolean
-  onToggleEnBadges: () => void
 }
 
 /** Типы приходят с сайта как есть; подписи к ним даёт TYPE_LABELS в словаре. */
@@ -58,8 +58,6 @@ export function CatalogFilters({
   onSearchInput,
   hideAiringToggle = false,
   onSearchOnline,
-  showEnBadges,
-  onToggleEnBadges,
 }: Props) {
   const [expanded, setExpanded] = useState(false)
   const { t } = useT()
@@ -113,7 +111,8 @@ export function CatalogFilters({
     (filters.season ? 1 : 0) +
     (filters.scoreFrom !== undefined ? 1 : 0) +
     (filters.local ? 1 : 0) +
-    (filters.mappingProblem ? 1 : 0)
+    (filters.mappingProblem ? 1 : 0) +
+    (filters.has?.length ? 1 : 0)
 
   return (
     <>
@@ -228,16 +227,6 @@ export function CatalogFilters({
             checked={filters.genresAnd ?? false}
             onChange={(e) => patch({ genresAnd: e.currentTarget.checked })}
           />
-
-          {/* Это не фильтр выборки, а настройка отображения, поэтому она не
-              участвует в счётчике активных фильтров и не сбрасывается вместе
-              с ними: у каждого свой выбор, и он хранится в браузере. */}
-          <Switch
-            label={t('catalog.enBadges')}
-            description={t('catalog.enBadgesHint')}
-            checked={showEnBadges}
-            onChange={onToggleEnBadges}
-          />
         </Group>
 
         {/* Оценка MAL — шкала 0..10 с шагом 0.5. Ползунок вместо ввода числа:
@@ -315,6 +304,49 @@ export function CatalogFilters({
           >
             {t('catalog.mappingProblem')}
           </Chip>
+        </Group>
+
+        {/* Наличие перевода НА САЙТЕ, а не в библиотеке. Данные собирает фоновая
+            джоба, поэтому тайтлы, до которых она не дошла, под фильтр не
+            подпадают: утверждать, что перевода нет, мы не вправе — мы не смотрели. */}
+        <Text size="sm" fw={500} mt="md" mb={4}>
+          {t('catalog.hasTranslation')}
+        </Text>
+        <Group gap={6} wrap="wrap">
+          {TRANSLATION_TYPES.map((type) => {
+            const [kind, lang] = splitType(type)
+            const active = filters.has ?? []
+            return (
+              <Chip
+                key={type}
+                size="xs"
+                color={LANG_COLORS[lang]}
+                checked={active.includes(type)}
+                onChange={(checked) =>
+                  patch({
+                    has: checked
+                      ? [...active, type]
+                      : active.filter((value) => value !== type),
+                  })
+                }
+              >
+                {t(`kind.${kind}` as TranslationKey)} · <LangTag lang={lang} />
+              </Chip>
+            )
+          })}
+          {(filters.has?.length ?? 0) > 1 && (
+            <Chip
+              size="xs"
+              color="gray"
+              checked={filters.hasAll === true}
+              onChange={(checked) => patch({ hasAll: checked ? true : undefined })}
+            >
+              {t('catalog.hasAll')}
+            </Chip>
+          )}
+        </Group>
+
+        <Group gap="xs" mt="md">
           {activeCount > 0 && (
             <Button
               size="xs"

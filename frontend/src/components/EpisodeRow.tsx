@@ -1,28 +1,36 @@
-import { Badge, Button, Group, Menu, Table, Text, Tooltip } from '@mantine/core'
-import { notifications } from '@mantine/notifications'
+import { Badge, Button, Collapse, Group, Table, Text, Tooltip } from '@mantine/core'
 import {
   IconCheck,
   IconChevronDown,
   IconDownload,
   IconExternalLink,
+  IconFolderSymlink,
   IconLink,
-  IconMusic,
   IconPlayerPlay,
 } from '@tabler/icons-react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
-import { downloadsApi, type DownloadKind } from '../api/downloads'
-import { LANG_COLORS, type EpisodeItem, type EpisodeTranslation } from '../api/title'
+import type { EpisodeTarget } from '../api/library'
+import { type EpisodeItem } from '../api/title'
 import { useT } from '../i18n'
+import { languageList } from '../i18n/languages'
+import { useFormat } from '../i18n/format'
+import { Flag } from './Flag'
+import { isTypeVisible, type TranslationType } from '../stores/preferences'
+import classes from './EpisodeRow.module.css'
 import { BindEpisodeModal } from './BindEpisodeModal'
+import { EpisodeDownloadPanel } from './EpisodeDownloadPanel'
 import { PlayerModal } from './PlayerModal'
 
 interface Props {
   episode: EpisodeItem
-  langs: string[]
-  kinds: string[]
+  /** Своя папка назначения у этой серии, если её назначили. */
+  target?: EpisodeTarget
+  /** Включённые типы переводов — общая настройка отображения. */
+  types: TranslationType[]
   seriesUrl: string | null
+  /** Открыть окно назначения папки для этой серии. */
+  onAssignFolder?: (episode: number) => void
   seriesId: number
 }
 
@@ -30,259 +38,275 @@ interface Props {
 /** Языковые коды не переводятся, «видео» — переводится. */
 const ROLE_BADGES: Array<{ role: string; label: string; color: string }> = [
   { role: 'video', label: '', color: 'teal' },
-  { role: 'sub_ru', label: 'RU', color: 'blue' },
-  { role: 'sub_ja', label: 'JA', color: 'teal' },
-  { role: 'sub_en', label: 'EN', color: 'grape' },
+  { role: 'sub_ru', label: 'ru', color: 'blue' },
+  { role: 'sub_ja', label: 'ja', color: 'teal' },
+  { role: 'sub_en', label: 'en', color: 'grape' },
 ]
 
-const ROLE_BY_LANG: Record<string, string> = { ru: 'sub_ru', ja: 'sub_ja', en: 'sub_en' }
+/** Сколько колонок в таблице серий — на столько растягивается панель загрузки. */
+const COLUMN_COUNT = 3
 
-export function EpisodeRow({ episode, langs, kinds, seriesUrl, seriesId }: Props) {
-  const queryClient = useQueryClient()
-  const { t } = useT()
+export function EpisodeRow({
+  episode,
+  types,
+  target,
+  seriesUrl,
+  seriesId,
+  onAssignFolder,
+}: Props) {
+  const { t, locale } = useT()
+  const format = useFormat()
   const [binding, setBinding] = useState(false)
   const [playing, setPlaying] = useState(false)
-  const badgeLabel = (badge: { label: string }) => badge.label || t('catalog.badgeVideo')
+  const [expanded, setExpanded] = useState(false)
+  // В подсказку идёт полная фраза, в сам значок — флаг. Один флаг не говорит,
+  // о чём речь: у серии бывают и субтитры этого языка, и звуковая дорожка.
+  const badgeLabel = (badge: { label: string }) =>
+    badge.label
+      ? `${t('kind.sub')} ${badge.label.toUpperCase()}`
+      : t('catalog.badgeVideo')
 
-  const enqueue = useMutation({
-    mutationFn: ({ id, kind }: { id: number; kind: DownloadKind }) =>
-      downloadsApi.enqueue(id, kind),
-    onSuccess: (result) => {
-      notifications.show({
-        color: result.created ? 'teal' : 'gray',
-        message: result.created ? t('episode.queued') : t('episode.alreadyQueued'),
-      })
-      queryClient.invalidateQueries({ queryKey: ['downloads'] })
-    },
-    onError: (error: Error) =>
-      notifications.show({ color: 'red', title: t('episode.enqueueFailed'), message: error.message }),
-  })
-
-  const available = episode.translations.filter(
-    (t) => langs.includes(t.lang) && kinds.includes(t.kind),
+  const available = episode.translations.filter((item) =>
+    isTypeVisible(item.kind, item.lang, types),
   )
 
-  // Показываем только те языки, которые пользователь не выключил.
+  // Значок субтитров показываем только там, где включён соответствующий тип:
+  // иначе значок обещает то, чего в панели загрузки уже не найти.
   const visibleBadges = ROLE_BADGES.filter(
-    (badge) =>
-      badge.role === 'video' ||
-      langs.includes(Object.entries(ROLE_BY_LANG).find(([, r]) => r === badge.role)?.[0] ?? ''),
+    (badge) => badge.role === 'video' || types.includes(badge.role as TranslationType),
   )
-
-  // Субтитры звука не содержат: извлекать можно только из озвучки и оригинала.
-  const audioSources = available.filter((t) => t.kind !== 'sub')
-
-  const handlePick = (translation: EpisodeTranslation) => {
-    const kind = translation.kind === 'sub' ? 'subtitle' : 'video'
-    // Уже есть такой тип — предупреждаем, что появится второй файл рядом.
-    const targetRole = kind === 'video' ? 'video' : ROLE_BY_LANG[translation.lang]
-    if (targetRole && episode.have.includes(targetRole)) {
-      notifications.show({
-        color: 'yellow',
-        title: t('episode.existsTitle'),
-        message: t('episode.existsMessage'),
-      })
-    }
-    enqueue.mutate({ id: translation.id, kind })
-  }
 
   return (
-    <Table.Tr>
-      <Table.Td>
-        <Text size="sm">{episode.episode_full || episode.episode_int}</Text>
-        {!episode.is_content && (
-          <Badge size="xs" variant="light" color="orange">
-            {episode.episode_type}
-          </Badge>
-        )}
-        {episode.is_content && episode.episode_type !== 'tv' && (
-          <Badge size="xs" variant="light" color="grape">
-            {episode.episode_type}
-          </Badge>
-        )}
-      </Table.Td>
+    <>
+      <Table.Tr>
+        <Table.Td>
+          <Text size="sm">{episode.episode_full || episode.episode_int}</Text>
+          {format.duration(episode.duration) && (
+            <Text size="xs" c="dimmed">
+              {format.duration(episode.duration)}
+            </Text>
+          )}
+          {!episode.is_content && (
+            <Badge size="xs" variant="light" color="orange">
+              {episode.episode_type}
+            </Badge>
+          )}
+          {episode.is_content && episode.episode_type !== 'tv' && (
+            <Badge size="xs" variant="light" color="grape">
+              {episode.episode_type}
+            </Badge>
+          )}
 
-      <Table.Td>
-        <Group gap={4}>
-          {visibleBadges.map((badge) => {
-            const have = episode.have.includes(badge.role)
-            return (
-              <Tooltip
-                key={badge.role}
-                label={
-                  have
-                    ? t('episode.haveLocal', { label: badgeLabel(badge) })
-                    : t('episode.missing', { label: badgeLabel(badge) })
-                }
-              >
-                <Badge
-                  size="xs"
-                  variant={have ? 'filled' : 'outline'}
-                  color={have ? badge.color : 'gray'}
-                  leftSection={have ? <IconCheck size={9} /> : undefined}
-                >
-                  {badgeLabel(badge)}
-                </Badge>
-              </Tooltip>
-            )
-          })}
-        </Group>
-      </Table.Td>
-
-      <Table.Td>
-        <Group gap={4} wrap="nowrap">
-          <Menu position="bottom-end">
-            <Menu.Target>
-              <Button
-                size="compact-xs"
-                leftSection={<IconDownload size={12} />}
-                rightSection={<IconChevronDown size={11} />}
-                disabled={available.length === 0}
-                loading={enqueue.isPending}
-              >
-                {t('episode.download')}
-              </Button>
-            </Menu.Target>
-            <Menu.Dropdown mah={340} style={{ overflowY: 'auto' }}>
-              {available.length === 0 ? (
-                <Menu.Item disabled>{t('episode.noTranslations')}</Menu.Item>
-              ) : (
-                Object.entries(groupByLangKind(available)).map(([key, items]) => (
-                  <div key={key}>
-                    <Menu.Label>{key.replace('|', ' · ')}</Menu.Label>
-                    {items.map((translation) => (
-                      <Menu.Item key={translation.id} onClick={() => handlePick(translation)}>
-                        <Group gap={6} wrap="nowrap">
-                          <Badge size="xs" color={LANG_COLORS[translation.lang]} variant="light">
-                            {translation.lang}
-                          </Badge>
-                          <Text size="xs" style={{ wordBreak: 'break-word' }}>
-                            {translation.authors}
-                          </Text>
-                          {translation.height && (
-                            <Text size="xs" c="dimmed">
-                              {Math.min(translation.height, 1080)}p
-                            </Text>
-                          )}
-                        </Group>
-                      </Menu.Item>
-                    ))}
-                  </div>
-                ))
-              )}
-            </Menu.Dropdown>
-          </Menu>
-
-          {/* Плеер идёт до ссылки на сайт: смотреть у себя — основной путь,
-              а сайт остаётся запасным, если браузер не тянет кодек. */}
-          {available.length > 0 && (
-            <Tooltip label={t('episode.play')}>
-              <Button
-                size="compact-xs"
+          {/* Эта серия уедет не туда, куда остальные. Значок стоит у номера, а
+              не у кнопок: вопрос «куда попадёт файл» возникает раньше, чем
+              вопрос «что скачать». */}
+          {target && (
+            <Tooltip
+              label={t('episodeTarget.rowHint', { path: target.full_path })}
+              multiline
+              w={280}
+            >
+              <Badge
+                size="xs"
                 variant="light"
-                color="teal"
-                px={6}
-                onClick={() => setPlaying(true)}
+                color={target.writable ? 'yellow' : 'red'}
+                leftSection={<IconFolderSymlink size={9} />}
               >
-                <IconPlayerPlay size={12} />
-              </Button>
+                {t('episodeTarget.rowBadge')}
+              </Badge>
             </Tooltip>
           )}
+        </Table.Td>
 
-          {/* Отдельная кнопка, а не пункт в общем меню: звук нужен редко, но
-              искать его правым кликом или в конце длинного списка переводов
-              никто не станет. */}
-          {audioSources.length > 0 && (
-            <Menu position="bottom-end">
-              <Menu.Target>
-                <Tooltip label={t('episode.audio')}>
-                  <Button size="compact-xs" variant="subtle" color="grape" px={6}>
-                    <IconMusic size={12} />
-                  </Button>
-                </Tooltip>
-              </Menu.Target>
-              <Menu.Dropdown mah={340} style={{ overflowY: 'auto' }}>
-                <Menu.Label>{t('episode.audioMenu')}</Menu.Label>
-                {audioSources.map((translation) => (
-                  <Menu.Item
-                    key={translation.id}
-                    onClick={() => enqueue.mutate({ id: translation.id, kind: 'audio' })}
+        <Table.Td>
+          {/* align="center" обязателен: у значка с текстом и у голого флага
+              разная высота, и по умолчанию они встают по базовой линии. */}
+          <Group gap={6} align="center" wrap="nowrap">
+            {visibleBadges.map((badge) => {
+              const have = episode.have.includes(badge.role)
+              const label = have
+                ? t('episode.haveLocal', { label: badgeLabel(badge) })
+                : t('episode.missing', { label: badgeLabel(badge) })
+
+              // У значка видео к подсказке добавляем язык звуковой дорожки:
+              // сам значок отвечает только «файл есть», а вопрос обычно другой —
+              // «на каком языке». Дорожек в файле бывает несколько, поэтому
+              // перечисляем все, а не первую попавшуюся.
+              const videoLabel =
+                badge.role === 'video' && have
+                  ? episode.audio_langs.length > 0
+                    ? `${label} · ${t('episode.audioTrack', {
+                        langs: languageList(episode.audio_langs, locale),
+                      })}`
+                    : `${label} · ${t('episode.audioUnknown')}`
+                  : label
+
+              // Языки показываем голым флагом, без рамки: рамка вокруг картинки
+              // ничего не добавляет, а выровнять её по строке с текстовым
+              // значком всё равно не выходит. Отсутствие передаём обесцвечиванием
+              // — форма флага остаётся узнаваемой, и ряд не скачет по ширине,
+              // как скакал бы при появлении и пропаже галочки.
+              if (badge.label) {
+                return (
+                  <Tooltip key={badge.role} label={label}>
+                    <span
+                      className={classes.flagMark}
+                      data-missing={!have || undefined}
+                      aria-label={label}
+                    >
+                      <Flag lang={badge.label} size={13} />
+                    </span>
+                  </Tooltip>
+                )
+              }
+
+              return (
+                <Tooltip key={badge.role} label={videoLabel}>
+                  <Badge
+                    size="xs"
+                    variant={have ? 'filled' : 'outline'}
+                    color={have ? badge.color : 'gray'}
+                    leftSection={have ? <IconCheck size={9} /> : undefined}
                   >
-                    <Group gap={6} wrap="nowrap">
-                      <Badge size="xs" color={LANG_COLORS[translation.lang]} variant="light">
-                        {translation.lang}
-                      </Badge>
-                      <Text size="xs" style={{ wordBreak: 'break-word' }}>
-                        {translation.authors}
-                      </Text>
-                    </Group>
-                  </Menu.Item>
-                ))}
-              </Menu.Dropdown>
-            </Menu>
-          )}
+                    {t('catalog.badgeVideo')}
+                  </Badge>
+                </Tooltip>
+              )
+            })}
+          </Group>
+        </Table.Td>
 
-          {seriesUrl && (
-            <Tooltip label={t('episode.openOnSite')}>
-              <Button
-                size="compact-xs"
-                variant="subtle"
-                px={6}
-                component="a"
-                href={seriesUrl}
-                target="_blank"
-                rel="noreferrer noopener"
-              >
-                <IconExternalLink size={12} />
-              </Button>
-            </Tooltip>
-          )}
+        <Table.Td>
+          <Group gap={4} wrap="nowrap">
+            {/* Разворачивается вниз, а не выпадает меню: выбор загрузки — это
+                сравнение нескольких десятков вариантов, и в выпадашке поверх
+                страницы такое сравнивать нечем. */}
+            <Button
+              size="compact-xs"
+              leftSection={<IconDownload size={12} />}
+              rightSection={
+                <IconChevronDown
+                  size={11}
+                  style={{
+                    transform: expanded ? 'rotate(180deg)' : undefined,
+                    transition: 'transform 150ms ease',
+                  }}
+                />
+              }
+              variant={expanded ? 'light' : 'filled'}
+              disabled={available.length === 0}
+              onClick={() => setExpanded((value) => !value)}
+              aria-expanded={expanded}
+            >
+              {t('episode.download')}
+            </Button>
 
-          {/* Разбор имени ошибается на сдвинутой нумерации и на файлах без
-              номера — тогда серию привязывают к файлу руками. */}
-          {episode.episode_num != null && (
-            <Tooltip label={t('episode.bind')}>
-              <Button
-                size="compact-xs"
-                variant="subtle"
-                color="gray"
-                px={6}
-                onClick={() => setBinding(true)}
-              >
-                <IconLink size={12} />
-              </Button>
-            </Tooltip>
-          )}
-        </Group>
+            {/* Плеер идёт до ссылки на сайт: смотреть у себя — основной путь,
+                а сайт остаётся запасным, если браузер не тянет кодек. */}
+            {available.length > 0 && (
+              <Tooltip label={t('episode.play')}>
+                <Button
+                  size="compact-xs"
+                  variant="light"
+                  color="teal"
+                  px={6}
+                  onClick={() => setPlaying(true)}
+                  aria-label={t('episode.play')}
+                >
+                  <IconPlayerPlay size={12} />
+                </Button>
+              </Tooltip>
+            )}
 
-        <PlayerModal
-          opened={playing}
-          onClose={() => setPlaying(false)}
-          translations={available}
-          episodeLabel={episode.episode_full || episode.episode_int}
-          seriesUrl={seriesUrl}
-        />
+            {/* Ссылка ведёт на страницу СЕРИИ, если её удалось вывести из
+                адресов переводов, и только иначе — на страницу тайтла. Раньше
+                здесь всегда был адрес тайтла, хотя подпись обещала серию. */}
+            {(episode.url || seriesUrl) && (
+              <Tooltip label={episode.url ? t('episode.openOnSite') : t('episode.openTitleOnSite')}>
+                <Button
+                  size="compact-xs"
+                  variant="subtle"
+                  px={6}
+                  component="a"
+                  href={episode.url || seriesUrl || undefined}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  aria-label={t('episode.openOnSite')}
+                >
+                  <IconExternalLink size={12} />
+                </Button>
+              </Tooltip>
+            )}
 
-        {episode.episode_num != null && (
-          <BindEpisodeModal
-            opened={binding}
-            onClose={() => setBinding(false)}
-            seriesId={seriesId}
-            episode={episode.episode_num}
+            {/* Куда положить то, чего ещё нет. Не путать с привязкой к файлу
+                ниже: та связывает серию с уже лежащим на диске. */}
+            {episode.episode_num != null && onAssignFolder && (
+              <Tooltip label={t('episode.assignFolder')}>
+                <Button
+                  size="compact-xs"
+                  variant="subtle"
+                  px={6}
+                  color={target ? 'yellow' : undefined}
+                  onClick={() => onAssignFolder(episode.episode_num as number)}
+                  aria-label={t('episode.assignFolder')}
+                >
+                  <IconFolderSymlink size={12} />
+                </Button>
+              </Tooltip>
+            )}
+
+            {/* Разбор имени ошибается на сдвинутой нумерации и на файлах без
+                номера — тогда серию привязывают к файлу руками. */}
+            {episode.episode_num != null && (
+              <Tooltip label={t('episode.bind')}>
+                <Button
+                  size="compact-xs"
+                  variant="subtle"
+                  color="gray"
+                  px={6}
+                  onClick={() => setBinding(true)}
+                  aria-label={t('episode.bind')}
+                >
+                  <IconLink size={12} />
+                </Button>
+              </Tooltip>
+            )}
+          </Group>
+
+          <PlayerModal
+            opened={playing}
+            onClose={() => setPlaying(false)}
+            translations={available}
             episodeLabel={episode.episode_full || episode.episode_int}
+            seriesUrl={seriesUrl}
           />
-        )}
-      </Table.Td>
-    </Table.Tr>
+
+          {episode.episode_num != null && (
+            <BindEpisodeModal
+              opened={binding}
+              onClose={() => setBinding(false)}
+              seriesId={seriesId}
+              episode={episode.episode_num}
+              episodeLabel={episode.episode_full || episode.episode_int}
+            />
+          )}
+        </Table.Td>
+      </Table.Tr>
+
+      {/* Отдельная строка на всю ширину, а не блок внутри ячейки: иначе панель
+          жила бы в колонке кнопок и была бы шириной с неё. Строка есть всегда,
+          но пустая и схлопнутая — так раскрытие анимируется, а не мигает. */}
+      <Table.Tr>
+        <Table.Td colSpan={COLUMN_COUNT} className={classes.panelCell}>
+          <Collapse in={expanded}>
+            <div className={classes.panelInner}>
+              {/* Содержимое монтируется только раскрытым: у тайтла на 300 серий
+                  панели всех строк сразу — это тысячи узлов DOM впустую. */}
+              {expanded && <EpisodeDownloadPanel episode={episode} types={types} />}
+            </div>
+          </Collapse>
+        </Table.Td>
+      </Table.Tr>
+    </>
   )
 }
-
-function groupByLangKind(items: EpisodeTranslation[]): Record<string, EpisodeTranslation[]> {
-  const out: Record<string, EpisodeTranslation[]> = {}
-  for (const item of items) {
-    const key = `${item.lang}|${item.kind}`
-    ;(out[key] ??= []).push(item)
-  }
-  return out
-}
-

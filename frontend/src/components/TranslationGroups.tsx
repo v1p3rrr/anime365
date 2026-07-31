@@ -8,16 +8,20 @@ import {
   LANG_COLORS,
   titleApi,
   type AuthorGroup,
+  type LocalCoverage,
   type SummarySection,
 } from '../api/title'
 import { BatchDownload } from './BatchDownload'
 import { ErrorState } from './ErrorState'
 import { useT, type TranslationKey } from '../i18n'
+import { isTypeVisible, translationType, typeRank, type TranslationType } from '../stores/preferences'
 
 interface Props {
   sections: SummarySection[]
-  langs: string[]
-  kinds: string[]
+  /** Включённые типы переводов — общая настройка отображения. */
+  types: TranslationType[]
+  /** Покрытие по тайтлу целиком: от него зависят акценты у батч-кнопок. */
+  local: LocalCoverage
   seriesUrl: string | null
   /** Номера серий, считающихся контентом: нужны батч-загрузке. */
   contentEpisodes: Set<number>
@@ -32,13 +36,21 @@ interface Props {
  */
 export function TranslationGroups({
   sections,
-  langs,
-  kinds,
+  types,
+  local,
   seriesUrl,
   contentEpisodes,
 }: Props) {
   const { t } = useT()
-  const visible = sections.filter((s) => langs.includes(s.lang) && kinds.includes(s.kind))
+  // Тот же порядок, что и в панели загрузки серии: субтитры раньше видео,
+  // озвучка последней. Разными их держать нельзя — это один и тот же выбор,
+  // сделанный в двух местах страницы.
+  const visible = sections
+    .filter((section) => isTypeVisible(section.kind, section.lang, types))
+    .sort(
+      (a, b) =>
+        typeRank(translationType(a.kind, a.lang)) - typeRank(translationType(b.kind, b.lang)),
+    )
 
   // Какие секции пользователь уже открывал. Mantine Accordion сам по себе панели не
   // размонтирует — он рендерит содержимое и прячет его через Collapse. Для тайтла с
@@ -59,7 +71,7 @@ export function TranslationGroups({
   if (visible.length === 0) {
     return (
       <Text c="dimmed" size="sm">
-        Для выбранных языков и типов переводов нет. Измените фильтр выше.
+        {t('title.noSectionsForTypes')}
       </Text>
     )
   }
@@ -79,7 +91,7 @@ export function TranslationGroups({
                   {KIND_ICONS[section.kind] ?? ''} {t(`kind.${section.kind}` as TranslationKey)}
                 </Text>
                 <Text size="xs" c="dimmed">
-                  {section.groups.length} авторов · {section.total_translations} переводов
+                  {t('groups.summaryLine', { authors: section.groups.length, total: section.total_translations })}
                 </Text>
               </Group>
             </Accordion.Control>
@@ -88,6 +100,8 @@ export function TranslationGroups({
                 <AuthorTable
                   groups={section.groups}
                   kind={section.kind}
+                  hasVideo={local.coverage.video?.complete ?? false}
+                  hasSubs={local.coverage[`sub_${section.lang}`]?.complete ?? false}
                   seriesUrl={seriesUrl}
                   contentEpisodes={contentEpisodes}
                 />
@@ -103,11 +117,17 @@ export function TranslationGroups({
 function AuthorTable({
   groups,
   kind,
+  hasVideo,
+  hasSubs,
   seriesUrl,
   contentEpisodes,
 }: {
   groups: AuthorGroup[]
   kind: string
+  /** Видео по тайтлу собрано целиком. */
+  hasVideo: boolean
+  /** Субтитры этого языка собраны целиком. */
+  hasSubs: boolean
   seriesUrl: string | null
   contentEpisodes: Set<number>
 }) {
@@ -130,6 +150,8 @@ function AuthorTable({
               key={group.authors}
               group={group}
               kind={kind}
+              hasVideo={hasVideo}
+              hasSubs={hasSubs}
               seriesUrl={seriesUrl}
               contentEpisodes={contentEpisodes}
             />
@@ -143,11 +165,15 @@ function AuthorTable({
 function AuthorRow({
   group,
   kind,
+  hasVideo,
+  hasSubs,
   seriesUrl,
   contentEpisodes,
 }: {
   group: AuthorGroup
   kind: string
+  hasVideo: boolean
+  hasSubs: boolean
   seriesUrl: string | null
   contentEpisodes: Set<number>
 }) {
@@ -179,7 +205,7 @@ function AuthorRow({
               <Group gap={4} mt={4}>
                 <Loader size={10} />
                 <Text size="xs" c="dimmed">
-                  проверяю…
+                  {t('groups.checking')}
                 </Text>
               </Group>
             )}
@@ -202,7 +228,7 @@ function AuthorRow({
                 label={t('groups.checkHardsub')}
               >
                 <Button size="compact-xs" variant="subtle" mt={2} onClick={() => setProbe(true)}>
-                  вшитые или файлом?
+                  {t('groups.hardsubAsk')}
                 </Button>
               </Tooltip>
             )}
@@ -215,14 +241,14 @@ function AuthorRow({
           {group.coverage || '—'}
         </Text>
         <Text size="xs" c="dimmed">
-          {group.count} шт.
+          {t('groups.countShort', { count: group.count })}
         </Text>
       </Table.Td>
 
       <Table.Td>
         {group.max_height_estimate ? (
           <Tooltip label={t('groups.qualityHint')}>
-            <Text size="sm">до {Math.min(group.max_height_estimate, 1080)}p</Text>
+            <Text size="sm">{t('groups.upTo', { height: Math.min(group.max_height_estimate, 1080) })}</Text>
           </Tooltip>
         ) : (
           <Text size="sm" c="dimmed">
@@ -240,6 +266,10 @@ function AuthorRow({
             group={group}
             kind={kind as 'voice' | 'sub' | 'raw'}
             contentEpisodes={contentEpisodes}
+            // Батч ставит задачи на все серии сразу, поэтому «уже есть» здесь
+            // означает собранное целиком, а не наличие у одной серии.
+            hasVideo={hasVideo}
+            hasSubs={hasSubs}
             disabled={hardsub === true}
             disabledReason={hardsub ? t('groups.hardsubNoFile') : undefined}
           />
@@ -264,7 +294,7 @@ function AuthorRow({
                 target="_blank"
                 rel="noreferrer noopener"
               >
-                Смотреть
+                {t('groups.watch')}
               </Button>
             </Tooltip>
           )}

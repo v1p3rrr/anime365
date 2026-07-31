@@ -17,6 +17,8 @@ import { notifications } from '@mantine/notifications'
 import {
   IconAlertTriangle,
   IconChartBar,
+  IconDeviceTv,
+  IconMusic,
   IconClock,
   IconEye,
   IconFolderOff,
@@ -34,21 +36,22 @@ import {
   SOURCE_COLORS,
   type UnmappedFolder,
 } from '../api/library'
+import { AudioLibraryTab } from '../components/AudioLibraryTab'
+import { JellyfinAudit } from '../components/JellyfinAudit'
 import { ErrorState } from '../components/ErrorState'
 import { MapFolderModal } from '../components/MapFolderModal'
 import { MappingReport } from '../components/MappingReport'
 import { useT, type TranslationKey } from '../i18n'
+import { useApiError } from '../i18n/apiError'
 import { useFormat } from '../i18n/format'
 import scrollClasses from './ScrollPage.module.css'
 import pathClasses from '../components/PathLine.module.css'
 
-function capitalize(text: string | null | undefined): string {
-  return text ? text[0].toUpperCase() + text.slice(1) : ''
-}
 
 export function LibraryPage() {
   const queryClient = useQueryClient()
   const { t } = useT()
+  const apiError = useApiError()
   const { size } = useFormat()
   const sourceLabel = (key: string) => t(`source.${key}` as TranslationKey)
   const [mappingFolder, setMappingFolder] = useState<UnmappedFolder | null>(null)
@@ -76,7 +79,7 @@ export function LibraryPage() {
       }
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: t('library.scanFailed'), message: error.message }),
+      notifications.show({ color: 'red', title: t('library.scanFailed'), message: apiError(error) }),
   })
 
   const confirm = useMutation({
@@ -144,9 +147,12 @@ export function LibraryPage() {
           думать, что изменения подхватываются сразу, а они не подхватываются. */}
       {data?.watcher?.state === 'fallback' && (
         <Alert color="yellow" title={t('library.watcherFallback')} icon={<IconClock size={18} />}>
-          {/* Причина приходит с сервера строчной: там она — часть строки лога.
-              В начале предложения её надо поднять, иначе выглядит как обрывок. */}
-          {capitalize(data.watcher.reason)}. {t('library.watcherFallbackHint')}
+          {/* Причина приходит КОДОМ, подстановки — отдельно. Раньше сервер
+              присылал готовую русскую фразу, и она торчала в английском
+              интерфейсе. */}
+          {t(`watcherReason.${data.watcher.reason ?? 'unknown'}` as TranslationKey,
+            data.watcher.reason_params ?? {})}
+          . {t('library.watcherFallbackHint')}
         </Alert>
       )}
 
@@ -241,6 +247,12 @@ export function LibraryPage() {
           <Tabs.Tab value="report" leftSection={<IconChartBar size={14} />}>
             {t('library.tabReport')}
           </Tabs.Tab>
+          <Tabs.Tab value="jellyfin" leftSection={<IconDeviceTv size={14} />}>
+            {t('library.tabJellyfin')}
+          </Tabs.Tab>
+          <Tabs.Tab value="audio" leftSection={<IconMusic size={14} />}>
+            {t('audio.tab')}
+          </Tabs.Tab>
         </Tabs.List>
 
         <Tabs.Panel value="unmapped" pt="sm">
@@ -310,7 +322,7 @@ export function LibraryPage() {
                   <Table.Td style={{ wordBreak: 'break-word' }}>
                     {row.folder}
                     <Text size="xs" c="dimmed">
-                      {row.video_count} видео
+                      {t('library.videosCount', { count: row.video_count })}
                     </Text>
                   </Table.Td>
                   <Table.Td style={{ wordBreak: 'break-word' }}>
@@ -324,8 +336,8 @@ export function LibraryPage() {
                       multiline
                       w={300}
                       label={
-                        `Уверенность алгоритма: ${row.confidence.toFixed(0)} из 100. ` +
-                        (row.matched_on ? `Совпало по: ${row.matched_on}` : '')
+                        t('library.confidenceHint', { value: row.confidence.toFixed(0) }) +
+                    (row.matched_on ? t('library.matchedOn', { on: row.matched_on }) : '')
                       }
                     >
                       <Badge size="sm" variant="light" color={SOURCE_COLORS[row.source] ?? 'gray'}>
@@ -362,8 +374,7 @@ export function LibraryPage() {
           ) : (
             <>
               <Text size="xs" c="dimmed" mb="xs">
-                Номер серии не удалось определить по имени файла и по .nfo. Обычно это бонусные
-                материалы. Правила разбора имён настраиваются в config/filename_rules.yaml.
+                {t('library.unmatchedHint')}
               </Text>
               <Table.ScrollContainer minWidth={560}>
                 <Table striped verticalSpacing="xs">
@@ -390,6 +401,14 @@ export function LibraryPage() {
         <Tabs.Panel value="report" pt="sm">
           <MappingReport />
         </Tabs.Panel>
+        <Tabs.Panel value="jellyfin" pt="sm">
+          <JellyfinAudit />
+        </Tabs.Panel>
+
+        <Tabs.Panel value="audio" pt="sm">
+          <AudioLibraryTab />
+        </Tabs.Panel>
+
       </Tabs>
 
       <MapFolderModal folder={mappingFolder} onClose={() => setMappingFolder(null)} />

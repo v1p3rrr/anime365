@@ -66,10 +66,16 @@ class TestLangNormalization:
     def test_case_and_spaces_ignored(self) -> None:
         assert normalize_lang("  RUS ") == "ru"
 
-    def test_unknown_language_is_none(self) -> None:
-        # Немецкая дорожка нас не интересует, но и ошибкой не является.
-        assert normalize_lang("ger") is None
+    def test_language_beyond_the_usual_three_is_recognised(self) -> None:
+        # Раньше ожидалось None: приведение знало только ru/en/ja. Немецкая
+        # дорожка теперь распознаётся, и оба её трёхбуквенных кода дают один
+        # результат — ради этого и заведён ISO-справочник.
+        assert normalize_lang("ger") == "de"
+        assert normalize_lang("deu") == "de"
+
+    def test_absent_language_is_none(self) -> None:
         assert normalize_lang(None) is None
+        assert normalize_lang("und") is None
 
 
 class TestStreamChoice:

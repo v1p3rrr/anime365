@@ -9,7 +9,11 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, HTTPException, Request, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+
+# Псевдоним: имя `errors` в этом модуле занято списком ошибок валидации.
+from app.core import errors as api_errors
+from app.core.errors import ApiError
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 
@@ -19,6 +23,7 @@ from app.core.bootstrap import load_settings_from_db
 from app.core.config import settings
 from app.core.security import HASH_PREFIX, hash_password
 from app.core.settings_registry import ValidationError
+from app.core.permissions import Permission, require
 from app.models.catalog import ScanRun
 from app.models.settings import AppSetting
 from app.services.anime365 import Anime365Client, Anime365Error
@@ -123,7 +128,10 @@ def _store(key: str, raw: str) -> None:
             row.value = raw
 
 
-@router.put("")
+@router.put(
+    "",
+    dependencies=[Depends(require(Permission.SETTINGS))],
+)
 def update_settings(
     updates: Annotated[list[SettingUpdate], Body(embed=True)],
     request: Request,
@@ -137,6 +145,23 @@ def update_settings(
     applied: list[str] = []
     errors: list[str] = []
     password_changed = False
+
+    # Пересечение корней проверяем ДО применения и целиком, а не по одному
+    # значению: беда возникает от пары путей, и увидеть её, глядя на одно поле,
+    # нельзя. Складываем предлагаемые значения поверх действующих — правят
+    # обычно один путь, а конфликтует он с уже сохранённым.
+    proposed = {key: settings.get_str(key) for key in reg.PATH_KEYS}
+    for update in updates:
+        if update.key in proposed:
+            proposed[update.key] = update.value
+    layout_problems = reg.check_path_layout(proposed)
+    if layout_problems:
+        raise ApiError(
+            400,
+            api_errors.PATHS_OVERLAP,
+            "; ".join(layout_problems),
+            reason="; ".join(layout_problems),
+        )
 
     for update in updates:
         try:
@@ -174,10 +199,19 @@ def update_settings(
         applied.append(setting.key)
 
     if errors and not applied:
-        raise HTTPException(400, "; ".join(errors))
+        raise ApiError(400, api_errors.SETTINGS_INVALID, "; ".join(errors), reason="; ".join(errors))
 
     # Перечитываем слой БД целиком, чтобы значения применились сразу.
     load_settings_from_db()
+
+    if any(key.startswith("jellyfin") or key == "enable_jellyfin" for key in applied):
+        # Список элементов и идентификатор сервера кэшируются на пять минут.
+        # После правки адреса или ключа держать прежний кэш нельзя: пользователь
+        # только что чинил интеграцию и ждёт результата сейчас, а не через
+        # пять минут.
+        from app.services.jellyfin import jellyfin
+
+        jellyfin.forget()
 
     if password_changed:
         issue_session_after_password_change(response, request)
@@ -185,7 +219,10 @@ def update_settings(
     return {"applied": applied, "errors": errors}
 
 
-@router.post("/reset/{key}")
+@router.post(
+    "/reset/{key}",
+    dependencies=[Depends(require(Permission.SETTINGS))],
+)
 def reset_setting(key: str, request: Request, response: Response) -> dict[str, Any]:
     """Убирает переопределение — значение возвращается к переменной окружения."""
     from app.core.db import session_scope
@@ -193,12 +230,17 @@ def reset_setting(key: str, request: Request, response: Response) -> dict[str, A
     try:
         setting = reg.get(key)
     except KeyError as exc:
-        raise HTTPException(404, f"Неизвестная настройка {key}") from exc
+        raise ApiError(404, api_errors.SETTING_UNKNOWN, f"Неизвестная настройка {key}", key=key) from exc
 
     with session_scope() as session:
         session.execute(delete(AppSetting).where(AppSetting.key == key))
 
     load_settings_from_db()
+
+    if key.startswith("jellyfin") or key == "enable_jellyfin":
+        from app.services.jellyfin import jellyfin
+
+        jellyfin.forget()
 
     if setting.key == "ui_password":
         issue_session_after_password_change(response, request)
@@ -213,7 +255,10 @@ class TokenCheckRequest(BaseModel):
     token: str | None = None
 
 
-@router.post("/test-token")
+@router.post(
+    "/test-token",
+    dependencies=[Depends(require(Permission.SETTINGS))],
+)
 async def test_token(payload: TokenCheckRequest | None = None) -> dict[str, Any]:
     """Проверка токена и подписки — единственный способ узнать это заранее.
 
@@ -279,7 +324,10 @@ def password_is_hashed() -> bool:
     return settings.get_str("ui_password").startswith(HASH_PREFIX)
 
 
-@router.post("/test-jellyfin")
+@router.post(
+    "/test-jellyfin",
+    dependencies=[Depends(require(Permission.SETTINGS))],
+)
 async def test_jellyfin() -> dict[str, Any]:
     """Проверка адреса и ключа Jellyfin.
 

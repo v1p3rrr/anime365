@@ -1,0 +1,63 @@
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.chevron {
+  transition: transform 150ms ease;
+  flex-shrink: 0;
+}
+
+.chevron[data-opened] {
+  transform: rotate(180deg);
+}
+
+/*
+ * Список связей.
+ *
+ * Ограничен по высоте с собственной прокруткой: у крупных франшиз в линейке
+ * бывает два-три десятка позиций, и без ограничения блок оттеснил бы вниз
+ * переводы и серии — то, ради чего страницу открывают.
+ */
+.list {
+  margin-top: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 4px;
+  border-radius: var(--mantine-radius-sm);
+  /* Названия бывают длинные; перенос лучше горизонтальной прокрутки. */
+  flex-wrap: wrap;
+}
+
+.row[data-current] {
+  background: light-dark(var(--mantine-color-gray-1), var(--mantine-color-dark-6));
+}
+
+/* Год и тип фиксированной ширины, чтобы названия выстроились в колонку. */
+.year {
+  min-width: 34px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.kind {
+  flex-shrink: 0;
+}
+
+.name {
+  /* Занимает остаток строки и переносится, а не растягивает карточку. */
+  min-width: 0;
+  flex: 1 1 200px;
+  word-break: break-word;
+}

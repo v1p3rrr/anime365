@@ -5,13 +5,19 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import httpx
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from app.api.deps import rate_limit
+from app.core import errors
 from app.core.db import session_scope
+from app.core.errors import ApiError
 from app.models.catalog import Series
 from app.services.anime365 import Anime365Error, SubscriptionRequired
+from app.services.jellyfin import jellyfin
+from app.services.mapping_info import title_folder_paths
+from app.services.shikimori import ShikimoriError, get_relations
 from app.services.title_service import build_title_page, get_embed, quality_refiner
 
 log = logging.getLogger(__name__)
@@ -31,10 +37,10 @@ async def title_page(
     try:
         data = await build_title_page(series_id, force_refresh=refresh)
     except Anime365Error as exc:
-        raise HTTPException(502, f"Anime365 недоступен: {exc}") from exc
+        raise errors.upstream_unavailable(exc) from exc
 
     if data is None:
-        raise HTTPException(404, "Тайтл не найден")
+        raise ApiError(404, errors.SERIES_NOT_FOUND, "Тайтл не найден")
     return data
 
 
@@ -42,17 +48,21 @@ async def title_page(
 async def translation_embed(
     translation_id: int,
     refresh: Annotated[bool, Query()] = False,
+    with_sizes: Annotated[
+        bool, Query(description="Дополнительно узнать вес файла на каждой ступени")
+    ] = False,
 ) -> dict[str, Any]:
-    """Признак вшитых субтитров и точные ступени качества.
+    """Признак вшитых субтитров, точные ступени качества и вес файла.
 
     Один запрос на перевод, поэтому вызывается только при раскрытии группы в UI.
+    Вес стоит ещё по запросу на ступень (HEAD на CDN), поэтому за отдельным флагом.
     """
     try:
-        return await get_embed(translation_id, force=refresh)
+        return await get_embed(translation_id, force=refresh, with_sizes=with_sizes)
     except SubscriptionRequired as exc:
-        raise HTTPException(403, str(exc)) from exc
+        raise ApiError(403, errors.SUBSCRIPTION_REQUIRED, str(exc), reason=str(exc)) from exc
     except Anime365Error as exc:
-        raise HTTPException(502, f"Anime365 недоступен: {exc}") from exc
+        raise errors.upstream_unavailable(exc) from exc
 
 
 @router.post(
@@ -71,9 +81,92 @@ async def refine_quality(series_id: int) -> dict[str, Any]:
     try:
         return await quality_refiner.run(series_id)
     except RuntimeError as exc:
-        raise HTTPException(409, str(exc)) from exc
+        raise ApiError(409, errors.SCAN_REJECTED, str(exc), reason=str(exc)) from exc
     except Anime365Error as exc:
-        raise HTTPException(502, f"Anime365 недоступен: {exc}") from exc
+        raise errors.upstream_unavailable(exc) from exc
+
+
+@router.get(
+    "/series/{series_id}/relations",
+    # Запрос уходит на чужой сервис, поэтому частота ограничена. Кэш на неделю
+    # снимает почти всю нагрузку, но повторные открытия страницы бывают частыми.
+    dependencies=[Depends(rate_limit("relations", limit=60, window=60))],
+)
+async def series_relations(series_id: int, refresh: Annotated[bool, Query()] = False):
+    """Порядок просмотра франшизы.
+
+    Отдельным запросом, а не в составе страницы тайтла: источник внешний, и его
+    недоступность не должна мешать открыть страницу. Пустой ответ здесь —
+    нормальный исход, а не ошибка.
+    """
+    with session_scope() as session:
+        series = session.get(Series, series_id)
+        if series is None:
+            raise ApiError(404, errors.SERIES_NOT_FOUND, "Тайтл не найден")
+        mal_id = series.mal_id
+
+    if not mal_id:
+        # Без mal_id спрашивать нечего: связи приходят в его терминах.
+        return {"nodes": [], "available": False}
+
+    try:
+        data = await get_relations(mal_id, force=refresh)
+    except (ShikimoriError, httpx.HTTPError) as exc:
+        raise ApiError(
+            502, errors.RELATIONS_UNAVAILABLE, f"Шикимори недоступен: {exc}", reason=str(exc)
+        ) from exc
+
+    return {**data, "available": True}
+
+
+@router.get(
+    "/series/{series_id}/jellyfin",
+    # Первый вызов обходит библиотеку Jellyfin, дальше пять минут отвечает из
+    # памяти. Ограничение здесь не про нагрузку на нас, а про чужой сервис.
+    dependencies=[Depends(rate_limit("jellyfin_link", limit=60, window=60))],
+)
+async def series_jellyfin_link(series_id: int) -> dict[str, Any]:
+    """Ссылка на страницу тайтла в Jellyfin.
+
+    Отдельным запросом по той же причине, что и связи: Jellyfin — внешний
+    сервис, и его недоступность не должна мешать открыть страницу тайтла.
+
+    Отсутствие ссылки — **нормальный исход**, а не ошибка. Так выглядит и
+    выключенная интеграция, и тайтл, которого у Jellyfin нет. Различать эти
+    случаи в ответе стоит: «выключено» чинится в настройках, «не найден» —
+    сканированием библиотеки, и подсказать это можно только зная разницу.
+    """
+    if not jellyfin.turned_on:
+        return {"available": False, "reason": "disabled"}
+
+    if not jellyfin.configured:
+        # Тумблер включён, а адреса или ключа нет. Прятать кнопку здесь нельзя:
+        # пользователь только что включил интеграцию и ждёт результата, а
+        # молчание он прочитает как «не работает», а не как «доскажи настройки».
+        return {
+            "available": False,
+            "reason": "not_configured",
+            "missing": jellyfin.missing_settings(),
+        }
+
+    rel_paths = title_folder_paths(series_id)
+    if not rel_paths:
+        # Тайтл не привязан ни к одной папке — искать в Jellyfin нечего.
+        return {"available": False, "reason": "not_mapped"}
+
+    found = await jellyfin.resolve_title(rel_paths)
+    if not found:
+        return {"available": False, "reason": "not_found"}
+
+    return {"available": True, **found}
+
+
+@router.get("/series/{series_id}/audio")
+def series_audio(series_id: int) -> dict[str, Any]:
+    """Извлечённые звуковые дорожки этого тайтла."""
+    from app.services.audio_library import tracks_for_series
+
+    return {"tracks": tracks_for_series(series_id)}
 
 
 class TreatAsMovieRequest(BaseModel):
@@ -93,7 +186,7 @@ def set_treat_as_movie(series_id: int, payload: TreatAsMovieRequest) -> dict[str
     with session_scope() as session:
         series = session.get(Series, series_id)
         if series is None:
-            raise HTTPException(404, "Тайтл не найден")
+            raise ApiError(404, errors.SERIES_NOT_FOUND, "Тайтл не найден")
         series.treat_as_movie = payload.treat_as_movie
         effective = (
             payload.treat_as_movie

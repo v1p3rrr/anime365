@@ -8,13 +8,19 @@ dependencies = [
     "fastapi==0.115.6",
     "uvicorn[standard]==0.34.0",
     "sqlalchemy==2.0.36",
-    "httpx[http2]==0.28.1",
+    # socks нужен для SOCKS5-прокси: без него httpx понимает только HTTP(S)_PROXY,
+    # а ALL_PROXY=socks5://… падает с «Using SOCKS proxy, but the socksio package is not installed».
+    "httpx[http2,socks]==0.28.1",
     "apscheduler==3.11.0",
     "pyyaml==6.0.2",
     "rapidfuzz==3.11.0",          # fuzzy-матчинг названий папок с каталогом
     "watchdog==6.0.0",            # слежение за файловой системой вместо опроса по расписанию
     "argon2-cffi==23.1.0",        # хеш пароля на вход в UI
     "python-multipart==0.0.20",   # формы логина
+    # Языки дорожек к двухбуквенным кодам. Ручной словарь не годится: у языка
+    # бывает два трёхбуквенных кода (ger/deu, fre/fra, cze/ces — восемь таких
+    # пар), и они задваиваются.
+    "iso639-lang==2.6.0",
 ]
 
 [project.optional-dependencies]

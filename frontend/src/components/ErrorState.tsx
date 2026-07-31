@@ -3,6 +3,7 @@ import { IconAlertTriangle, IconRefresh } from '@tabler/icons-react'
 
 import { ApiError } from '../api/client'
 import { useT, type TranslationKey } from '../i18n'
+import { useApiError } from '../i18n/apiError'
 
 interface Props {
   error: unknown
@@ -20,7 +21,13 @@ interface Props {
  */
 export function ErrorState({ error, title, onRetry, compact = false }: Props) {
   const { t } = useT()
-  const { heading, hint } = describe(error, t, title)
+  const apiError = useApiError()
+  const { heading, hint: generic } = describe(error, t, title)
+  // Перевод по коду точнее общей подсказки по статусу: «папка только для чтения»
+  // полезнее, чем «операция уже выполняется». Общая остаётся запасной — коды
+  // есть не у каждого ответа (валидация FastAPI их не присылает).
+  const specific = error instanceof ApiError && error.code ? apiError(error) : null
+  const hint = specific ?? generic
   const detail = error instanceof Error ? error.message : String(error)
 
   if (compact) {
@@ -44,9 +51,15 @@ export function ErrorState({ error, title, onRetry, compact = false }: Props) {
           {hint}
         </Text>
       )}
-      <Code block style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-        {detail}
-      </Code>
+      {/* Сырой ответ сервера показываем только когда он что-то добавляет.
+          Если код известен, подсказка выше — это он же, переведённый; вторая
+          копия по-русски под ней выглядит как сбой, а не как деталь. Сравнивать
+          строки бесполезно: перевод дословно не совпадает почти никогда. */}
+      {!specific && (
+        <Code block style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          {detail}
+        </Code>
+      )}
       {onRetry && (
         <Group mt="sm">
           <Button size="xs" leftSection={<IconRefresh size={14} />} onClick={onRetry}>

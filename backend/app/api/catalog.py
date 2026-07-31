@@ -12,12 +12,15 @@ import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+
+from app.core import errors
+from app.core.errors import ApiError
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 
 from app.api.deps import rate_limit
 from app.core.db import session_scope
-from app.models.catalog import Genre, ScanRun, Series, SeriesGenre
+from app.models.catalog import Genre, ScanRun, Series, SeriesGenre, SeriesTranslations
 from app.models.library import TitleMapping
 from app.services.anime365 import Anime365Client, Anime365Error
 from app.services.catalog_sync import cache_series, catalog_sync
@@ -29,6 +32,16 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/catalog", tags=["catalog"])
 
 MAX_CARDS_PER_REQUEST = 200
+
+# Сколько идентификаторов отдавать за раз. 200 — это примерно четыре экрана
+# сетки на десктопе: достаточно, чтобы прокрутка не упиралась в загрузку, и
+# достаточно мало, чтобы не разбирать лишнего на слабом устройстве.
+DEFAULT_IDS_PER_REQUEST = 200
+MAX_IDS_PER_REQUEST = 500
+
+# Те же шесть, что и в настройках отображения на клиенте. Держатся списком, а не
+# выводятся из колонок, чтобы случайное поле модели не стало фильтром.
+TRANSLATION_TYPES = ("sub_ja", "sub_ru", "sub_en", "raw_ja", "voice_ru", "voice_en")
 
 
 class LocalBadges(BaseModel):
@@ -45,8 +58,13 @@ class LocalBadges(BaseModel):
 
 class CatalogCard(BaseModel):
     id: int
+    # Все четыре названия: какое показать, решает язык интерфейса, а он на
+    # стороне браузера. Отдавать одно «главное» с сервера значило бы решать
+    # за клиента и ломаться при переключении языка без перезапроса.
     title_ru: str | None = None
     title_romaji: str | None = None
+    title_en: str | None = None
+    title_ja: str | None = None
     type: str
     type_title: str
     year: int | None = None
@@ -69,7 +87,9 @@ def _card(
     return CatalogCard(
         id=series.id,
         title_ru=titles.get("ru"),
-        title_romaji=titles.get("romaji") or titles.get("en"),
+        title_romaji=titles.get("romaji"),
+        title_en=titles.get("en"),
+        title_ja=titles.get("ja"),
         type=series.type,
         type_title=series.type_title,
         year=series.year,
@@ -106,10 +126,34 @@ def catalog_ids(
     mapping_problem: Annotated[
         bool, Query(description="Только нечёткие привязки, ждущие подтверждения")
     ] = False,
+    has: Annotated[
+        list[str] | None,
+        Query(
+            description=(
+                "Типы перевода, которые должны быть НА САЙТЕ: sub_ja, sub_ru, sub_en, "
+                "raw_ja, voice_ru, voice_en. Данные собирает фоновая джоба, "
+                "непроверенные тайтлы в выдачу не попадают."
+            )
+        ),
+    ] = None,
+    has_all: Annotated[
+        bool, Query(description="Требовать все указанные типы, а не любой из них")
+    ] = False,
     sort: Annotated[str, Query(pattern="^(id|year|score|title)$")] = "id",
     sort_dir: Annotated[str, Query(pattern="^(asc|desc)$")] = "desc",
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=MAX_IDS_PER_REQUEST)] = DEFAULT_IDS_PER_REQUEST,
 ) -> dict[str, Any]:
-    """Идентификаторы выборки целиком — фронт строит по ним виртуальный список."""
+    """Окно идентификаторов выборки плюс её полный размер.
+
+    Раньше отдавался весь список целиком — 29 тысяч чисел, около 200 КБ на
+    каждую смену фильтра. Для виртуального списка этого хватало, но на слабом
+    устройстве разбор такого массива заметен, а нужен из него один экран.
+
+    `total` считается отдельным запросом и всегда полный: по нему рисуется и
+    полоса прокрутки, и номера страниц. Без него подгрузка не знала бы, когда
+    остановиться, а нумерация — сколько всего страниц.
+    """
     stmt = select(Series.id)
 
     if local is not None:
@@ -128,6 +172,26 @@ def catalog_ids(
                 )
             )
         )
+
+    if has:
+        # Фильтр по тому, что доступно на сайте, а не по тому, что скачано.
+        # Источник — таблица, которую заполняет фоновая джоба: списочная выдача
+        # API о переводах не знает, а серверного фильтра по ним нет.
+        unknown = [key for key in has if key not in TRANSLATION_TYPES]
+        if unknown:
+            raise ApiError(
+                400,
+                errors.UNKNOWN_TRANSLATION_TYPE,
+                f"Неизвестный тип перевода: {', '.join(unknown)}",
+                types=", ".join(unknown),
+            )
+
+        columns = [getattr(SeriesTranslations, key) > 0 for key in has]
+        condition = and_(*columns) if has_all else or_(*columns)
+        # Непроверенные тайтлы не подходят под фильтр: строки в таблице у них нет,
+        # и утверждать, что японских субтитров у них нет, мы не можем — мы просто
+        # не смотрели. Показать их значило бы выдать незнание за факт.
+        stmt = stmt.where(Series.id.in_(select(SeriesTranslations.series_id).where(condition)))
 
     if not include_hentai:
         stmt = stmt.where(Series.is_hentai.is_(False))
@@ -179,9 +243,14 @@ def catalog_ids(
         stmt = stmt.order_by(order.nullslast(), Series.id.desc())
 
     with session_scope() as session:
-        ids = [row[0] for row in session.execute(stmt).all()]
+        # Считаем по той же выборке, но без сортировки и окна: сортировка на
+        # количество не влияет, а тащить её в COUNT незачем.
+        total = (
+            session.execute(select(func.count()).select_from(stmt.order_by(None).subquery()))
+        ).scalar() or 0
+        ids = [row[0] for row in session.execute(stmt.offset(offset).limit(limit)).all()]
 
-    return {"ids": ids, "total": len(ids)}
+    return {"ids": ids, "total": total, "offset": offset, "limit": limit}
 
 
 @router.post("/cards")
@@ -190,7 +259,12 @@ def catalog_cards(ids: Annotated[list[int], Body(embed=True)]) -> list[CatalogCa
     if not ids:
         return []
     if len(ids) > MAX_CARDS_PER_REQUEST:
-        raise HTTPException(400, f"За раз не более {MAX_CARDS_PER_REQUEST} карточек")
+        raise ApiError(
+            400,
+            errors.TOO_MANY_CARDS,
+            f"За раз не более {MAX_CARDS_PER_REQUEST} карточек",
+            max=MAX_CARDS_PER_REQUEST,
+        )
 
     # Значки считаются только по видимому окну: агрегат по всем 29 тысячам
     # тайтлов ради сотни карточек — лишняя работа на каждый шаг прокрутки.
@@ -237,7 +311,7 @@ async def search_online(query: Annotated[str, Query(min_length=1, max_length=200
         async with Anime365Client() as client:
             found = await client.search(query, limit=50)
     except Anime365Error as exc:
-        raise HTTPException(502, f"Anime365 недоступен: {exc}") from exc
+        raise errors.upstream_unavailable(exc) from exc
 
     # Найденное сразу кладём в кэш. Иначе клик по результату вёл бы на 404:
     # страница тайтла работает только с тем, что есть в локальной БД.
@@ -248,6 +322,8 @@ async def search_online(query: Annotated[str, Query(min_length=1, max_length=200
             "id": item.get("id"),
             "title_ru": (item.get("titles") or {}).get("ru"),
             "title_romaji": (item.get("titles") or {}).get("romaji"),
+            "title_en": (item.get("titles") or {}).get("en"),
+            "title_ja": (item.get("titles") or {}).get("ja"),
             "type": item.get("type"),
             "year": item.get("year"),
             "poster_url_small": item.get("posterUrlSmall"),
@@ -265,7 +341,12 @@ class SyncRequest(BaseModel):
 @router.post("/sync")
 async def trigger_sync(payload: SyncRequest) -> dict[str, Any]:
     if catalog_sync.running:
-        raise HTTPException(409, f"Синхронизация уже идёт: {catalog_sync.running}")
+        raise ApiError(
+            409,
+            errors.SYNC_RUNNING,
+            f"Синхронизация уже идёт: {catalog_sync.running}",
+            mode=catalog_sync.running,
+        )
 
     runner = {
         "full": catalog_sync.full,
@@ -276,7 +357,7 @@ async def trigger_sync(payload: SyncRequest) -> dict[str, Any]:
     try:
         stats = await runner()
     except Anime365Error as exc:
-        raise HTTPException(502, f"Anime365 недоступен: {exc}") from exc
+        raise errors.upstream_unavailable(exc) from exc
 
     return {"mode": payload.mode, "stats": stats}
 

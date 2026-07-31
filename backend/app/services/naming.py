@@ -153,7 +153,16 @@ def canonical_name(ctx: NamingContext) -> str:
     if ctx.is_movie:
         title = sanitize_component(ctx.show_title)
         year = f" ({ctx.year})" if ctx.year else ""
-        name = f"{title}{year} - [{_source_tag(ctx.height)}] [anime365_{author}]{suffix}{ctx.extension}"
+        # У фильма номера серии в имени нет — он там и не нужен. Но пользователь
+        # может вручную назначить «фильмом» связку из нескольких частей, и тогда
+        # без номера все они получат одно имя: вторая легла бы рядом как «v2»,
+        # то есть выглядела бы дублем первой. Номер добавляем только со второй
+        # части, чтобы у обычного фильма имя осталось прежним.
+        part = f" - {int(ctx.episode)}" if ctx.episode and ctx.episode > 1 else ""
+        name = (
+            f"{title}{year}{part} - [{_source_tag(ctx.height)}] "
+            f"[anime365_{author}]{suffix}{ctx.extension}"
+        )
         return truncate_to_bytes(name)
 
     show = sanitize_component(ctx.show_title)
@@ -291,23 +300,64 @@ def build_target_name(
     return canonical_name(ctx)
 
 
+#: Откуда берётся имя папки, по убыванию предпочтения.
+#:
+#: Английское ближе к тому, как названы существующие папки, но заполнено лишь
+#: у 46% тайтлов — для остальных romaji работает запасным вариантом и есть
+#: почти везде (99.9%). Русское — последний рубеж.
+FOLDER_NAME_SOURCES = ("en", "romaji", "ru")
+
+
+def _normalized(value: str) -> str:
+    """Только буквы и цифры в нижнем регистре — для сравнения написаний."""
+    return "".join(ch for ch in (value or "").lower() if ch.isalnum())
+
+
+def folder_name_source(titles: dict[str, str]) -> str | None:
+    """Какое именно написание пойдёт в имя папки.
+
+    Нужно интерфейсу: в плашке «папка будет создана» честнее назвать источник,
+    чем пересказывать правило. Пользователь и так видит имя — ему интересно,
+    откуда оно взялось.
+
+    Есть одна поправка к простому порядку приоритетов. Английское название в
+    каталоге нередко обрезано до части франшизы: у тайтла 27995 `en` —
+    «Morfonication», тогда как romaji — «BanG Dream! Morfonication». Папка с
+    именем из огрызка не встанет рядом с остальными частями франшизы и не
+    сопоставится с уже существующей.
+
+    Поэтому если romaji **содержит** английское название и длиннее его, берём
+    romaji: это тот же тайтл, только названный полностью. Когда написания
+    расходятся по существу («Zombie Land Saga» против «Zombieland Saga»),
+    условие не срабатывает, и остаётся английское.
+    """
+    titles = titles or {}
+    en, romaji = titles.get("en"), titles.get("romaji")
+
+    if en and romaji:
+        en_key, romaji_key = _normalized(en), _normalized(romaji)
+        if en_key and en_key in romaji_key and len(romaji_key) > len(en_key):
+            return "romaji"
+
+    for key in FOLDER_NAME_SOURCES:
+        if titles.get(key):
+            return key
+    return None
+
+
 def folder_name_for_title(
-    titles: dict[str, str], year: int | None = None, is_movie: bool = False
+    titles: dict[str, str],
+    year: int | None = None,
+    is_movie: bool = False,
+    part: int | None = None,
 ) -> str:
     """Имя папки для тайтла, которого ещё нет в библиотеке.
 
-    Приоритет: английское название, затем romaji, затем русское. Английское
-    ближе к тому, как названы существующие папки, но заполнено лишь у 46%
-    тайтлов — для остальных romaji работает запасным вариантом и есть почти
-    везде. Схема совпадает с тем, как называют папки Sonarr и Radarr, чтобы
-    Jellyfin распознал их без ручной правки.
+    Приоритет — `FOLDER_NAME_SOURCES`. Схема совпадает с тем, как называют папки
+    Sonarr и Radarr, чтобы Jellyfin распознал их без ручной правки.
     """
-    raw = (
-        (titles or {}).get("en")
-        or (titles or {}).get("romaji")
-        or (titles or {}).get("ru")
-        or ""
-    )
+    source = folder_name_source(titles)
+    raw = (titles or {}).get(source, "") if source else ""
     # В библиотеке пользователя слеш заменён на плюс: «Fate+stay night».
     # Держимся того же соглашения, иначе рядом появится папка с другим написанием.
     # Матчер нормализует «+» обратно в «/», поэтому сопоставление не пострадает.
@@ -318,6 +368,14 @@ def folder_name_for_title(
     # У фильмов Radarr держит год прямо в имени папки.
     if is_movie and year:
         name = f"{name} ({year})"
+    # Часть многосерийного фильма — отдельная папка, иначе вторая часть легла бы
+    # рядом с первой и Jellyfin счёл бы её альтернативной версией того же фильма,
+    # а не самостоятельным фильмом.
+    #
+    # Отдельных названий у частей в API нет (`episodeTitle` пуст, есть только
+    # «Фильм 1 серия»), поэтому в имени остаётся номер. Не изящно, но однозначно.
+    if part is not None:
+        name = f"{name} - {part}"
     return name
 
 

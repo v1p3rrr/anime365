@@ -1,6 +1,11 @@
 import {
+  Alert,
   Anchor,
+  AspectRatio,
   Badge,
+  Box,
+  Divider,
+  Menu,
   Button,
   Card,
   Chip,
@@ -15,31 +20,75 @@ import {
   Title,
   Tooltip,
 } from '@mantine/core'
-import { IconExternalLink } from '@tabler/icons-react'
+import {
+  IconAlertTriangle,
+  IconChevronDown,
+  IconDeviceTv,
+  IconExternalLink,
+  IconMovie,
+  IconWand,
+} from '@tabler/icons-react'
 import { notifications } from '@mantine/notifications'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 
 import { api } from '../api/client'
-import { ALL_LANGS, usePreferences, type Lang } from '../stores/preferences'
+import { splitType, TRANSLATION_TYPES, usePreferences } from '../stores/preferences'
+import { PosterPlaceholder } from '../components/PosterPlaceholder'
+import { TitleQuickLinks } from '../components/TitleQuickLinks'
+import { RelatedTitles } from '../components/RelatedTitles'
+import { EpisodeTargetsAlert } from '../components/EpisodeTargetsAlert'
+import { EpisodeTargetsModal } from '../components/EpisodeTargetsModal'
+import { TitleAudioSection } from '../components/TitleAudioSection'
+import { episodeTargetApi, type EpisodeTarget } from '../api/library'
+import { useVisibleWidthVar } from '../hooks/useVisibleWidthVar'
 import { LANG_COLORS, titleApi } from '../api/title'
 import { BindFolderModal } from '../components/BindFolderModal'
 import { EpisodeRow } from '../components/EpisodeRow'
 import { ErrorState } from '../components/ErrorState'
 import { MappingPanel } from '../components/MappingPanel'
 import { TranslationGroups } from '../components/TranslationGroups'
+import { useSeriesTypeLabel } from '../i18n/seriesType'
 import { useT, type TranslationKey } from '../i18n'
+import { LangTag } from '../components/Flag'
+import { useApiError } from '../i18n/apiError'
+import { useTitleName } from '../i18n/titles'
+import { useFormat } from '../i18n/format'
 import scrollClasses from './ScrollPage.module.css'
 
 export function TitlePage() {
   const { id } = useParams()
   const seriesId = Number(id)
-  const { prefs, toggleLang, toggleKind } = usePreferences()
+  const { prefs, toggleType } = usePreferences()
+  const panelWidthRef = useVisibleWidthVar('--episode-panel-width')
+  const [posterFailed, setPosterFailed] = useState(false)
+
+  // Отдельным запросом, а не в составе страницы: назначения меняются чаще
+  // самой страницы, и перетягивать ради них всё остальное незачем.
+  const targetsQuery = useQuery({
+    queryKey: ['episode-targets', seriesId],
+    queryFn: () => episodeTargetApi.list(seriesId),
+  })
+  const targetsByEpisode = useMemo(() => {
+    const map = new Map<number, EpisodeTarget>()
+    for (const target of targetsQuery.data?.targets ?? []) map.set(target.episode, target)
+    return map
+  }, [targetsQuery.data])
   const queryClient = useQueryClient()
   const { t } = useT()
+  const seriesTypeLabel = useSeriesTypeLabel()
+  const apiError = useApiError()
+  const titleName = useTitleName()
+  const format = useFormat()
   const [showNonContent, setShowNonContent] = useState(false)
   const [binding, setBinding] = useState(false)
+  // Отдельно от `binding`: та модалка привязывает папку ТАЙТЛА, а ссылка в
+  // плашке обещает настройку папок ОТДЕЛЬНЫХ СЕРИЙ. Раньше обе вели в одно
+  // окно, и ссылка обещала больше, чем делала.
+  const [episodeTargets, setEpisodeTargets] = useState(false)
+  // Какую серию подставить при открытии — когда пришли из её строки.
+  const [targetEpisode, setTargetEpisode] = useState<number | null>(null)
 
   const query = useQuery({
     queryKey: ['title', seriesId],
@@ -51,14 +100,16 @@ export function TitlePage() {
   // бывает несколько эпизодов — это связка фильмов, и Radarr фильмом её не
   // считает. Решение за пользователем, от него зависит корень для загрузок.
   const treatAs = useMutation({
-    mutationFn: (asMovie: boolean) =>
+    // null возвращает автоопределение по типу из каталога — сервер понимает
+    // именно его, а не отсутствие поля.
+    mutationFn: (asMovie: boolean | null) =>
       api.put<unknown>(`/series/${seriesId}/treat-as-movie`, { treat_as_movie: asMovie }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['title', seriesId] })
       notifications.show({ color: 'teal', message: t('title.treatChanged') })
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: t('title.treatFailed'), message: error.message }),
+      notifications.show({ color: 'red', title: t('title.treatFailed'), message: apiError(error) }),
   })
 
   // ffprobe открывает каждый файл, поэтому только по кнопке и только для
@@ -84,7 +135,7 @@ export function TitlePage() {
       notifications.show({
         color: 'red',
         title: t('title.probeFailed'),
-        message: error.message,
+        message: apiError(error),
         autoClose: 12000,
       }),
   })
@@ -113,7 +164,7 @@ export function TitlePage() {
       notifications.show({
         color: 'red',
         title: t('title.refineFailed'),
-        message: error.message,
+        message: apiError(error),
         autoClose: 12000,
       }),
   })
@@ -138,66 +189,134 @@ export function TitlePage() {
 
   const data = query.data
   const { series, titles, quality } = data
-  const primary = titles.ru || titles.romaji || `#${series.id}`
+  const primary = titleName.primary(titles, `#${series.id}`)
+  // Под заголовком показываем другие написания — но только те, что от него
+  // отличаются, иначе при японском интерфейсе одна и та же строка шла бы дважды.
+  const alternates = [titles.romaji, titles.ja, titles.ru].filter(
+    (value, index, list) => value && value !== primary && list.indexOf(value) === index,
+  )
   const episodes = data.episodes.filter((e) => showNonContent || e.is_content)
   // Номера настоящих серий: трейлеры и реклама в батч-загрузку не идут.
   const contentEpisodes = new Set(
     data.episodes.filter((e) => e.is_content && e.episode_num != null).map((e) => e.episode_num!),
   )
   const hiddenCount = data.episodes.length - data.episodes.filter((e) => e.is_content).length
+  // Частей у тайтла: по нему решается, связка это или одиночный фильм.
+  const contentEpisodeCount = data.episodes.filter((e) => e.is_content).length
 
   return (
     // Страница длинная: описание, сводка переводов и список серий. Прокрутка
     // должна быть у неё самой, иначе нижние блоки обрезаются.
     <Stack gap="md" className={scrollClasses.scrollPage}>
+      {/* Jellyfin в папке фильма различает три случая: альтернативные версии
+          одного фильма, части одного файла (part1/part2 — склеиваются) и разные
+          фильмы, которым положены отдельные папки. Несколько частей, названных
+          фильмом, попадут в первую категорию: вторая будет считаться другой
+          версией первой, а не самостоятельным фильмом. Молча так делать нельзя. */}
+      {series.effective_is_movie && contentEpisodeCount > 1 && (
+        <Alert color="yellow" icon={<IconAlertTriangle size={18} />} style={{ flexShrink: 0 }}>
+          <Text size="sm">
+            {t('title.movieCollectionWarning', { count: contentEpisodeCount })}
+          </Text>
+        </Alert>
+      )}
+
       <Group align="flex-start" wrap="nowrap" gap="md">
-        {series.poster_url && (
-          // На 375px постер шириной 180 оставлял под заголовок около 150 пикселей,
-          // и длинные названия ломались посреди слова. Сужаем его на узких экранах.
-          <Image
-            src={series.poster_url}
-            w={{ base: 108, sm: 180 }}
-            radius="md"
-            fit="cover"
-            style={{ flexShrink: 0 }}
-            alt=""
-          />
-        )}
+        {/* На 375px постер шириной 180 оставлял под заголовок около 150 пикселей,
+            и длинные названия ломались посреди слова. Сужаем его на узких экранах.
+            Блок остаётся на месте и без картинки: иначе заголовок прыгает влево,
+            когда постера нет или он не загрузился. */}
+        <Box w={{ base: 108, sm: 180 }} style={{ flexShrink: 0 }}>
+          {series.poster_url && !posterFailed ? (
+            <Image
+              src={series.poster_url}
+              radius="md"
+              fit="cover"
+              alt=""
+              onError={() => setPosterFailed(true)}
+            />
+          ) : (
+            <AspectRatio ratio={2 / 3}>
+              <PosterPlaceholder />
+            </AspectRatio>
+          )}
+        </Box>
 
         <Stack gap={6} style={{ minWidth: 0, flex: 1 }}>
           <Title order={3} style={{ wordBreak: 'break-word' }}>
             {primary}
           </Title>
-          {titles.romaji && titles.ru && (
-            <Text c="dimmed" size="sm">
-              {titles.romaji}
+          {alternates.map((value) => (
+            <Text key={value} c="dimmed" size="sm">
+              {value}
             </Text>
-          )}
-          {titles.ja && (
-            <Text c="dimmed" size="sm">
-              {titles.ja}
-            </Text>
-          )}
+          ))}
 
           <Group gap="xs" mt={4}>
-            <Tooltip
-              label={
-                series.effective_is_movie
-                  ? t('title.asMovieHint')
-                  : t('title.asSeriesHint')
-              }
-            >
-              <Badge
-                variant="light"
-                color={series.treat_as_movie != null ? 'teal' : undefined}
-                style={{ cursor: 'pointer' }}
-                onClick={() => treatAs.mutate(!series.effective_is_movie)}
-              >
-                {series.effective_is_movie ? t('title.asMovie') : t('title.asSeries')}
-                {series.treat_as_movie != null && ` · ${t('title.manualMark')}`}
-              </Badge>
-            </Tooltip>
-            <Badge variant="light">{series.type_title}</Badge>
+            {/* Не значок, а кнопка с меню: состояния три, а не два — «фильм»,
+                «сериал» и «определять автоматически», — и вернуться к третьему
+                прежний тумблер не давал вовсе. Кнопка ещё и отделяет управление
+                от соседних значков: те только показывают, а этот меняет
+                поведение загрузок, и путать их нельзя. */}
+            <Menu position="bottom-start" withinPortal>
+              <Menu.Target>
+                <Tooltip
+                  label={
+                    series.effective_is_movie
+                      ? t('title.asMovieHint')
+                      : t('title.asSeriesHint')
+                  }
+                >
+                  <Button
+                    size="compact-xs"
+                    variant={series.treat_as_movie != null ? 'filled' : 'default'}
+                    color={series.treat_as_movie != null ? 'teal' : undefined}
+                    leftSection={
+                      series.effective_is_movie ? (
+                        <IconMovie size={13} />
+                      ) : (
+                        <IconDeviceTv size={13} />
+                      )
+                    }
+                    rightSection={<IconChevronDown size={11} />}
+                    loading={treatAs.isPending}
+                  >
+                    {series.effective_is_movie ? t('title.asMovie') : t('title.asSeries')}
+                  </Button>
+                </Tooltip>
+              </Menu.Target>
+              <Menu.Dropdown>
+                <Menu.Label>{t('title.treatMode')}</Menu.Label>
+                <Menu.Item
+                  leftSection={<IconDeviceTv size={14} />}
+                  onClick={() => treatAs.mutate(false)}
+                  fw={series.treat_as_movie === false ? 600 : undefined}
+                >
+                  {t('title.treatAsSeriesAction')}
+                </Menu.Item>
+                <Menu.Item
+                  leftSection={<IconMovie size={14} />}
+                  onClick={() => treatAs.mutate(true)}
+                  fw={series.treat_as_movie === true ? 600 : undefined}
+                >
+                  {t('title.treatAsMovieAction')}
+                </Menu.Item>
+                <Menu.Divider />
+                {/* Возврат к автоопределению: сервер принимает null именно для
+                    этого, но выбрать его раньше было нечем. */}
+                <Menu.Item
+                  leftSection={<IconWand size={14} />}
+                  onClick={() => treatAs.mutate(null)}
+                  fw={series.treat_as_movie === null ? 600 : undefined}
+                >
+                  {t('title.treatAuto')}
+                </Menu.Item>
+              </Menu.Dropdown>
+            </Menu>
+
+            <Divider orientation="vertical" />
+
+            <Badge variant="light">{seriesTypeLabel(series.type, series.type_title)}</Badge>
             {series.year && <Badge variant="light">{series.year}</Badge>}
             {series.season && <Badge variant="light">{series.season}</Badge>}
             {series.is_airing && <Badge color="red">{t('catalog.cardOngoing')}</Badge>}
@@ -205,6 +324,15 @@ export function TitlePage() {
             <Badge color="gray" variant="outline">
               {t('title.episodesTotal', { count: data.total_episodes })}
             </Badge>
+            {/* Медиана по переводам, поэтому «примерно»: точной цифры у тайтла
+                нет, у разных релизов хронометраж различается на минуты. */}
+            {format.duration(data.typical_duration) && (
+              <Tooltip label={t('title.durationHint')}>
+                <Badge color="gray" variant="outline">
+                  ≈ {format.duration(data.typical_duration)}
+                </Badge>
+              </Tooltip>
+            )}
           </Group>
 
           <Group gap={6} mt={4}>
@@ -245,12 +373,38 @@ export function TitlePage() {
 
       {/* Плашка привязки идёт до сводки качества: пользователь должен сначала
           убедиться, что тайтл сопоставлен с верной папкой. */}
+      {/* Под описанием и до плашки привязки: это справка о тайтле, а не
+          действие. Свёрнут, потому что у крупных франшиз линейка длинная. */}
+      <EpisodeTargetsModal
+        opened={episodeTargets}
+        seriesId={series.id}
+        episodes={data.episodes}
+        initialEpisode={targetEpisode}
+        onClose={() => {
+          setEpisodeTargets(false)
+          setTargetEpisode(null)
+        }}
+      />
+
+      <EpisodeTargetsAlert
+        targets={targetsQuery.data?.targets ?? []}
+        onManage={() => setEpisodeTargets(true)}
+      />
+
+      <RelatedTitles seriesId={series.id} />
+
       <MappingPanel
         seriesId={series.id}
         mappings={data.mappings ?? []}
         local={data.local ?? { coverage: {}, episodes_expected: 0, local_max_episode: 0, has_local_files: false }}
+        proposedFolder={data.proposed_folder}
         onRebind={() => setBinding(true)}
+        onManageEpisodeTargets={() => setEpisodeTargets(true)}
       />
+
+      {/* Переходы наружу — до справочного списка ссылок: это действия
+          («посмотреть у себя», «открыть исходную страницу»), а не сноски. */}
+      <TitleQuickLinks seriesId={series.id} title={primary} anime365Url={series.url} />
 
       {data.links.length > 0 && (
         <Group gap="xs">
@@ -322,39 +476,27 @@ export function TitlePage() {
         </Text>
       </Card>
 
-      <Group gap="md" wrap="wrap">
-        <Group gap={6}>
-          <Text size="sm" fw={500}>
-            {t('title.languages')}
-          </Text>
-          {ALL_LANGS.map((lang: Lang) => (
+      {/* Быстрый фильтр — тот же набор, что и в настройках, и та же память:
+          менять видимость чаще всего хочется прямо здесь, глядя на переводы,
+          а не уходя на другую страницу. Порядок фишек — порядок приоритета. */}
+      <Group gap={6} wrap="wrap">
+        <Text size="sm" fw={500}>
+          {t('title.translationTypes')}
+        </Text>
+        {TRANSLATION_TYPES.map((type) => {
+          const [kind, lang] = splitType(type)
+          return (
             <Chip
-              key={lang}
+              key={type}
               size="xs"
-              checked={prefs.langs.includes(lang)}
-              onChange={() => toggleLang(lang)}
+              checked={prefs.types.includes(type)}
+              onChange={() => toggleType(type)}
               color={LANG_COLORS[lang]}
             >
-              {t(`lang.${lang}` as TranslationKey)}
+              {t(`kind.${kind}` as TranslationKey)} · <LangTag lang={lang} />
             </Chip>
-          ))}
-        </Group>
-
-        <Group gap={6}>
-          <Text size="sm" fw={500}>
-            {t('title.kinds')}
-          </Text>
-          {['voice', 'sub', 'raw'].map((kind) => (
-            <Chip
-              key={kind}
-              size="xs"
-              checked={prefs.kinds.includes(kind)}
-              onChange={() => toggleKind(kind)}
-            >
-              {t(`kind.${kind}` as TranslationKey)}
-            </Chip>
-          ))}
-        </Group>
+          )
+        })}
       </Group>
 
       <div>
@@ -363,8 +505,8 @@ export function TitlePage() {
         </Title>
         <TranslationGroups
           sections={data.summary}
-          langs={prefs.langs}
-          kinds={prefs.kinds}
+          types={prefs.types}
+          local={data.local}
           seriesUrl={series.url}
           contentEpisodes={contentEpisodes}
         />
@@ -387,8 +529,11 @@ export function TitlePage() {
             символа в строке, поэтому таблица прокручивается внутри контейнера. */}
         {/* Колонка с названием эпизода убрана: Anime365 отдаёт episodeTitle
             пустым почти всегда, а место нужнее под отметки наличия и кнопки. */}
-        <Table.ScrollContainer minWidth={460}>
-          <Table striped highlightOnHover verticalSpacing="xs">
+        {/* Обёртка нужна ради замера: панель загрузки внутри таблицы должна
+            быть шириной с видимую область, а не с саму таблицу. */}
+        <div ref={panelWidthRef}>
+          <Table.ScrollContainer minWidth={460}>
+            <Table striped highlightOnHover verticalSpacing="xs">
             <Table.Thead>
               <Table.Tr>
                 <Table.Th w={120}>{t('title.columnEpisode')}</Table.Th>
@@ -401,15 +546,22 @@ export function TitlePage() {
                 <EpisodeRow
                   key={e.id}
                   episode={e}
-                  langs={prefs.langs}
-                  kinds={prefs.kinds}
+                  types={prefs.types}
+                  target={
+                    e.episode_num != null ? targetsByEpisode.get(e.episode_num) : undefined
+                  }
                   seriesUrl={series.url}
                   seriesId={series.id}
+                  onAssignFolder={(episodeNum) => {
+                    setTargetEpisode(episodeNum)
+                    setEpisodeTargets(true)
+                  }}
                 />
               ))}
             </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
+            </Table>
+          </Table.ScrollContainer>
+        </div>
       </div>
 
       <BindFolderModal
@@ -418,6 +570,11 @@ export function TitlePage() {
         seriesTitle={primary}
         onClose={() => setBinding(false)}
       />
+
+      {/* Дорожки — в самом низу: это не то, ради чего открывают страницу
+          тайтла, но искать их в отдельном экране было бы страннее. */}
+      <TitleAudioSection seriesId={series.id} />
+
     </Stack>
   )
 }

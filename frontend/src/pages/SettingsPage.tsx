@@ -23,7 +23,10 @@ import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import { ErrorState } from '../components/ErrorState'
 import { useT, type TranslationKey } from '../i18n'
+import { useApiError } from '../i18n/apiError'
 import scrollClasses from './ScrollPage.module.css'
+import { DisplaySettings } from '../components/DisplaySettings'
+import { UsersPanel } from '../components/UsersPanel'
 
 interface SettingItem {
   key: string
@@ -66,9 +69,30 @@ const SOURCE_COLORS: Record<SettingItem['source'], string> = {
   ui: 'teal',
 }
 
+
+/**
+ * Подпись или пояснение настройки на языке интерфейса.
+ *
+ * Сервер отдаёт их только по-русски: реестр настроек живёт в коде бэкенда, и
+ * держать там три языка значило бы разложить локализацию по двум местам.
+ * Поэтому переводы лежат в словарях клиента по ключу настройки, а серверный
+ * текст остаётся запасным вариантом — на случай, если настройку добавили, а
+ * перевод ещё нет: русская фраза лучше пустоты.
+ */
+function useSettingText() {
+  const { t } = useT()
+  return (section: 'settingLabel' | 'settingHelp', key: string, fallback: string) => {
+    const full = `${section}.${key}` as TranslationKey
+    const value = t(full)
+    // t() возвращает сам ключ, когда перевода нет.
+    return value === full ? fallback : value
+  }
+}
+
 export function SettingsPage() {
   const queryClient = useQueryClient()
   const { t } = useT()
+  const apiError = useApiError()
   const [draft, setDraft] = useState<Record<string, string>>({})
 
   const query = useQuery({
@@ -99,7 +123,7 @@ export function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: t('settings.saveFailed'), message: error.message }),
+      notifications.show({ color: 'red', title: t('settings.saveFailed'), message: apiError(error) }),
   })
 
   const reset = useMutation({
@@ -135,7 +159,7 @@ export function SettingsPage() {
       notifications.show({
         color: 'red',
         title: t('settings.checkFailed'),
-        message: error.message,
+        message: apiError(error),
         autoClose: 12000,
       }),
   })
@@ -155,7 +179,7 @@ export function SettingsPage() {
       notifications.show({
         color: 'red',
         title: t('settings.checkFailed'),
-        message: error.message,
+        message: apiError(error),
         autoClose: 12000,
       }),
   })
@@ -169,12 +193,17 @@ export function SettingsPage() {
   }
 
   if (query.isError) {
+    // Личные настройки показываем и здесь: они лежат в браузере и от реестра
+    // на сервере не зависят. Отбирать к ним доступ из-за чужой поломки незачем.
     return (
-      <ErrorState
-        error={query.error}
-        title={t('settings.loadFailed')}
-        onRetry={() => query.refetch()}
-      />
+      <Stack gap="md" className={scrollClasses.scrollPage}>
+        <ErrorState
+          error={query.error}
+          title={t('settings.loadFailed')}
+          onRetry={() => query.refetch()}
+        />
+        <DisplaySettings />
+      </Stack>
     )
   }
 
@@ -210,6 +239,15 @@ export function SettingsPage() {
           {t('settings.layersHint')}
         </Text>
       </Alert>
+
+      {/* Личные настройки идут первыми: их меняют чаще всего, они применяются
+          сразу и не участвуют в общем сохранении. */}
+      <DisplaySettings />
+
+      {/* Пользователи — после личных настроек, но до серверных: заводить их
+          приходится редко, а серверные настройки длиннее и оттеснили бы форму
+          вниз, где её никто не найдёт. */}
+      <UsersPanel />
 
       {query.data?.groups.map((group) => (
         <Card key={group.key} withBorder padding="sm">
@@ -268,11 +306,12 @@ function sourceSuffix(source: SettingItem['source']): string {
 
 function SettingField({ item, draftValue, onChange, onReset }: FieldProps) {
   const { t } = useT()
+  const settingText = useSettingText()
   const label = (
     // wrap, а не nowrap: на узком экране бейджи сжимались до «ПО УМОЛЧА…»
     // и переставали что-либо сообщать. Пусть лучше переносятся на строку ниже.
     <Group gap={6} wrap="wrap">
-      <Text size="sm">{item.label}</Text>
+      <Text size="sm">{settingText('settingLabel', item.key, item.label)}</Text>
       <Tooltip label={t('settings.envVar', { name: item.env })}>
         <Badge size="xs" variant="light" color={SOURCE_COLORS[item.source]}>
           {t(`settings.source${sourceSuffix(item.source)}` as TranslationKey)}
@@ -315,14 +354,14 @@ function SettingField({ item, draftValue, onChange, onReset }: FieldProps) {
   // Разделяем их визуально, чтобы было видно, где описание, а где факт.
   const description = item.hint ? (
     <>
-      {item.help}
+      {settingText('settingHelp', item.key, item.help)}
       {item.help && ' '}
       <Text component="span" size="xs" c="dimmed" fs="italic">
         {item.hint}
       </Text>
     </>
   ) : (
-    item.help
+    settingText('settingHelp', item.key, item.help)
   )
 
   if (item.type === 'bool') {

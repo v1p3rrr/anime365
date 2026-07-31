@@ -184,6 +184,32 @@ class TestServerOnlySettings:
         assert response.status_code == 400
         assert settings.get_list("mirrors") == get("mirrors").default
 
+    def test_jellyfin_urls_marked_server_only(self) -> None:
+        # Оба адреса — с сервера, но по разным причинам.
+        assert get("jellyfin_url").server_only is True
+        assert get("jellyfin_public_url").server_only is True
+
+    def test_jellyfin_url_cannot_be_set_from_ui(self, client) -> None:
+        # Внутренний адрес — это то, куда приложение ходит само, изнутри сети
+        # сервера. Правка из браузера превратила бы его в инструмент опроса
+        # внутренних хостов, причём с возвратом ответа в интерфейс.
+        response = client.put(
+            "/api/settings",
+            json={"updates": [{"key": "jellyfin_url", "value": "http://192.168.1.1:80"}]},
+        )
+        assert response.status_code == 400
+        assert settings.get_str("jellyfin_url") == ""
+
+    def test_jellyfin_public_url_cannot_be_set_from_ui(self, client) -> None:
+        # Публичный адрес приложение не запрашивает, но подставляет в кнопку,
+        # на которую жмут. Подмена увела бы людей на чужой хост.
+        response = client.put(
+            "/api/settings",
+            json={"updates": [{"key": "jellyfin_public_url", "value": "https://evil.example.com"}]},
+        )
+        assert response.status_code == 400
+        assert settings.get_str("jellyfin_public_url") == ""
+
     def test_unknown_setting_rejected(self, client) -> None:
         response = client.put(
             "/api/settings", json={"updates": [{"key": "rm_rf", "value": "1"}]}

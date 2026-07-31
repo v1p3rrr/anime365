@@ -11,29 +11,46 @@ import {
   Tooltip,
 } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
-import { IconFolderOff, IconFolderPlus, IconLock, IconStar, IconUnlink } from '@tabler/icons-react'
+import {
+  IconFolderOff,
+  IconFolderPlus,
+  IconFolderSymlink,
+  IconLock,
+  IconStar,
+  IconUnlink,
+} from '@tabler/icons-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { SOURCE_COLORS } from '../api/library'
-import { titleApi, type LocalCoverage, type TitleMappingInfo } from '../api/title'
+import {
+  titleApi,
+  type LocalCoverage,
+  type ProposedFolder,
+  type TitleMappingInfo,
+} from '../api/title'
 import pathClasses from './PathLine.module.css'
 import { useT, type TranslationKey } from '../i18n'
+import { useApiError } from '../i18n/apiError'
 import { useFormat } from '../i18n/format'
 
 interface Props {
   seriesId: number
   mappings: TitleMappingInfo[]
   local: LocalCoverage
+  /** Куда уедет загрузка при отсутствии привязки. */
+  proposedFolder: ProposedFolder | null
   onRebind: () => void
+  /** Открыть окно назначения папок отдельным сериям. */
+  onManageEpisodeTargets: () => void
 }
 
 /** Короткие подписи для разбивки по папкам — там места мало. */
 /** Языковые коды одинаковы везде; «видео» берётся из словаря. */
 const ROLE_SHORT: Record<string, string> = {
   video: '',
-  sub_ru: 'RU',
-  sub_ja: 'JA',
-  sub_en: 'EN',
+  sub_ru: 'ru',
+  sub_ja: 'ja',
+  sub_en: 'en',
 }
 
 /**
@@ -43,9 +60,17 @@ const ROLE_SHORT: Record<string, string> = {
  * .nfo — иначе неверная привязка обнаружится только после того, как файлы уедут
  * не в ту папку.
  */
-export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
+export function MappingPanel({
+  seriesId,
+  mappings,
+  local,
+  proposedFolder,
+  onRebind,
+  onManageEpisodeTargets,
+}: Props) {
   const queryClient = useQueryClient()
   const { t } = useT()
+  const apiError = useApiError()
   const { size } = useFormat()
   const sourceLabel = (key: string) => t(`source.${key}` as TranslationKey)
 
@@ -62,7 +87,7 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
       refresh()
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: t('mapping.unbindFailed'), message: error.message }),
+      notifications.show({ color: 'red', title: t('mapping.unbindFailed'), message: apiError(error) }),
   })
 
   const makePrimary = useMutation({
@@ -72,17 +97,50 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
       refresh()
     },
     onError: (error: Error) =>
-      notifications.show({ color: 'red', title: t('title.treatFailed'), message: error.message }),
+      notifications.show({ color: 'red', title: t('title.treatFailed'), message: apiError(error) }),
   })
 
   if (mappings.length === 0) {
+    // Папка создастся сама, поэтому плашка не пугает «некуда положить», а
+    // показывает имя будущей папки. Привязать свою по-прежнему можно — просто
+    // это больше не обязательное условие для загрузки.
+    const proposed = proposedFolder
     return (
-      <Alert color="orange" title={t('mapping.noneTitle')} icon={<IconFolderOff size={18} />}>
-        <Text size="sm" mb="xs">
-          {t('mapping.noneHint')}
-        </Text>
+      <Alert
+        color={proposed && proposed.writable ? 'blue' : 'orange'}
+        title={t('mapping.noneTitle')}
+        icon={<IconFolderOff size={18} />}
+      >
+        {proposed ? (
+          <>
+            <Text size="sm">
+              {proposed.writable ? t('mapping.willCreate') : t('mapping.rootReadOnly')}
+            </Text>
+            <div className={pathClasses.path}>{proposed.full_path}</div>
+            {/* У многосерийного фильма единой папки нет: показанное имя — это
+                первая часть, у остальных отличается номером. */}
+            {proposed.per_part && (
+              <Text size="xs" c="dimmed">
+                {t('mapping.perPartHint')}
+              </Text>
+            )}
+            {/* Источник известен точно, поэтому называем его, а не пересказываем
+                правило приоритетов: имя пользователь и так видит выше. */}
+            {proposed.name_source && (
+              <Text size="xs" c="dimmed" mb="xs">
+                {t('mapping.willCreateHint', {
+                  source: t(`nameSource.${proposed.name_source}` as TranslationKey),
+                })}
+              </Text>
+            )}
+          </>
+        ) : (
+          <Text size="sm" mb="xs">
+            {t('mapping.noneHint')}
+          </Text>
+        )}
         <Button size="xs" leftSection={<IconFolderPlus size={14} />} onClick={onRebind}>
-          {t('mapping.bindFolder')}
+          {proposed ? t('mapping.bindOther') : t('mapping.bindFolder')}
         </Button>
       </Alert>
     )
@@ -178,7 +236,12 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
                   <Text size="xs" c="dimmed" mt={2}>
                     {t('mapping.here', { what: '' })}
                     {Object.entries(mapping.counts)
-                      .map(([role, count]) => `${ROLE_SHORT[role] || t('mapping.roleVideo')} ${count}`)
+                      .map(
+                        ([role, count]) =>
+                          // Строка собирается через join — флаг-компонент сюда
+                          // не вставить, поэтому остаётся код языка.
+                          `${ROLE_SHORT[role]?.toUpperCase() || t('mapping.roleVideo')} ${count}`,
+                      )
                       .join(' · ')}
                   </Text>
                 )}
@@ -233,6 +296,17 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
           >
             {t('mapping.bindAnother')}
           </Button>
+          {/* Единственная точка входа, пока назначений нет: плашка со списком
+              появляется только когда они уже есть, и первое создать было бы
+              неоткуда. */}
+          <Button
+            size="compact-xs"
+            variant="subtle"
+            leftSection={<IconFolderSymlink size={12} />}
+            onClick={onManageEpisodeTargets}
+          >
+            {t('mapping.episodeFolders')}
+          </Button>
         </Group>
 
         {local.has_local_files && (
@@ -240,9 +314,11 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
             {coverageEntries.map(([role, info]) => (
               <div key={role}>
                 <Group justify="space-between" gap="xs">
-                  <Text size="xs">{info.label}</Text>
+                  {/* Подпись по коду роли, а не строкой с сервера: там она
+                      только по-русски и в английском интерфейсе торчала как есть. */}
+                  <Text size="xs">{t(`coverageRole.${role}` as TranslationKey)}</Text>
                   <Text size="xs" c={info.complete ? 'teal' : 'dimmed'}>
-                    {info.have} из {info.total}
+                    {t('mapping.haveOf', { have: info.have, total: info.total })}
                   </Text>
                 </Group>
                 <Progress
@@ -252,14 +328,14 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
                 />
                 {!info.complete && info.missing_ranges && (
                   <Text size="xs" c="dimmed">
-                    нет: {info.missing_ranges}
+                    {t('mapping.missingRanges', { ranges: info.missing_ranges })}
                   </Text>
                 )}
                 {/* Счётчик считает различные серии, а не файлы. Если серия лежит
                     в двух копиях, об этом надо сказать, а не молча схлопнуть. */}
                 {info.duplicate_count > 0 && (
                   <Text size="xs" c="dimmed">
-                    в двух копиях: {info.duplicate_ranges}
+                    {t('mapping.duplicateRanges', { ranges: info.duplicate_ranges })}
                   </Text>
                 )}
               </div>
@@ -268,8 +344,10 @@ export function MappingPanel({ seriesId, mappings, local, onRebind }: Props) {
             {/* Локально серий может быть больше, чем знает сайт — по ТЗ это не ошибка. */}
             {local.local_max_episode > local.episodes_expected && (
               <Text size="xs" c="dimmed">
-                Локально есть серия {local.local_max_episode}, хотя на сайте их{' '}
-                {local.episodes_expected}.
+                {t('mapping.moreLocalEpisodes', {
+                  local: local.local_max_episode,
+                  expected: local.episodes_expected,
+                })}
               </Text>
             )}
           </Stack>

@@ -10,7 +10,22 @@ interface Props {
   onRangeChange: (start: number, end: number) => void
   /** Какие значки наличия показывать — настройка пользователя из браузера. */
   visibleBadges: BadgeKey[]
+  /** Есть ли что подгружать дальше. В режиме страниц всегда false. */
+  hasMore?: boolean
+  /** Просит следующую порцию. Вызывается при подходе к концу списка. */
+  onLoadMore?: () => void
+  /**
+   * При смене значения прокрутка возвращается наверх.
+   *
+   * Нужно при переходе по номерам страниц: список меняется целиком, а позиция
+   * прокрутки остаётся, и новая страница открывается с середины — выглядит так,
+   * будто переход не сработал.
+   */
+  scrollResetKey?: string | number
 }
+
+// За сколько рядов до конца просить следующую порцию.
+const LOAD_AHEAD_ROWS = 4
 
 const CARD_MIN_WIDTH = 168
 const GAP = 12
@@ -23,7 +38,15 @@ const cardHeight = (columnWidth: number) => Math.round((columnWidth * 3) / 2) + 
  * Виртуализируем строки, а не отдельные карточки: число колонок зависит от ширины,
  * и построчный подход позволяет пересчитывать раскладку одним измерением контейнера.
  */
-export function CatalogGrid({ ids, cards, onRangeChange, visibleBadges }: Props) {
+export function CatalogGrid({
+  ids,
+  cards,
+  onRangeChange,
+  visibleBadges,
+  hasMore = false,
+  onLoadMore,
+  scrollResetKey,
+}: Props) {
   const parentRef = useRef<HTMLDivElement>(null)
   const [columns, setColumns] = useState(1)
   const [columnWidth, setColumnWidth] = useState(CARD_MIN_WIDTH)
@@ -64,6 +87,10 @@ export function CatalogGrid({ ids, cards, onRangeChange, visibleBadges }: Props)
     virtualizer.measure()
   }, [virtualizer, rowHeight])
 
+  useEffect(() => {
+    parentRef.current?.scrollTo({ top: 0 })
+  }, [scrollResetKey])
+
   const virtualRows = virtualizer.getVirtualItems()
 
   useEffect(() => {
@@ -71,7 +98,13 @@ export function CatalogGrid({ ids, cards, onRangeChange, visibleBadges }: Props)
     const first = virtualRows[0].index * columns
     const last = (virtualRows[virtualRows.length - 1].index + 1) * columns - 1
     onRangeChange(first, Math.min(last, ids.length - 1))
-  }, [virtualRows, columns, ids.length, onRangeChange])
+
+    // Подгружаем заранее, а не по достижении самого низа: запрос успевает
+    // вернуться, пока пользователь докручивает, и прокрутка не спотыкается.
+    // Порог в строках, а не в карточках — на широком экране ряд длиннее.
+    const rowsLeft = rowCount - 1 - virtualRows[virtualRows.length - 1].index
+    if (hasMore && rowsLeft <= LOAD_AHEAD_ROWS) onLoadMore?.()
+  }, [virtualRows, columns, ids.length, onRangeChange, rowCount, hasMore, onLoadMore])
 
   return (
     <div

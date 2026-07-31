@@ -247,7 +247,97 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
             )
             stats["suggested" if result.needs_confirmation else "auto"] += 1
 
+        stats["dropped_container"] = _drop_container_duplicates(session, folders)
+
     return stats
+
+
+def _drop_container_duplicates(session, folders: list[LibraryFolder]) -> int:
+    """Снимает привязку с папки-контейнера, если её же тайтл держит подпапка.
+
+    Откуда берётся дубликат. `<anilistid>` лежит в `tvshow.nfo`, то есть в
+    корневой папке шоу, и указывает на первый сезон. Папка `Season 1` своего ID
+    не имеет и наследует родительский — так и задумано. Но ID остаётся и у
+    самого корня, поэтому один и тот же тайтл оказывается привязан дважды: к
+    `Show` и к `Show/Season 1`.
+
+    Побеждает подпапка: в ней лежат файлы, а корень — контейнер. Если бы
+    основной осталась корневая, загрузки первого сезона легли бы рядом с
+    папками сезонов, а не внутрь нужной.
+
+    Но уступает корень **не любому** потомку, а только тому, где есть файлы.
+    Два условия:
+
+    1. **У корня нет своих видео.** Если серии лежат прямо в папке тайтла, она
+       не контейнер, а рабочая папка — снимать с неё привязку нельзя.
+    2. **У потомка видео есть.** Пустая подпапка не лучше корня ничем.
+
+    Отдельного исключения для спешлов нет — решение пользователя. Следствие:
+    при раскладке «корень без видео + только `Specials`» привязка уедет на
+    `Specials`, и туда же пойдут загрузки, пока не появится папка сезона с
+    файлами. Обсуждалось и принято осознанно: правило из двух условий
+    предсказуемее, а раскладка редкая и самоисправляется.
+
+    Если ни один потомок условиям не отвечает, обе привязки остаются, и какая
+    из них основная, решает `ensure_primary_mapping()` по вкладу в тайтл.
+
+    ⚠️ Пустую папку с одним `tvshow.nfo` это НЕ трогает: снимаем привязку
+    только когда тот же тайтл держит подходящий потомок. Папки без единого
+    видеофайла должны мапиться и показывать 0 серий — это отдельное
+    требование, и сплошная проверка «нет видео → не мапить» его бы нарушила.
+
+    Ручные привязки не трогаем никогда: это решение пользователя.
+    """
+    by_id = {f.id: f for f in folders}
+
+    def is_ancestor(candidate_id: int, folder: LibraryFolder) -> bool:
+        current = folder
+        seen = set()
+        while current.parent_id is not None and current.parent_id not in seen:
+            seen.add(current.parent_id)
+            if current.parent_id == candidate_id:
+                return True
+            current = by_id.get(current.parent_id)
+            if current is None:
+                return False
+        return False
+
+    rows = session.execute(
+        select(TitleMapping).where(
+            TitleMapping.folder_id.in_([f.id for f in folders]),
+            TitleMapping.is_manual.is_(False),
+        )
+    ).scalars().all()
+
+    by_series: dict[int, list[TitleMapping]] = {}
+    for row in rows:
+        by_series.setdefault(row.series_id, []).append(row)
+
+    dropped = 0
+    for mappings in by_series.values():
+        if len(mappings) < 2:
+            continue
+        folder_ids = {m.folder_id for m in mappings}
+        for mapping in mappings:
+            folder = by_id.get(mapping.folder_id)
+            if folder is None:
+                continue
+            if folder.video_count:
+                # Серии лежат прямо здесь — это рабочая папка, а не контейнер.
+                continue
+
+            has_better_descendant = any(
+                other_id != mapping.folder_id
+                and other_id in by_id
+                and is_ancestor(mapping.folder_id, by_id[other_id])
+                and by_id[other_id].video_count
+                for other_id in folder_ids
+            )
+            if has_better_descendant:
+                session.delete(mapping)
+                dropped += 1
+
+    return dropped
 
 
 def _nfo_of(folder: LibraryFolder | None):

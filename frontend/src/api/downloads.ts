@@ -67,16 +67,31 @@ export type DownloadKind = 'video' | 'subtitle' | 'audio'
 export const downloadsApi = {
   list: () => api.get<QueueState>('/downloads'),
   enqueue: (translationId: number, kind: DownloadKind, height?: number) =>
-    api.post<{ id: number; created: boolean }>('/downloads', {
+    api.post<{ id: number | null; created: boolean; already_exists?: boolean }>('/downloads', {
       translation_id: translationId,
       kind,
       height,
     }),
-  batch: (translationIds: number[], kind: DownloadKind | 'both', height?: number) =>
-    api.post<{ created: number; skipped: number; failed: number; errors: string[] }>(
-      '/downloads/batch',
-      { translation_ids: translationIds, kind, height },
-    ),
+  batch: (
+    translationIds: number[],
+    kind: DownloadKind | 'both',
+    height?: number,
+    /** Пропустить серии, у которых нужное уже лежит локально. */
+    onlyMissing = false,
+  ) =>
+    api.post<{
+      created: number
+      skipped: number
+      failed: number
+      /** Пропущено потому, что уже есть на диске. Не ошибка. */
+      already_local?: number
+      errors: string[]
+    }>('/downloads/batch', {
+      translation_ids: translationIds,
+      kind,
+      height,
+      only_missing: onlyMissing,
+    }),
   retry: (id: number) => api.post<unknown>(`/downloads/${id}/retry`),
   pause: (id: number) => api.post<unknown>(`/downloads/${id}/pause`),
   resume: (id: number) => api.post<unknown>(`/downloads/${id}/resume`),
@@ -86,18 +101,13 @@ export const downloadsApi = {
   clearFinished: () => api.post<{ deleted: number }>('/downloads/clear-finished'),
 }
 
-export function formatSpeed(bps: number): string {
-  if (!bps) return '—'
-  const mb = bps / (1024 * 1024)
-  return mb >= 1 ? `${mb.toFixed(1)} МБ/с` : `${(bps / 1024).toFixed(0)} КБ/с`
-}
-
-export function formatEta(task: DownloadTask): string {
-  if (task.status !== 'downloading' || !task.speed_bps || !task.bytes_total) return '—'
+/**
+ * Сколько секунд осталось качать. Только число — форматирование с единицами
+ * живёт в `i18n/format`, потому что «МБ/с» и «мин» тоже переводятся, а здесь,
+ * в слое API, локали нет.
+ */
+export function etaSeconds(task: DownloadTask): number {
+  if (task.status !== 'downloading' || !task.speed_bps || !task.bytes_total) return 0
   const left = task.bytes_total - task.bytes_done
-  if (left <= 0) return '—'
-  const seconds = Math.round(left / task.speed_bps)
-  if (seconds < 60) return `${seconds} с`
-  if (seconds < 3600) return `${Math.round(seconds / 60)} мин`
-  return `${(seconds / 3600).toFixed(1)} ч`
+  return left <= 0 ? 0 : Math.round(left / task.speed_bps)
 }

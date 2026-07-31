@@ -22,6 +22,7 @@ import {
 import { Link, Route, Routes, useLocation } from 'react-router-dom'
 
 import { Logo } from './components/Logo'
+import { ThemeToggle } from './components/ThemeToggle'
 import { useAuth } from './hooks/useAuth'
 import { LOCALES, useT, type Locale } from './i18n'
 import { CatalogPage } from './pages/CatalogPage'
@@ -148,6 +149,7 @@ export function App() {
                 aria-label={t('nav.language')}
               />
             </Tooltip>
+            <ThemeToggle />
             {auth.passwordRequired && (
               <Tooltip label={t('nav.logout')}>
                 <ActionIcon
