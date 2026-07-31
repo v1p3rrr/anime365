@@ -4,56 +4,149 @@
 
 ## Что где лежит (фактически)
 
+Раздел сверен с кодом 2026-08-01. Описания взяты из докстрок самих модулей —
+если он снова разойдётся с реальностью, чинить надо здесь.
+
 ```
 backend/app/
-├─ core/
-│  ├─ settings_registry.py   ✅ единый реестр настроек
-│  ├─ config.py              ✅ склейка дефолт < ENV < UI
-│  ├─ db.py                  ✅ SQLite WAL
-│  ├─ migrations.py          ✅ дописывание недостающих колонок
-│  ├─ bootstrap.py           ✅ инициализация при старте
-│  └─ logging_setup.py       ✅ вырезание секретов из логов
-├─ models/
-│  ├─ catalog.py             ✅ series, episode, translation, embed-кэш, scan_run
-│  ├─ library.py             ✅ корни, папки, файлы, маппинг тайтлов и эпизодов
-│  ├─ downloads.py           ✅ очередь задач
-│  └─ settings.py            ✅ app_user, app_setting
-├─ services/
-│  ├─ anime365.py            ✅ клиент API, зеркала, rewrite хоста
-│  ├─ catalog_sync.py        ✅ три режима синхронизации
-│  ├─ fts.py                 ✅ полнотекстовый поиск
-│  ├─ coverage.py            ✅ сводка переводов, диапазоны, качество
-│  ├─ title_service.py       ✅ сборка страницы тайтла
-│  ├─ filename_rules.py      ✅ разбор имён по YAML-правилам
-│  ├─ nfo_parser.py          ✅ разбор всех видов .nfo
-│  ├─ matcher.py             ✅ каскады сопоставления
-│  ├─ library_scan.py        ✅ обход файловой системы
-│  ├─ library_service.py     ✅ сохранение результатов + маппинг
-│  ├─ library_watcher.py     ✅ слежение через inotify
-│  ├─ mapping_info.py        ✅ плашка привязки, покрытие, основная папка
-│  ├─ naming.py              ✅ построение имён файлов
-│  ├─ downloader.py          ✅ докачка по Range, allowlist хостов
-│  └─ download_queue.py      ✅ воркеры, ретраи, постобработка
-├─ api/                      ✅ health, catalog, title, library, downloads, maintenance
-│                            ⬜ settings, events (SSE)
-└─ workers/scheduler.py      ✅ APScheduler + запуск слежения
-
-frontend/src/
-├─ pages/
-│  ├─ CatalogPage.tsx        ✅
-│  ├─ TitlePage.tsx          ✅ (кнопки загрузки — ⬜)
-│  ├─ LibraryPage.tsx        ✅
-│  ├─ QueuePage.tsx          ⬜ заглушка
-│  └─ SettingsPage.tsx       ⬜ заглушка
-├─ components/               ✅ карточка, сетка, фильтры, сводка переводов,
-│                               плашка привязки, модалки привязки, показ ошибок
-├─ api/                      ✅ client, title, library
-└─ stores/preferences.ts     ✅ настройки отображения в localStorage
+├─ main.py                      Точка входа FastAPI.
+├─ core/                         # ядро: конфигурация, БД, безопасность
+│  ├─ bootstrap.py                Инициализация БД при старте: таблицы, FTS, пользователь по умолчанию, слой настроек.
+│  ├─ config.py                   Склейка трёх слоёв настроек: default (код) < ENV < БД (правка из UI).
+│  ├─ db.py                       Подключение к SQLite.
+│  ├─ errors.py                   Ошибки API с машинными кодами.
+│  ├─ events.py                   Шина событий для живого обновления интерфейса.
+│  ├─ logging_setup.py            Логирование с вырезанием секретов.
+│  ├─ middleware.py               Заголовки безопасности, проверка сессии и защита от CSRF.
+│  ├─ migrations.py               Лёгкие миграции схемы для SQLite.
+│  ├─ paths.py                    Проверка путей записи.
+│  ├─ permissions.py              Права доступа.
+│  ├─ proxy.py                    Прокси для исходящих запросов.
+│  ├─ security.py                 Пароль на вход, сессии и ограничитель попыток.
+│  └─ settings_registry.py        Единый реестр настроек — единственная точка правды.
+├─ models/                       # модели SQLAlchemy
+│  ├─ catalog.py                  Модели каталога Anime365.
+│  ├─ downloads.py                Очередь загрузок.
+│  ├─ library.py                  Модели локальной библиотеки и маппинга.
+│  └─ settings.py                 Служебные модели: пользователи и оверрайды настроек из UI.
+├─ api/                          # роутеры
+│  ├─ auth.py                     Вход в UI: один общий пароль, сессия в куке.
+│  ├─ catalog.py                  Эндпоинты каталога.
+│  ├─ deps.py                     Зависимости роутеров: ограничитель частоты для дорогих эндпоинтов.
+│  ├─ downloads.py                Эндпоинты очереди загрузок.
+│  ├─ events.py                   SSE-поток событий для интерфейса.
+│  ├─ health.py                   Healthcheck для Docker и для быстрой проверки живости руками.
+│  ├─ library.py                  Эндпоинты библиотеки: состояние, сканирование, нераспознанное, ручной маппинг.
+│  ├─ maintenance.py              Служебные операции над кэшем.
+│  ├─ settings.py                 Эндпоинты настроек.
+│  ├─ stream.py                   Проксирование видео и субтитров для встроенного плеера.
+│  ├─ title.py                    Эндпоинты страницы тайтла.
+│  └─ users.py                    Учётные записи и права.
+├─ services/                     # бизнес-логика
+│  ├─ anime365.py                 Клиент Anime365 API — единственная точка выхода в сеть.
+│  ├─ audio.py                    Извлечение звуковой дорожки из видео.
+│  ├─ audio_library.py            Фонотека: что извлечено, где лежит и можно ли это слушать.
+│  ├─ catalog_sync.py             Синхронизация каталога Anime365 в локальную БД.
+│  ├─ coverage.py                 Сводка переводов по тайтлу: группировка, покрытие серий, оценка качества.
+│  ├─ download_queue.py           Очередь загрузок: постановка задач, воркеры, постобработка.
+│  ├─ downloader.py               Скачивание файлов с докачкой по Range.
+│  ├─ filename_rules.py           Разбор имён файлов по правилам из config/filename_rules.yaml.
+│  ├─ fts.py                      Полнотекстовый поиск по названиям (SQLite FTS5).
+│  ├─ jellyfin.py                 Интеграция с Jellyfin: пинок на пересканирование и ссылка на страницу тайтла.
+│  ├─ jellyfin_audit.py           Сверка нашей библиотеки с тем, что распознал Jellyfin.
+│  ├─ languages.py                Приведение языковых кодов дорожек к двухбуквенным.
+│  ├─ library_scan.py             Сканирование локальной библиотеки.
+│  ├─ library_service.py          Сохранение результатов сканирования и автоматический маппинг.
+│  ├─ library_watcher.py          Слежение за библиотекой через inotify (watchdog).
+│  ├─ mapping_info.py             Сведения о привязке тайтла к локальным папкам — для плашки на странице тайтла.
+│  ├─ matcher.py                  Сопоставление локальных папок с тайтлами Anime365.
+│  ├─ naming.py                   Построение имён файлов для скачанного.
+│  ├─ nfo_parser.py               Разбор .nfo, которые Jellyfin кладёт рядом с медиафайлами.
+│  ├─ shikimori.py                Связи между тайтлами — порядок просмотра.
+│  ├─ stream_probe.py             Определение звуковых дорожек через ffprobe — фоновой джобой.
+│  ├─ title_service.py            Сборка данных для страницы тайтла.
+│  └─ translation_scan.py         Фоновый сбор сведений о том, какие переводы есть у тайтла на сайте.
+├─ workers/                      # фоновые задачи
+│  └─ scheduler.py                Фоновые задачи.
 ```
 
-Чего нет вовсе: `postprocess.py` отдельным модулем (логика внутри `download_queue`),
-`core/events.py` и SSE, `core/security.py` (пароль, CSP, CSRF), `quality.py` и
-`episode_type.py` (их функции разошлись по `coverage.py` и `downloader.py`).
+```
+frontend/src/
+├─ pages/          # страницы
+│  ├─ CatalogPage.tsx
+│  ├─ LibraryPage.tsx
+│  ├─ LoginPage.tsx
+│  ├─ QueuePage.tsx
+│  ├─ SettingsPage.tsx
+│  └─ TitlePage.tsx
+├─ components/     # компоненты
+│  ├─ AudioLibraryTab.tsx
+│  ├─ AudioTracks.tsx
+│  ├─ BatchDownload.tsx
+│  ├─ BindEpisodeModal.tsx
+│  ├─ BindFolderModal.tsx
+│  ├─ CatalogCard.tsx
+│  ├─ CatalogFilters.tsx
+│  ├─ CatalogGrid.tsx
+│  ├─ CollectionButton.tsx
+│  ├─ DisplaySettings.tsx
+│  ├─ DownloadButton.tsx
+│  ├─ EpisodeDownloadPanel.tsx
+│  ├─ EpisodeRow.tsx
+│  ├─ EpisodeTargetsAlert.tsx
+│  ├─ EpisodeTargetsModal.tsx
+│  ├─ ErrorState.tsx
+│  ├─ Flag.tsx
+│  ├─ JellyfinAudit.tsx
+│  ├─ Logo.tsx
+│  ├─ MapFolderModal.tsx
+│  ├─ MappingPanel.tsx
+│  ├─ MappingReport.tsx
+│  ├─ OnlineSearchModal.tsx
+│  ├─ PlayerModal.tsx
+│  ├─ PosterPlaceholder.tsx
+│  ├─ RelatedTitles.tsx
+│  ├─ SyncIndicator.tsx
+│  ├─ ThemeToggle.tsx
+│  ├─ TitleAudioSection.tsx
+│  ├─ TitleQuickLinks.tsx
+│  ├─ TranslationGroups.tsx
+│  └─ UsersPanel.tsx
+├─ hooks/          # хуки
+│  ├─ useAuth.ts
+│  ├─ useCatalogIds.ts
+│  ├─ useCatalogUrlState.ts
+│  ├─ useServerEvents.ts
+│  ├─ useUnsavedGuard.ts
+│  ├─ useVirtualCatalog.ts
+│  └─ useVisibleWidthVar.ts
+├─ api/            # клиент API
+│  ├─ client.ts
+│  ├─ downloads.ts
+│  ├─ library.ts
+│  ├─ title.ts
+│  └─ users.ts
+├─ stores/         # клиентские настройки
+│  └─ preferences.ts
+├─ i18n/           # локали ru/en/ja
+│  ├─ apiError.ts
+│  ├─ en.ts
+│  ├─ flags.ts
+│  ├─ format.ts
+│  ├─ index.tsx
+│  ├─ ja.ts
+│  ├─ languages.ts
+│  ├─ ru.ts
+│  ├─ seriesType.ts
+│  └─ titles.ts
+└─ App.tsx             
+└─ routes.tsx          Маршруты отдельным деревом, а не JSX внутри шапки
+└─ main.tsx            
+```
+
+Чего нет отдельными модулями и не будет: `postprocess.py` (логика внутри
+`download_queue`), `quality.py` и `episode_type.py` — их функции разошлись по
+`coverage.py` и `downloader.py`.
 
 ## Стек
 

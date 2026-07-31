@@ -319,3 +319,45 @@ class TestFlatLayouts:
         listed = client.get("/api/library/unmapped?only_with_video=false").json()
         assert len(listed) == 1
         assert client.get("/api/library/status").json()["folders_unmapped"] == 1
+
+
+class TestDiskSpaceInStatus:
+    """Свободное место на носителях библиотек.
+
+    Опасение из планов — «как узнать место, если папки монтируются отдельно» —
+    снимается само: `shutil.disk_usage` спрашивает файловую систему по пути, и
+    каждое монтирование отвечает за себя.
+    """
+
+    def test_status_reports_free_space(self, tree, client):
+        roots = client.get("/api/library/status").json()["roots"]
+        assert roots, "тест бессмысленен без корней"
+        for root in roots:
+            assert root["disk_total_bytes"] is not None
+            assert root["disk_free_bytes"] is not None
+            # Свободного не может быть больше, чем всего.
+            assert 0 <= root["disk_free_bytes"] <= root["disk_total_bytes"]
+
+    def test_roots_on_one_volume_share_the_mount_key(self, tree, client):
+        """Корни в одной временной папке лежат на одном носителе.
+
+        Ключ монтирования нужен клиенту, чтобы не сложить одно и то же
+        свободное место дважды и не пообещать вдвое больше, чем есть.
+        """
+        roots = client.get("/api/library/status").json()["roots"]
+        mounts = {root["mount"] for root in roots}
+        assert mounts == {roots[0]["mount"]}
+        assert roots[0]["mount"] is not None
+
+    def test_unavailable_root_does_not_break_status(self, tree, client):
+        """Отвалившийся диск не должен ронять ответ.
+
+        Статус библиотеки нужен как раз тогда, когда что-то отвалилось.
+        """
+        with session_scope() as session:
+            root = session.execute(select(LibraryRoot)).scalars().first()
+            root.path = "/nope/no/such/path"
+
+        payload = client.get("/api/library/status").json()
+        broken = [r for r in payload["roots"] if r["path"] == "/nope/no/such/path"]
+        assert broken and broken[0]["disk_free_bytes"] is None

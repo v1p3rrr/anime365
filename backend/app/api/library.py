@@ -36,6 +36,45 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/library", tags=["library"])
 
 
+def _disk_usage(path: Path) -> dict[str, Any]:
+    """Место на носителе, где лежит корень: сколько всего, сколько свободно.
+
+    Вопрос «как это узнать, если папки монтируются по отдельности» решается сам
+    собой: `disk_usage` спрашивает файловую систему по конкретному пути, и
+    каждое монтирование отвечает за себя. Ходить в `/proc/mounts` не нужно.
+
+    Зато нужен `mount`: два корня могут оказаться на одном носителе, и тогда их
+    свободное место — **одно и то же число**, а не два независимых. Сложить их
+    значило бы показать вдвое больше места, чем есть. Ключ монтирования отдаём
+    клиенту, чтобы он показывал такие корни одной строкой.
+
+    Недоступный корень (не примонтирован, снят диск) не должен ронять весь
+    ответ: статус библиотеки нужен как раз тогда, когда что-то отвалилось.
+    """
+    import shutil
+
+    from app.services.downloader import _mount_id
+
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return {"disk_total_bytes": None, "disk_free_bytes": None, "mount": None}
+
+    # Вне Linux mountinfo нет; там ключом остаётся сам носитель.
+    mount = _mount_id(path)
+    if mount is None:
+        try:
+            mount = str(path.stat().st_dev)
+        except OSError:
+            mount = None
+
+    return {
+        "disk_total_bytes": usage.total,
+        "disk_free_bytes": usage.free,
+        "mount": mount,
+    }
+
+
 def _container_folder_ids():
     """Папки-контейнеры: своих видео нет, а подпапку держит тот же скан.
 
@@ -95,6 +134,7 @@ def library_status() -> dict[str, Any]:
                     "total_bytes": r.total_bytes,
                     "folder_count": r.folder_count,
                     "scanned_at": r.scanned_at.isoformat() if r.scanned_at else None,
+                    **_disk_usage(Path(r.path)),
                 }
                 for r in roots
             ],

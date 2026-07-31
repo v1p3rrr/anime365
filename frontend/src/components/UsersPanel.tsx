@@ -23,7 +23,7 @@ import {
   IconUserPlus,
 } from '@tabler/icons-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { usersApi, type AppUser } from '../api/users'
 import { useT } from '../i18n'
@@ -55,7 +55,17 @@ import { type TranslationKey } from '../i18n'
  * а подтверждение спрашивается уже при сохранении — когда видно, что именно
  * уйдёт.
  */
-export function UsersPanel() {
+interface Props {
+  /**
+   * Сообщает наружу, есть ли несохранённые правки. Нужно странице настроек:
+   * она держит предупреждение об уходе, а черновик пользователей живёт здесь.
+   * Без этого правки по пользователям терялись бы молча — при том что именно
+   * их и просили не применять сразу.
+   */
+  onDirtyChange?: (dirty: boolean) => void
+}
+
+export function UsersPanel({ onDirtyChange }: Props = {}) {
   const { t } = useT()
   const queryClient = useQueryClient()
   const [creating, setCreating] = useState(false)
@@ -90,6 +100,10 @@ export function UsersPanel() {
   }
 
   const dirtyCount = Object.keys(draft).length + toRemove.length
+
+  useEffect(() => {
+    onDirtyChange?.(dirtyCount > 0)
+  }, [dirtyCount, onDirtyChange])
 
   const save = useMutation({
     mutationFn: async () => {

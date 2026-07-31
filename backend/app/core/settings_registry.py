@@ -214,7 +214,7 @@ SETTINGS: tuple[Setting, ...] = (
     Setting(
         key="series_root",
         type=SettingType.PATH,
-        default="/media/anime",
+        default="/media/anime/library",
         group=SettingGroup.PATHS,
         label_ru="Корень сериалов",
         help_ru="Внутри контейнера. Все целевые пути проверяются как потомки этого корня.",
@@ -222,14 +222,17 @@ SETTINGS: tuple[Setting, ...] = (
     Setting(
         key="movies_root",
         type=SettingType.PATH,
-        default="/media/anime_movies",
+        default="/media/anime_movies/library",
         group=SettingGroup.PATHS,
         label_ru="Корень фильмов",
+        help_ru=(
+            "Куда складываются фильмы. Отдельно от сериалов: Jellyfin держит для них разные библиотеки."
+        ),
     ),
     Setting(
         key="audio_root",
         type=SettingType.PATH,
-        default="/media/audio",
+        default="/media/anime_audio",
         group=SettingGroup.PATHS,
         label_ru="Корень фонотеки",
         help_ru=(
@@ -240,7 +243,7 @@ SETTINGS: tuple[Setting, ...] = (
     Setting(
         key="download_tmp",
         type=SettingType.PATH,
-        default="/data/tmp",
+        default="/media/.a365-tmp",
         group=SettingGroup.PATHS,
         label_ru="Временная папка загрузок",
         help_ru=(
@@ -281,6 +284,9 @@ SETTINGS: tuple[Setting, ...] = (
         default=5,
         group=SettingGroup.DOWNLOADS,
         label_ru="Попыток на задачу",
+        help_ru=(
+            "Сколько раз повторять неудачную задачу, прежде чем пометить её ошибкой."
+        ),
         check=_positive,
     ),
     Setting(
@@ -289,6 +295,9 @@ SETTINGS: tuple[Setting, ...] = (
         default=30,
         group=SettingGroup.DOWNLOADS,
         label_ru="База экспоненциального бэкоффа, секунд",
+        help_ru=(
+            "Пауза между попытками растёт экспоненциально от этого значения."
+        ),
         check=_positive,
     ),
     Setting(
@@ -416,6 +425,9 @@ SETTINGS: tuple[Setting, ...] = (
         default=1000,
         group=SettingGroup.FILES,
         label_ru="UID владельца создаваемых файлов",
+        help_ru=(
+            "Должен совпадать с владельцем медиабиблиотеки, иначе Jellyfin не прочитает скачанное. Узнать: id -u"
+        ),
         check=_non_negative,
     ),
     Setting(
@@ -424,6 +436,9 @@ SETTINGS: tuple[Setting, ...] = (
         default=1000,
         group=SettingGroup.FILES,
         label_ru="GID владельца создаваемых файлов",
+        help_ru=(
+            "Группа владельца создаваемых файлов. Узнать: id -g"
+        ),
         check=_non_negative,
     ),
     Setting(
@@ -432,6 +447,9 @@ SETTINGS: tuple[Setting, ...] = (
         default="022",
         group=SettingGroup.FILES,
         label_ru="umask",
+        help_ru=(
+            "Восьмеричная маска прав для создаваемых файлов и папок, например 022."
+        ),
         check=_check_umask,
     ),
     # --- Безопасность ---

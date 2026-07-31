@@ -38,8 +38,14 @@ COPY backend/pyproject.toml ./
 # `socksio` (SOCKS5-прокси не работал вовсе, хотя описан в документации), ни
 # `iso639-lang`. Чтобы это не повторилось молча, расхождение ловит тест
 # `tests/test_dockerfile_deps.py` — он сверяет этот блок с pyproject.
+# pip остаётся в образе и сам попадает в отчёты сканеров: у 25.0.1 четыре CVE,
+# одна из них high. Обновляем его первым же шагом, отдельным слоем — так он не
+# переустанавливается при каждой правке списка зависимостей.
+RUN pip install --no-cache-dir --upgrade "pip==26.1.2"
+
 RUN pip install --no-cache-dir \
-        "fastapi==0.115.6" \
+        "fastapi==0.141.1" \
+        "starlette==1.3.1" \
         "uvicorn[standard]==0.34.0" \
         "sqlalchemy==2.0.36" \
         "httpx[http2,socks]==0.28.1" \
@@ -48,7 +54,6 @@ RUN pip install --no-cache-dir \
         "rapidfuzz==3.11.0" \
         "watchdog==6.0.0" \
         "argon2-cffi==23.1.0" \
-        "python-multipart==0.0.20" \
         "iso639-lang==2.6.0"
 
 COPY backend/app ./app

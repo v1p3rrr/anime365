@@ -10,6 +10,14 @@ export interface LibraryRootInfo {
   total_bytes: number
   folder_count: number
   scanned_at: string | null
+  /** Ёмкость носителя, где лежит корень. null — корень недоступен. */
+  disk_total_bytes: number | null
+  disk_free_bytes: number | null
+  /**
+   * Ключ монтирования. У корней на одном носителе он совпадает, и свободное
+   * место у них общее — показывать его дважды значит обещать вдвое больше.
+   */
+  mount: string | null
 }
 
 export interface WatcherStatus {

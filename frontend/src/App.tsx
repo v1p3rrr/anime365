@@ -19,18 +19,13 @@ import {
   IconLogout,
   IconSettings,
 } from '@tabler/icons-react'
-import { Link, Route, Routes, useLocation } from 'react-router-dom'
+import { Link, Outlet, useLocation } from 'react-router-dom'
 
 import { Logo } from './components/Logo'
 import { ThemeToggle } from './components/ThemeToggle'
 import { useAuth } from './hooks/useAuth'
 import { LOCALES, useT, type Locale } from './i18n'
-import { CatalogPage } from './pages/CatalogPage'
-import { LibraryPage } from './pages/LibraryPage'
 import { LoginPage } from './pages/LoginPage'
-import { QueuePage } from './pages/QueuePage'
-import { SettingsPage } from './pages/SettingsPage'
-import { TitlePage } from './pages/TitlePage'
 import classes from './App.module.css'
 
 const NAV = [
@@ -194,14 +189,9 @@ export function App() {
           minHeight: 0,
         }}
       >
-        <Routes>
-          <Route path="/" element={<CatalogPage />} />
-          <Route path="/ongoing" element={<CatalogPage onlyAiring />} />
-          <Route path="/series/:id" element={<TitlePage />} />
-          <Route path="/queue" element={<QueuePage />} />
-          <Route path="/library" element={<LibraryPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
+        {/* Страницы подставляет роутер: маршруты объявлены в routes.tsx,
+            потому что data-роутер требует их деревом, а не JSX внутри шапки. */}
+        <Outlet />
       </AppShell.Main>
     </AppShell>
   )

@@ -5,6 +5,7 @@ import {
   Card,
   Group,
   Loader,
+  Modal,
   NumberInput,
   PasswordInput,
   Select,
@@ -24,7 +25,9 @@ import { api } from '../api/client'
 import { ErrorState } from '../components/ErrorState'
 import { useT, type TranslationKey } from '../i18n'
 import { useApiError } from '../i18n/apiError'
+import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
 import scrollClasses from './ScrollPage.module.css'
+import settingsClasses from './SettingsPage.module.css'
 import { DisplaySettings } from '../components/DisplaySettings'
 import { UsersPanel } from '../components/UsersPanel'
 
@@ -81,7 +84,11 @@ const SOURCE_COLORS: Record<SettingItem['source'], string> = {
  */
 function useSettingText() {
   const { t } = useT()
-  return (section: 'settingLabel' | 'settingHelp', key: string, fallback: string) => {
+  return (
+    section: 'settingLabel' | 'settingHelp' | 'settingGroup',
+    key: string,
+    fallback: string,
+  ) => {
     const full = `${section}.${key}` as TranslationKey
     const value = t(full)
     // t() возвращает сам ключ, когда перевода нет.
@@ -93,7 +100,16 @@ export function SettingsPage() {
   const queryClient = useQueryClient()
   const { t } = useT()
   const apiError = useApiError()
+  const settingText = useSettingText()
   const [draft, setDraft] = useState<Record<string, string>>({})
+  // Черновик пользователей живёт в своей панели, но уход со страницы один на
+  // всех — иначе правки по пользователям пропадали бы без предупреждения.
+  const [usersDirty, setUsersDirty] = useState(false)
+  const hasChanges = Object.keys(draft).length > 0
+  // ⚠️ Хуки объявляем до любых ранних return: ниже по функции есть выходы для
+  // загрузки и для урезанного вида без прав, и хук после них вызывался бы не
+  // на каждом рендере. React это ловит ошибкой #310 и роняет всю страницу.
+  const guard = useUnsavedGuard(hasChanges || usersDirty)
 
   const query = useQuery({
     queryKey: ['settings'],
@@ -207,7 +223,6 @@ export function SettingsPage() {
     )
   }
 
-  const hasChanges = Object.keys(draft).length > 0
   const passwordItem = query.data?.groups
     .flatMap((g) => g.settings)
     .find((s) => s.key === 'ui_password')
@@ -216,7 +231,12 @@ export function SettingsPage() {
     <Stack gap="md" className={scrollClasses.scrollPage}>
       {/* wrap обязателен: на 375px заголовок и кнопка в одну строку не влезают,
           и кнопка уезжала за правый край. */}
-      <Group justify="space-between" wrap="wrap" gap="xs">
+      <Group
+        justify="space-between"
+        wrap="wrap"
+        gap="xs"
+        className={settingsClasses.stickyHeader}
+      >
         <Title order={3}>{t('settings.title')}</Title>
         <Button
           leftSection={<IconDeviceFloppy size={16} />}
@@ -227,6 +247,51 @@ export function SettingsPage() {
           {hasChanges ? t('settings.saveCount', { count: Object.keys(draft).length }) : t('common.save')}
         </Button>
       </Group>
+
+      {/* Уход с несохранёнными правками. Три исхода, а не два: «сохранить и
+          уйти» — то, чего пользователь чаще всего и хотел, и без этой кнопки
+          ему пришлось бы остаться, нажать сохранение и повторить переход. */}
+      <Modal
+        opened={guard.state === 'blocked'}
+        onClose={() => guard.reset?.()}
+        title={t('settings.leaveTitle')}
+        centered
+      >
+        <Stack gap="sm">
+          <Text size="sm">
+            {hasChanges
+              ? t('settings.leaveHint', { count: Object.keys(draft).length })
+              : t('settings.leaveHintUsers')}
+          </Text>
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => guard.reset?.()}>
+              {t('settings.leaveStay')}
+            </Button>
+            <Button color="red" variant="light" onClick={() => guard.proceed?.()}>
+              {t('settings.leaveDiscard')}
+            </Button>
+            {/* Сохранить отсюда можно только серверные настройки: черновик
+                пользователей применяет своя панель, и делать вид, что кнопка
+                сохранит и его, значило бы соврать. */}
+            {hasChanges && (
+            <Button
+              loading={save.isPending}
+              onClick={() =>
+                save.mutateAsync().then(
+                  () => guard.proceed?.(),
+                  // Не ушли — значит сохранение не прошло, и уходить нельзя:
+                  // иначе правки потерялись бы молча. Текст ошибки покажет
+                  // onError самой мутации.
+                  () => undefined,
+                )
+              }
+            >
+              {t('settings.leaveSave')}
+            </Button>
+            )}
+          </Group>
+        </Stack>
+      </Modal>
 
       {passwordItem && !passwordItem.is_set && (
         <Alert color="red" title={t('settings.noPassword')} icon={<IconAlertTriangle size={18} />}>
@@ -247,12 +312,12 @@ export function SettingsPage() {
       {/* Пользователи — после личных настроек, но до серверных: заводить их
           приходится редко, а серверные настройки длиннее и оттеснили бы форму
           вниз, где её никто не найдёт. */}
-      <UsersPanel />
+      <UsersPanel onDirtyChange={setUsersDirty} />
 
       {query.data?.groups.map((group) => (
         <Card key={group.key} withBorder padding="sm">
           <Group justify="space-between" mb="xs">
-            <Text fw={600}>{group.label}</Text>
+            <Text fw={600}>{settingText('settingGroup', group.key, group.label)}</Text>
             {group.key === 'features' && (
               <Button
                 size="compact-xs"

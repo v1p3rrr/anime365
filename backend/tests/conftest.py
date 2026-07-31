@@ -17,6 +17,23 @@ from app.core.config import settings  # noqa: E402
 from app.core.security import hash_password, sessions  # noqa: E402
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _schema():
+    """Создаёт таблицы один раз на прогон.
+
+    Без этого часть тестов зависела от порядка: таблицы поднимала только
+    фикстура `client` (через lifespan приложения), а тесты, которые ходят в
+    `session_scope()` напрямую, молча рассчитывали, что кто-то уже отработал
+    раньше. На машине разработчика это не проявлялось — файл БД лежит во
+    временной папке ОС и переживает прогоны, так что таблицы оставались с
+    прошлого раза. На чистой машине (свежий контейнер, CI) двадцать тестов
+    падали с «no such table: download_task».
+    """
+    from app.core.bootstrap import bootstrap
+
+    bootstrap()
+
+
 @pytest.fixture
 def client():
     """Приложение целиком, с поднятыми таблицами и фоновыми задачами."""

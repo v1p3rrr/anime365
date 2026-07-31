@@ -34,6 +34,7 @@ import { Link } from 'react-router-dom'
 import {
   libraryApi,
   SOURCE_COLORS,
+  type LibraryRootInfo,
   type UnmappedFolder,
 } from '../api/library'
 import { AudioLibraryTab } from '../components/AudioLibraryTab'
@@ -47,6 +48,48 @@ import { useFormat } from '../i18n/format'
 import scrollClasses from './ScrollPage.module.css'
 import pathClasses from '../components/PathLine.module.css'
 
+
+/**
+ * Свободное место на носителе, где лежит корень.
+ *
+ * Показываем свободное, а не занятое: вопрос у пользователя всегда «влезет ли
+ * ещё серия», а не «сколько уже занято». Полоса при этом рисует занятое —
+ * так привычнее по файловым менеджерам.
+ *
+ * Оранжевый порог в 10% выбран как «пора чистить», красный в 3% — как «загрузки
+ * вот-вот начнут падать»: серия в 1080p весит около 230 МБ, и на терабайтном
+ * диске 3% это ещё сотня серий, а на 100-гигабайтном — уже десяток.
+ */
+function DiskSpace({ root, sharedWith }: { root: LibraryRootInfo; sharedWith?: string }) {
+  const { t } = useT()
+  const { size } = useFormat()
+
+  if (root.disk_free_bytes == null || root.disk_total_bytes == null) return null
+
+  const used = root.disk_total_bytes - root.disk_free_bytes
+  const usedPercent = root.disk_total_bytes > 0 ? (used / root.disk_total_bytes) * 100 : 0
+  const freeShare = 100 - usedPercent
+  const color = freeShare < 3 ? 'red' : freeShare < 10 ? 'orange' : 'teal'
+
+  return (
+    <>
+      <Progress value={usedPercent} color={color} size="xs" mt={8} />
+      <Text size="xs" c={color === 'teal' ? 'dimmed' : color} mt={4}>
+        {t('library.diskFree', {
+          free: size(root.disk_free_bytes),
+          total: size(root.disk_total_bytes),
+        })}
+      </Text>
+      {sharedWith && (
+        // Иначе два корня на одном диске выглядят как два независимых запаса,
+        // и пользователь решит, что места вдвое больше, чем есть.
+        <Text size="xs" c="dimmed" fs="italic">
+          {t('library.diskShared', { other: sharedWith })}
+        </Text>
+      )}
+    </>
+  )
+}
 
 export function LibraryPage() {
   const queryClient = useQueryClient()
@@ -95,6 +138,24 @@ export function LibraryPage() {
   }
 
   const data = status.data
+
+  // Корни, делящие носитель с другим корнем: у них общее свободное место.
+  const sharedMounts = new Map<number, string>()
+  for (const root of data?.roots ?? []) {
+    if (!root.mount) continue
+    const neighbours = (data?.roots ?? []).filter(
+      (other) => other.id !== root.id && other.mount === root.mount,
+    )
+    if (neighbours.length > 0) {
+      sharedMounts.set(
+        root.id,
+        neighbours
+          .map((other) => (other.kind === 'series' ? t('library.rootSeries') : t('library.rootMovies')))
+          .join(', '),
+      )
+    }
+  }
+
   const readOnlyRoots = data?.roots.filter((r) => r.available && !r.writable) ?? []
   const missingRoots = data?.roots.filter((r) => !r.available) ?? []
   const mappedPercent = data && data.folders_total > 0
@@ -182,6 +243,7 @@ export function LibraryPage() {
             <Text size="sm" mt={4}>
               {t('library.rootFolders', { count: root.folder_count, size: size(root.total_bytes) })}
             </Text>
+            <DiskSpace root={root} sharedWith={sharedMounts.get(root.id)} />
           </Card>
         ))}
       </Group>

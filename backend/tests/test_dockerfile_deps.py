@@ -27,11 +27,21 @@ def _pyproject_deps() -> set[str]:
 
 
 def _dockerfile_deps() -> set[str]:
-    """Пакеты из блока `RUN pip install` — они перечислены в кавычках."""
+    """Пакеты из блоков `RUN pip install` — они перечислены в кавычках.
+
+    Блоков несколько: отдельным слоем обновляется сам pip (у старой версии свои
+    CVE, а из образа он никуда не девается). Раньше разбирался только первый
+    найденный блок, и добавление слоя с pip увело проверку не туда — она стала
+    сверять список зависимостей с одним лишь `pip==…`.
+
+    Сам pip из сравнения исключаем: он не зависимость приложения и в pyproject
+    ему не место.
+    """
     text = DOCKERFILE.read_text(encoding="utf-8")
-    match = re.search(r"RUN pip install --no-cache-dir((?:.|\n)*?)\n\n", text)
-    assert match, "не нашёл блок установки зависимостей в Dockerfile"
-    return set(re.findall(r'"([^"]+)"', match.group(1)))
+    blocks = re.findall(r"RUN pip install[^\n]*((?:.|\n)*?)\n\n", text)
+    assert blocks, "не нашёл блок установки зависимостей в Dockerfile"
+    found = {name for block in blocks for name in re.findall(r'"([^"]+)"', block)}
+    return {name for name in found if not name.startswith("pip==")}
 
 
 def test_dockerfile_installs_exactly_what_pyproject_declares():
