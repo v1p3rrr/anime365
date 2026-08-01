@@ -1,8 +1,9 @@
-import { Badge, Group, Image, Text, Tooltip } from '@mantine/core'
+import { Badge, Group, Text, Tooltip } from '@mantine/core'
 import { useQuery } from '@tanstack/react-query'
 
 import { titleApi } from '../api/title'
 import { useT } from '../i18n'
+import classes from './TitleDetails.module.css'
 
 interface Props {
   seriesId: number
@@ -59,19 +60,21 @@ export function TitleDetails({ seriesId, availableEpisodes }: Props) {
         </Badge>
       )}
 
+      {/* Логотип отдельным элементом, а не внутри чипа.
+          Чип рассчитан на текст: картинка внутри растягивает его по высоте и
+          сбивает выравнивание всего ряда бейджей. Здесь у логотипа
+          фиксированная высота, ширина подстраивается — логотипы студий бывают
+          и квадратные, и вытянутые, поэтому ограничивать надо именно высоту. */}
       {studios.map((studio) => (
         <Tooltip key={studio.id} label={t('title.studio', { name: studio.name })}>
-          <Badge
-            variant="light"
-            color="gray"
-            leftSection={
-              studio.image ? (
-                <Image src={studio.image} h={14} w={14} fit="contain" alt="" />
-              ) : undefined
-            }
-          >
-            {studio.name}
-          </Badge>
+          <Group gap={6} wrap="nowrap" className={classes.studio}>
+            {studio.image && (
+              <img src={studio.image} alt="" loading="lazy" className={classes.studioLogo} />
+            )}
+            <Text size="xs" fw={500}>
+              {studio.name}
+            </Text>
+          </Group>
         </Tooltip>
       ))}
 

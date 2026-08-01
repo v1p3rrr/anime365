@@ -41,8 +41,8 @@ ENV PYTHONUNBUFFERED=1 \
 #    транскод — убрать эту строку и пересобрать;
 #
 #  * **perl-base** — помечен Essential, но приложению не нужен: проверено, что
-#    после удаления живы ffmpeg, curl для healthcheck, dpkg и все импорты
-#    Python. Это и готовый интерпретатор для полезной нагрузки, и источник
+#    после удаления живы ffmpeg, dpkg и все импорты Python. Это и готовый
+#    интерпретатор для полезной нагрузки, и источник
 #    единственной critical-находки сканера (CVE-2026-12087 в модуле Socket).
 #    Удаляем вместе с записью в базе dpkg, иначе сканер продолжит сообщать об
 #    уже отсутствующем пакете. Сам dpkg оставляем намеренно: без него сканер не
@@ -52,19 +52,57 @@ ENV PYTHONUNBUFFERED=1 \
 #  * **apt** — после сборки не нужен, а внутри контейнера это готовый способ
 #    дотащить любой инструмент;
 #
+#  * **tar** — тоже Essential, и его держит зависимостью сам dpkg, поэтому
+#    нужен ещё и `--force-depends`. dpkg от этого теряет способность
+#    РАСПАКОВЫВАТЬ пакеты, но не читать свою базу — а нам от него нужно только
+#    второе, чтобы сканеру было что перечислять. Проверено: после удаления
+#    `dpkg -l` показывает 299 пакетов, приложение и ffmpeg работают. Заодно
+#    уходит последняя оставшаяся находка сканера (CVE-2025-45582).
+#
+#    ⚠️ Порядок важен: **tar удаляется последним**. `dpkg` сам требует `tar` и
+#    без него отказывается работать вовсе — «expected program not found in
+#    PATH». Убрать tar раньше значит потерять возможность удалить apt;
+#
+#  * **сам dpkg** — после удаления tar он всё равно ничего не может: ни
+#    установить, ни удалить. Единственное, ради чего его стоило держать, —
+#    чтобы сканеру было что перечислять, но сканер читает не бинарник, а файл
+#    `/var/lib/dpkg/status`. Файл остаётся (это проверяется тут же, `test -s`),
+#    и отчёт по-прежнему полный, а средства управления пакетами в контейнере
+#    больше нет вовсе;
+#
+#  * **curl** — не ставим вовсе. Он был нужен только для healthcheck, а тот
+#    переписан на Python (см. HEALTHCHECK ниже). Полноценный загрузчик в
+#    образе — готовый способ утащить что угодно извне;
+#
 #  * **биты SUID и SGID** — su, mount, passwd и ещё пять таких же приложению не
 #    нужны ни в каком виде. `no-new-privileges: true` в compose и так режет
 #    повышение прав, но полагаться на одну защиту не стоит.
+#
+# ⚠️ Всё удаляется через `dpkg`, а НЕ через `apt-get purge`. Причина стоила
+# отладки: после первого же `--force-depends` база dpkg остаётся в состоянии
+# «зависимости нарушены», и apt отказывается работать вовсе — падает с «Unmet
+# dependencies». В цепочке через `&&` это обрывало всё, что шло дальше, а
+# завершающий `; true` (он нужен был для find) возвращал ноль — и сборка молча
+# отчитывалась успехом, оставляя в образе и apt, и tar. dpkg таких претензий не
+# предъявляет, ему достаточно `--force-depends`.
+#
+# `|| true` стоит только у find: `-exec ... +` возвращает ненулевой код, когда
+# ни один файл не подошёл, а это нормальный исход. Всё остальное обязано
+# отработать, иначе сборка должна падать.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends tini curl ffmpeg && \
+    apt-get install -y --no-install-recommends tini ffmpeg && \
     dpkg --force-depends --purge \
         mesa-vulkan-drivers mesa-dri mesa-libgallium libllvm19 && \
-    dpkg --force-remove-essential --purge perl-base && \
-    apt-get purge -y --allow-remove-essential apt && \
-    rm -rf /var/lib/apt/lists /var/lib/apt /etc/apt && \
-    find / -xdev -perm -4000 -type f -exec chmod u-s {} + 2>/dev/null; \
-    find / -xdev -perm -2000 -type f -exec chmod g-s {} + 2>/dev/null; \
-    true
+    dpkg --force-depends --force-remove-essential --purge perl-base && \
+    dpkg --force-depends --purge apt && \
+    dpkg --force-depends --force-remove-essential --purge tar && \
+    rm -f /usr/bin/dpkg /usr/bin/dpkg-deb /usr/bin/dpkg-split \
+          /usr/bin/dpkg-query /usr/bin/dpkg-trigger /usr/bin/dpkg-divert \
+          /usr/bin/dpkg-statoverride /usr/sbin/dpkg-preconfigure && \
+    rm -rf /var/lib/apt/lists /var/lib/apt /etc/apt /var/log/apt && \
+    { find / -xdev -perm -4000 -type f -exec chmod u-s {} + 2>/dev/null || true; } && \
+    { find / -xdev -perm -2000 -type f -exec chmod g-s {} + 2>/dev/null || true; } && \
+    test ! -e /usr/bin/apt && test ! -e /usr/bin/tar &&     test ! -e /usr/bin/perl && test ! -e /usr/bin/dpkg &&     test -s /var/lib/dpkg/status
 
 WORKDIR /app
 
@@ -107,12 +145,40 @@ RUN groupadd -g 1000 app && \
     mkdir -p /data /config && \
     chown -R app:app /app /data /config
 
+# Инструменты, которые приложению не нужны, а атакующему пригодились бы.
+# Отдельным слоем, потому что часть из них (useradd, groupadd) нужна на шаге
+# выше — раньше их удалить нельзя.
+#
+# Веса это не экономит: файлы остаются в нижних слоях образа. Смысл в другом —
+# в работающем контейнере их не будет, а именно там ими и воспользовались бы.
+# Сканер по той же причине продолжит числить пакеты, которым эти файлы
+# принадлежали: удалены файлы, а не записи в базе dpkg.
+#
+#  * nsenter, unshare, chroot — работа с пространствами имён, первое, что
+#    ищут при попытке выйти за границы контейнера;
+#  * mount, umount — тем же целям служат;
+#  * su, passwd, chsh, chfn, newgrp, gpasswd, useradd и родня — смена
+#    пользователя и правка учётных записей;
+#  * gzip — распаковка принесённого извне.
+#
+# Оболочку (/bin/sh) намеренно оставляем: без неё нельзя зайти в контейнер и
+# посмотреть, что происходит, а своих мест, где приложение вызывает шелл, у нас
+# нет — subprocess зовёт ffmpeg напрямую, списком аргументов.
+RUN rm -f /usr/bin/nsenter /usr/bin/unshare /usr/bin/chroot /usr/sbin/chroot \
+          /usr/bin/mount /usr/bin/umount /usr/bin/su /usr/bin/passwd \
+          /usr/bin/chsh /usr/bin/chfn /usr/bin/newgrp /usr/bin/gpasswd \
+          /usr/bin/gzip /usr/sbin/useradd /usr/sbin/userdel /usr/sbin/usermod \
+          /usr/sbin/groupadd /usr/sbin/groupdel /usr/sbin/groupmod
+
 USER app
 
 EXPOSE 8080
 
+# Проверка живости на Python, а не curl: curl — полноценный загрузчик, и держать
+# его в образе ради одного GET значит оставить готовый способ утащить что угодно
+# извне. Python здесь и так есть, он обязателен.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -fsS http://localhost:8080/api/health || exit 1
+    CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/api/health', timeout=4).status == 200 else 1)"]
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

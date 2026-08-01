@@ -1,0 +1,26 @@
+/*
+ * Студия: логотип рядом с названием, а не внутри чипа.
+ *
+ * Внутри бейджа картинка распирает его по высоте и весь ряд бейджей
+ * перестаёт выравниваться по базовой линии. Отдельный блок с рамкой выглядит
+ * как чип, но ведёт себя предсказуемо.
+ */
+.studio {
+  padding: 2px 8px 2px 4px;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-sm);
+  background: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-6));
+}
+
+/*
+ * Ограничиваем ВЫСОТУ, а ширину отдаём картинке: логотипы студий бывают и
+ * квадратные, и вытянутые в строку. Ограничение по ширине сплющило бы вторые.
+ * max-width страхует от совсем уж панорамных — такой логотип растянул бы строку.
+ */
+.studioLogo {
+  height: 18px;
+  width: auto;
+  max-width: 64px;
+  object-fit: contain;
+  display: block;
+}

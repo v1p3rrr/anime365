@@ -168,6 +168,65 @@ def _sync_genres(session: Session, items: list[dict[str, Any]]) -> None:
         session.execute(sqlite_insert(SeriesGenre).values(pairs).on_conflict_do_nothing())
 
 
+CURSOR_KIND = "catalog_cursor"
+
+
+def _load_cursor() -> int | None:
+    """Докуда дошёл последний обход каталога.
+
+    ⚠️ Курсор хранится отдельно и НЕ выводится из `MAX(series.id)`, хотя так и
+    было сделано сначала. Это была ошибка, и вот почему: в ту же таблицу пишут
+    ещё два источника — синхронизация онгоингов и онлайн-поиск. Оба приносят
+    тайтлы с произвольными, в том числе самыми большими, id.
+
+    Проверено на живой базе: на пустом каталоге синк онгоингов дал 306 тайтлов
+    с максимальным id 44219, после чего инкремент пошёл с `afterId=44219` и
+    забрал 23 записи. Остальные ~28 900 тайтлов, у которых id меньше, он не
+    забрал бы уже никогда — только суточный полный рескан всё чинил, и то
+    молча, так что снаружи это выглядело бы как «инкремент отработал успешно».
+
+    Поэтому курсор двигают только полный и инкрементальный обходы.
+    """
+    with session_scope() as session:
+        row = session.execute(
+            select(ScanRun.stats)
+            .where(ScanRun.kind == CURSOR_KIND)
+            .order_by(ScanRun.id.desc())
+            .limit(1)
+        ).scalar()
+    if not row:
+        return None
+    value = row.get("after_id")
+    return int(value) if value is not None else None
+
+
+def _save_cursor(after_id: int) -> None:
+    """Запоминает курсор.
+
+    Отдельной записью в истории проходов, а не настройкой: настройки правит
+    пользователь, а это внутреннее состояние, которому там не место.
+    """
+    with session_scope() as session:
+        session.add(
+            ScanRun(
+                kind=CURSOR_KIND,
+                status="ok",
+                finished_at=datetime.utcnow(),
+                stats={"after_id": after_id},
+            )
+        )
+        # Храним только последнюю запись: история курсора никому не нужна, а
+        # расти она будет с каждым часовым инкрементом.
+        old = session.execute(
+            select(ScanRun.id)
+            .where(ScanRun.kind == CURSOR_KIND)
+            .order_by(ScanRun.id.desc())
+            .offset(1)
+        ).scalars().all()
+        if old:
+            session.query(ScanRun).filter(ScanRun.id.in_(old)).delete(synchronize_session=False)
+
+
 class CatalogSync:
     def __init__(self) -> None:
         self._running: str | None = None
@@ -218,40 +277,44 @@ class CatalogSync:
         log.info("Синхронизация %s завершена: %s", kind, stats)
         return stats
 
-    async def _do_full(self) -> dict[str, Any]:
+
+    async def _walk(self, after_id: int) -> tuple[int, int, list[int], int]:
+        """Идёт по каталогу от `after_id` до конца. Возвращает счётчики и курсор.
+
+        Курсор — id последнего увиденного тайтла, а не максимальный из
+        сохранённых: пропускать «мусорные» записи и потом начинать с них заново
+        значило бы топтаться на месте.
+        """
         total = skipped = 0
         touched: list[int] = []
+        cursor = after_id
         async with Anime365Client() as client:
-            async for batch in client.iter_catalog(after_id=0):
+            async for batch in client.iter_catalog(after_id=after_id):
                 with session_scope() as session:
                     saved, junk = _upsert_series(session, batch)
                 total += saved
                 skipped += junk
                 touched.extend(i["id"] for i in batch if not is_junk(i))
+                cursor = max(cursor, max(i["id"] for i in batch))
+        return total, skipped, touched, cursor
 
+    async def _do_full(self) -> dict[str, Any]:
+        total, skipped, touched, cursor = await self._walk(0)
         rebuild_fts_for(touched)
+        _save_cursor(cursor)
         return {"synced": total, "skipped_junk": skipped}
 
     async def _do_incremental(self) -> dict[str, Any]:
-        with session_scope() as session:
-            max_id = session.execute(select(Series.id).order_by(Series.id.desc()).limit(1)).scalar()
+        after_id = _load_cursor()
 
-        if max_id is None:
-            log.info("Каталог пуст — запускаю полную синхронизацию вместо инкрементальной")
+        if after_id is None:
+            log.info("Курсора нет — запускаю полную синхронизацию вместо инкрементальной")
             return await self._do_full()
 
-        total = skipped = 0
-        touched: list[int] = []
-        async with Anime365Client() as client:
-            async for batch in client.iter_catalog(after_id=max_id):
-                with session_scope() as session:
-                    saved, junk = _upsert_series(session, batch)
-                total += saved
-                skipped += junk
-                touched.extend(i["id"] for i in batch if not is_junk(i))
-
+        total, skipped, touched, cursor = await self._walk(after_id)
         rebuild_fts_for(touched)
-        return {"new": total, "skipped_junk": skipped, "after_id": max_id}
+        _save_cursor(cursor)
+        return {"new": total, "skipped_junk": skipped, "after_id": after_id}
 
     async def _do_airing(self) -> dict[str, Any]:
         async with Anime365Client() as client:
