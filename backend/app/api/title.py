@@ -6,7 +6,7 @@ import logging
 from typing import Annotated, Any
 
 import httpx
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel
 
 from app.api.deps import rate_limit
@@ -17,7 +17,12 @@ from app.models.catalog import Series
 from app.services.anime365 import Anime365Error, SubscriptionRequired
 from app.services.jellyfin import jellyfin
 from app.services.mapping_info import title_folder_paths
-from app.services.shikimori import ShikimoriError, get_details, get_relations
+from app.services.shikimori import (
+    ShikimoriError,
+    get_details,
+    get_relations,
+    studio_logo,
+)
 from app.services.title_service import build_title_page, get_embed, quality_refiner
 
 log = logging.getLogger(__name__)
@@ -143,6 +148,32 @@ async def series_details(series_id: int, refresh: Annotated[bool, Query()] = Fal
     if data is None:
         return {"available": False}
     return {**data, "available": True}
+
+
+@router.get(
+    "/shikimori/studio/{studio_id}",
+    # Картинка маленькая и запрашивается по одной на тайтл, но эндпоинт ходит
+    # в чужой сервис — без ограничителя его можно было бы использовать как
+    # генератор нагрузки на Шикимори.
+    dependencies=[Depends(rate_limit("studio_logo", limit=120, window=60))],
+)
+async def studio_logo_image(studio_id: int) -> Response:
+    """Логотип студии со своего домена.
+
+    Прямая ссылка на Шикимори не годится: CSP разрешает картинки только со
+    своего домена и зеркал Anime365, а прокси для обхода блокировок есть у
+    сервера, но не у браузера.
+    """
+    result = await studio_logo(studio_id)
+    if result is None:
+        raise ApiError(404, errors.SERIES_NOT_FOUND, "Логотип недоступен")
+    content, content_type = result
+    # Логотипы студий не меняются годами — пусть браузер не спрашивает заново.
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={"Cache-Control": "public, max-age=604800, immutable"},
+    )
 
 
 @router.get(

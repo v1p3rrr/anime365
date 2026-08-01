@@ -264,9 +264,18 @@ async def fetch_details(mal_id: int) -> dict[str, Any] | None:
         {
             "id": item.get("id"),
             "name": item.get("name") or "",
-            # Путь относительный, приписываем адрес — иначе картинка не
-            # загрузится, а alt-текста у логотипа нет.
-            "image": f"{BASE_URL}{item['image']}" if item.get("image") else None,
+            # Отдаём ССВОЙ адрес, а не адрес Шикимори: см. studio_logo().
+            # Признак наличия картинки берём из ответа — если её нет, ссылку
+            # не даём вовсе, иначе браузер получил бы 404 на каждый показ.
+            "image": (
+                f"/api/shikimori/studio/{item['id']}"
+                # У Шикимори «нет картинки» выражается не пустым полем, а
+                # ссылкой на заглушку (`/assets/globals/missing_original.jpg`).
+                # Принять её за настоящий логотип значит нарисовать серый
+                # прямоугольник вместо студии.
+                if item.get("image") and "missing" not in item["image"]
+                else None
+            ),
         }
         for item in (data.get("studios") or [])
         if item.get("name")
@@ -317,3 +326,44 @@ async def get_details(mal_id: int, force: bool = False) -> dict[str, Any] | None
     with session_scope() as session:
         session.merge(SeriesDetails(mal_id=mal_id, checked_at=datetime.utcnow(), **data))
     return data
+
+
+# Логотипы студий лежат по предсказуемому пути: id полностью определяет адрес.
+# Проверено на трёх студиях: 11 → /11.png, 95 → /95.png, 1591 → /1591.png
+# (в исходных ссылках есть ещё ?<таймстамп>, но он только для сброса кэша).
+STUDIO_LOGO_PATH = "/system/studios/original/{studio_id}.png"
+
+
+async def studio_logo(studio_id: int) -> tuple[bytes, str] | None:
+    """Логотип студии — байтами, чтобы отдать его со своего домена.
+
+    Зачем проксировать, а не ставить ссылку на Шикимори прямо в `<img>`:
+
+    * CSP разрешает картинки только со своего домена и зеркал Anime365.
+      Расширять её на чужой хост ради логотипа — плохой размен;
+    * у приложения настроен прокси для исходящих запросов, потому что
+      Anime365 и Шикимори бывают недоступны напрямую. Прокси есть у сервера,
+      но не у браузера — прямая ссылка не загрузилась бы даже там, где
+      сервер эти данные получает без труда.
+
+    Путь собирается из числа, а не из строки, пришедшей извне: подставить туда
+    посторонний адрес невозможно даже при испорченном кэше.
+    """
+    url = f"{BASE_URL}{STUDIO_LOGO_PATH.format(studio_id=int(studio_id))}"
+    try:
+        async with httpx.AsyncClient(
+            timeout=REQUEST_TIMEOUT,
+            headers={"User-Agent": settings.get_str("user_agent")},
+        ) as client:
+            response = await client.get(url, follow_redirects=True)
+    except httpx.HTTPError as exc:
+        log.info("Логотип студии %s не получен: %s", studio_id, exc)
+        return None
+
+    if response.status_code != 200:
+        return None
+    content_type = response.headers.get("content-type", "image/png").split(";")[0].strip()
+    # Отдавать что-то кроме картинки нельзя: это уйдёт в <img> на нашей странице.
+    if not content_type.startswith("image/"):
+        return None
+    return response.content, content_type

@@ -6,7 +6,7 @@
  * как чип, но ведёт себя предсказуемо.
  */
 .studio {
-  padding: 2px 8px 2px 4px;
+  padding: 3px 10px 3px 4px;
   border: 1px solid var(--mantine-color-default-border);
   border-radius: var(--mantine-radius-sm);
   background: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-6));
@@ -18,9 +18,22 @@
  * max-width страхует от совсем уж панорамных — такой логотип растянул бы строку.
  */
 .studioLogo {
-  height: 18px;
+  /* 45px — логотип должен читаться, а не угадываться. Ряд бейджей от
+     этого не разъезжается: блок студии в нём самый высокий и задаёт высоту
+     строки, остальные выравниваются по центру. */
+  height: 45px;
   width: auto;
-  max-width: 64px;
+  max-width: 160px;
   object-fit: contain;
   display: block;
+  /*
+   * Светлая подложка обязательна. Логотипы студий на Шикимори — почти всегда
+   * чёрный рисунок на прозрачном фоне, и на тёмной теме он сливается в пятно:
+   * проверено на Science SARU, логотип грузился, но разглядеть его было нельзя.
+   * Подложка светлая всегда, а не только в тёмной теме, — так логотип выглядит
+   * одинаково при переключении.
+   */
+  background: #fff;
+  border-radius: 2px;
+  padding: 1px 2px;
 }
