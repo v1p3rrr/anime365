@@ -138,6 +138,7 @@ class JellyfinClient:
         self._index_at: float = 0.0
         self._server_id: str | None = None
         self._user_id: str | None = None
+        self._effective_base: str | None = None
         self._lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ #
@@ -177,6 +178,46 @@ class JellyfinClient:
     def internal_base() -> str:
         return settings.get_str("jellyfin_url").rstrip("/")
 
+    async def effective_base(self) -> str:
+        """Адрес, на который на самом деле отвечает Jellyfin.
+
+        ⚠️ Нужно из-за редиректов, и это не теория: сервер за обратным прокси
+        обычно отвечает `301` с http на https. Следовать редиректу мало —
+        по стандарту при 301 клиент превращает `POST` в `GET`, и запрос на
+        добавление в коллекцию возвращал `405 Method Not Allowed`. То есть
+        чтение работало, а любое изменение молча не проходило.
+
+        Поэтому один раз спрашиваем публичный эндпоинт и запоминаем, куда нас
+        привели. Дальше все запросы идут сразу по конечному адресу, и
+        превращать POST уже не во что.
+
+        Настройку пользователя не трогаем: он мог указать http сознательно, а
+        мы лишь выясняем, куда этот адрес ведёт.
+        """
+        if self._effective_base:
+            return self._effective_base
+
+        base = self.internal_base()
+        if not base:
+            return base
+        probe = "/System/Info/Public"
+        try:
+            async with httpx.AsyncClient(
+                timeout=REQUEST_TIMEOUT, follow_redirects=True
+            ) as client:
+                response = await client.get(f"{base}{probe}")
+        except (httpx.HTTPError, ValueError, UnicodeError):
+            # Не смогли выяснить — работаем по настроенному адресу.
+            return base
+
+        final = str(response.url)
+        if final.endswith(probe):
+            final = final[: -len(probe)]
+        self._effective_base = final.rstrip("/") or base
+        if self._effective_base != base:
+            log.info("Jellyfin отвечает по адресу %s (в настройках %s)", self._effective_base, base)
+        return self._effective_base
+
     @staticmethod
     def public_base() -> str:
         """Адрес для ссылок. Без обратного прокси совпадает с внутренним."""
@@ -188,19 +229,22 @@ class JellyfinClient:
         self._index_at = 0.0
         self._server_id = None
         self._user_id = None
+        self._effective_base = None
 
     # ------------------------------------------------------------------ #
     # Запросы
     # ------------------------------------------------------------------ #
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        base = self.internal_base()
+        base = await self.effective_base()
         key = usable_key(settings.get_str("jellyfin_api_key"))
         if not base:
             return None
         headers = _auth_headers(key) if key else {}
         try:
-            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            async with httpx.AsyncClient(
+                timeout=REQUEST_TIMEOUT, follow_redirects=True
+            ) as client:
                 response = await client.get(f"{base}{path}", params=params, headers=headers)
         except (httpx.HTTPError, ValueError, UnicodeError) as exc:
             # Ловим шире сетевых сбоев намеренно: кривой адрес или заголовок
@@ -214,7 +258,14 @@ class JellyfinClient:
         try:
             return response.json()
         except ValueError:
-            log.warning("Jellyfin вернул не JSON на %s", path)
+            # Называем статус: без него самая частая причина — редирект,
+            # который клиент не выполнил, — выглядела как «сервер сломался».
+            log.warning(
+                "Jellyfin вернул не JSON на %s (статус %s, тип %s)",
+                path,
+                response.status_code,
+                response.headers.get("content-type"),
+            )
             return None
 
     async def server_id(self) -> str | None:
@@ -262,7 +313,26 @@ class JellyfinClient:
                     # У Season путь бывает пустым, если сезон виртуальный
                     # (файлов нет, метаданные есть). Сопоставлять нечем.
                     continue
-                index[_normalize(path)] = {"id": str(item_id), "type": str(item.get("Type") or "")}
+                normalized = _normalize(path)
+                meta = {"id": str(item_id), "type": str(item.get("Type") or "")}
+                index[normalized] = meta
+
+                # ⚠️ У фильмов Jellyfin держит в Path сам ВИДЕОФАЙЛ, а у
+                # сериалов и сезонов — папку. Проверено на живой библиотеке:
+                #   Series: /media/anime/akudama drive
+                #   Movie:  /media/anime_movies/maboroshi/maboroshi (2023) … .mkv
+                # Мы же сопоставляем по имени папки тайтла, поэтому фильмы не
+                # находились никогда — ни ссылка, ни добавление в коллекцию для
+                # них не работали, хотя для сериалов всё было в порядке.
+                #
+                # Поэтому у фильма регистрируем ещё и папку, в которой он лежит.
+                # Если в одной папке несколько фильмов, оставляем первый: выбрать
+                # «правильный» всё равно не из чего, а перезапись давала бы
+                # разный результат при каждом обходе.
+                if meta["type"] == "Movie":
+                    parent = normalized.rsplit("/", 1)[0]
+                    if parent and parent not in index:
+                        index[parent] = meta
 
             self._index = index
             self._index_at = time.monotonic()
@@ -346,13 +416,15 @@ class JellyfinClient:
         `ids` в API типом не ограничен, поэтому в одну коллекцию складываются и
         фильмы, и сериалы.
         """
-        base = self.internal_base()
+        base = await self.effective_base()
         key = usable_key(settings.get_str("jellyfin_api_key"))
         if not base or not key or not item_ids:
             return None
 
         try:
-            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            async with httpx.AsyncClient(
+                timeout=REQUEST_TIMEOUT, follow_redirects=True
+            ) as client:
                 response = await client.post(
                     f"{base}/Collections",
                     params={"name": name, "ids": ",".join(item_ids)},
@@ -439,12 +511,14 @@ class JellyfinClient:
 
     async def add_to_collection(self, collection_id: str, item_ids: list[str]) -> bool:
         """Добавляет элементы в уже существующую коллекцию."""
-        base = self.internal_base()
+        base = await self.effective_base()
         key = usable_key(settings.get_str("jellyfin_api_key"))
         if not base or not key or not item_ids:
             return False
         try:
-            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            async with httpx.AsyncClient(
+                timeout=REQUEST_TIMEOUT, follow_redirects=True
+            ) as client:
                 response = await client.post(
                     f"{base}/Collections/{collection_id}/Items",
                     params={"ids": ",".join(item_ids)},
@@ -518,7 +592,7 @@ class JellyfinClient:
         Обновление папки требует пути в терминах Jellyfin, а полное обновление
         у него инкрементальное — он сам смотрит только изменившееся.
         """
-        base = self.internal_base()
+        base = await self.effective_base()
         raw_key = settings.get_str("jellyfin_api_key")
         key = usable_key(raw_key)
         if not base or not raw_key:
@@ -529,7 +603,9 @@ class JellyfinClient:
 
         url = f"{base}/Library/Refresh"
         try:
-            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            async with httpx.AsyncClient(
+                timeout=REQUEST_TIMEOUT, follow_redirects=True
+            ) as client:
                 response = await client.post(url, headers=_auth_headers(key))
         except (httpx.HTTPError, ValueError, UnicodeError) as exc:
             detail = str(exc) or type(exc).__name__
