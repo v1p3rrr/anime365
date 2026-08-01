@@ -151,20 +151,20 @@ async def series_details(series_id: int, refresh: Annotated[bool, Query()] = Fal
 
 
 @router.get(
-    "/shikimori/studio/{studio_id}",
+    "/shikimori/studio/{studio_id}.{ext}",
     # Картинка маленькая и запрашивается по одной на тайтл, но эндпоинт ходит
     # в чужой сервис — без ограничителя его можно было бы использовать как
     # генератор нагрузки на Шикимори.
     dependencies=[Depends(rate_limit("studio_logo", limit=120, window=60))],
 )
-async def studio_logo_image(studio_id: int) -> Response:
+async def studio_logo_image(studio_id: int, ext: str) -> Response:
     """Логотип студии со своего домена.
 
     Прямая ссылка на Шикимори не годится: CSP разрешает картинки только со
     своего домена и зеркал Anime365, а прокси для обхода блокировок есть у
     сервера, но не у браузера.
     """
-    result = await studio_logo(studio_id)
+    result = await studio_logo(studio_id, ext)
     if result is None:
         raise ApiError(404, errors.SERIES_NOT_FOUND, "Логотип недоступен")
     content, content_type = result

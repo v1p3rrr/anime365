@@ -69,7 +69,19 @@ export function TitleDetails({ seriesId, availableEpisodes }: Props) {
         <Tooltip key={studio.id} label={t('title.studio', { name: studio.name })}>
           <Group gap={6} wrap="nowrap" className={classes.studio}>
             {studio.image && (
-              <img src={studio.image} alt="" loading="lazy" className={classes.studioLogo} />
+              <img
+                src={studio.image}
+                alt=""
+                loading="lazy"
+                className={classes.studioLogo}
+                // Логотип может не отдаться: кэш деталей живёт сутки, и после
+                // правки формата ссылки старые записи ещё какое-то время ведут
+                // в никуда. Значок сломанной картинки хуже, чем просто
+                // название студии, поэтому убираем элемент.
+                onError={(event) => {
+                  event.currentTarget.style.display = 'none'
+                }}
+              />
             )}
             <Text size="xs" fw={500}>
               {studio.name}

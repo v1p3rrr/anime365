@@ -74,6 +74,11 @@ async def _fetch(path: str) -> Any:
     return response.json()
 
 
+def _logo_ext(image_path: str) -> str:
+    """Расширение файла логотипа из пути вида `/system/studios/original/314.jpg?123`."""
+    return image_path.split("?")[0].rsplit(".", 1)[-1].lower()
+
+
 def _node(item: dict[str, Any]) -> dict[str, Any]:
     url = item.get("url") or ""
     return {
@@ -268,7 +273,7 @@ async def fetch_details(mal_id: int) -> dict[str, Any] | None:
             # Признак наличия картинки берём из ответа — если её нет, ссылку
             # не даём вовсе, иначе браузер получил бы 404 на каждый показ.
             "image": (
-                f"/api/shikimori/studio/{item['id']}"
+                f"/api/shikimori/studio/{item['id']}.{_logo_ext(item['image'])}"
                 # У Шикимори «нет картинки» выражается не пустым полем, а
                 # ссылкой на заглушку (`/assets/globals/missing_original.jpg`).
                 # Принять её за настоящий логотип значит нарисовать серый
@@ -328,13 +333,17 @@ async def get_details(mal_id: int, force: bool = False) -> dict[str, Any] | None
     return data
 
 
-# Логотипы студий лежат по предсказуемому пути: id полностью определяет адрес.
-# Проверено на трёх студиях: 11 → /11.png, 95 → /95.png, 1591 → /1591.png
-# (в исходных ссылках есть ещё ?<таймстамп>, но он только для сброса кэша).
-STUDIO_LOGO_PATH = "/system/studios/original/{studio_id}.png"
+# Расширения у логотипов РАЗНЫЕ, и это выяснилось не сразу: сперва путь был
+# зашит как `.png`, потому что три первые проверенные студии оказались png.
+# На деле у White Fox (314) и David Production (287) — `.jpg`, и логотипы у
+# Re:Zero и JoJo просто не грузились. Поэтому расширение приходит из ответа
+# API, а не додумывается, но принимается только из этого списка: в путь оно
+# подставляется, и пускать туда произвольную строку нельзя.
+STUDIO_LOGO_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "webp", "gif"})
+STUDIO_LOGO_PATH = "/system/studios/original/{studio_id}.{ext}"
 
 
-async def studio_logo(studio_id: int) -> tuple[bytes, str] | None:
+async def studio_logo(studio_id: int, ext: str) -> tuple[bytes, str] | None:
     """Логотип студии — байтами, чтобы отдать его со своего домена.
 
     Зачем проксировать, а не ставить ссылку на Шикимори прямо в `<img>`:
@@ -346,10 +355,14 @@ async def studio_logo(studio_id: int) -> tuple[bytes, str] | None:
       но не у браузера — прямая ссылка не загрузилась бы даже там, где
       сервер эти данные получает без труда.
 
-    Путь собирается из числа, а не из строки, пришедшей извне: подставить туда
-    посторонний адрес невозможно даже при испорченном кэше.
+    Путь собирается из числа и расширения из белого списка, а не из строки,
+    пришедшей извне: подставить туда посторонний адрес невозможно даже при
+    испорченном кэше.
     """
-    url = f"{BASE_URL}{STUDIO_LOGO_PATH.format(studio_id=int(studio_id))}"
+    ext = ext.lower().lstrip(".")
+    if ext not in STUDIO_LOGO_EXTENSIONS:
+        return None
+    url = f"{BASE_URL}{STUDIO_LOGO_PATH.format(studio_id=int(studio_id), ext=ext)}"
     try:
         async with httpx.AsyncClient(
             timeout=REQUEST_TIMEOUT,
