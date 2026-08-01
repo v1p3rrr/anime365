@@ -12,6 +12,7 @@ import logging
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.types import ASGIApp
 
 from app.core.security import SESSION_COOKIE, password_required, sessions
@@ -137,6 +138,18 @@ def install(app: ASGIApp) -> None:
     Нужно, чтобы заголовки безопасности навешивались и на ответы 401/403,
     поэтому SecurityHeaders добавляется последним и оказывается снаружи.
     """
+    # Сжатие добавляется ПЕРВЫМ, то есть оказывается самым внутренним — ближе
+    # всех к обработчику. Это не стилистика: остальные наши middleware сделаны
+    # на BaseHTTPMiddleware, а он превращает любой ответ в потоковый и теряет
+    # Content-Length. Снаружи от них GZip не знает размера тела и жмёт всё
+    # подряд, включая ответы в сотню байт, где сжатие дороже выигрыша.
+    #
+    # Замер, ради которого это вообще появилось: бандл интерфейса весит 876 КБ
+    # и уходил как есть — StaticFiles сам ничего не сжимает, а Accept-Encoding
+    # без middleware просто игнорируется. Со сжатием — 266 КБ, минус 70%.
+    # На загрузке и разборе этого файла уходило около 370 мс до первого
+    # запроса к API, то есть больше половины времени открытия страницы тайтла.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(AuthMiddleware)
     app.add_middleware(CsrfMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)

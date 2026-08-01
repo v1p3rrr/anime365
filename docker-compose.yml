@@ -31,6 +31,73 @@ services:
       - ALL_PROXY=${ALL_PROXY:-}
       - NO_PROXY=${NO_PROXY:-}
 
+      # --- Настройки приложения ---
+      #
+      # Перечислены здесь явно, а значения берутся из `.env` — так же, как
+      # прокси выше. Смысл в том, чтобы список того, чем вообще управляют,
+      # был виден в одном месте и лежал в репозитории, а значения — нет:
+      # `.env` в .gitignore, `docker-compose.yml` коммитится.
+      #
+      # `${VAR:-}` — «взять из окружения или .env, иначе пустая строка».
+      # Пустое значение приложение трактует как «не задано» и берёт значение
+      # по умолчанию из реестра настроек, поэтому лишние строки ничего не
+      # ломают: можно заполнить в `.env` только нужное.
+      #
+      # Приоритет: значение по умолчанию в коде < эта переменная < правка из UI.
+      # Помеченные «секрет» в интерфейс не отдаются — только маской.
+      #
+      # ⚠️ Список порождается из реестра настроек (backend/app/core/
+      # settings_registry.py). Добавили настройку — обновите и здесь;
+      # расхождение ловит tests/test_compose_env.py.
+
+      # --- Anime365 ---
+      - A365_BASE_URL=${A365_BASE_URL:-}
+      - A365_MIRRORS=${A365_MIRRORS:-}
+      - A365_ACCESS_TOKEN=${A365_ACCESS_TOKEN:-}  # секрет
+      - A365_USER_AGENT=${A365_USER_AGENT:-}
+      - A365_REQUEST_RATE_LIMIT=${A365_REQUEST_RATE_LIMIT:-}
+
+      # --- Пути внутри контейнера ---
+      - A365_SERIES_ROOT=${A365_SERIES_ROOT:-}
+      - A365_MOVIES_ROOT=${A365_MOVIES_ROOT:-}
+      - A365_AUDIO_ROOT=${A365_AUDIO_ROOT:-}
+      - A365_DOWNLOAD_TMP=${A365_DOWNLOAD_TMP:-}
+
+      # --- Загрузки ---
+      - A365_MAX_CONCURRENT_DOWNLOADS=${A365_MAX_CONCURRENT_DOWNLOADS:-}
+      - A365_PREFERRED_HEIGHT=${A365_PREFERRED_HEIGHT:-}
+      - A365_MAX_ATTEMPTS=${A365_MAX_ATTEMPTS:-}
+      - A365_RETRY_BACKOFF_BASE=${A365_RETRY_BACKOFF_BASE:-}
+      - A365_MIN_FREE_SPACE_GB=${A365_MIN_FREE_SPACE_GB:-}
+      - A365_SPEED_LIMIT_KBPS=${A365_SPEED_LIMIT_KBPS:-}
+      - A365_TRY_DIRECT_CDN=${A365_TRY_DIRECT_CDN:-}
+
+      # --- Расписания ---
+      - A365_CATALOG_REFRESH_HOURS=${A365_CATALOG_REFRESH_HOURS:-}
+      - A365_CATALOG_FULL_REFRESH_HOURS=${A365_CATALOG_FULL_REFRESH_HOURS:-}
+      - A365_LIBRARY_SCAN_HOURS=${A365_LIBRARY_SCAN_HOURS:-}
+      - A365_WATCH_FILESYSTEM=${A365_WATCH_FILESYSTEM:-}
+      - A365_WATCH_DEBOUNCE_SECONDS=${A365_WATCH_DEBOUNCE_SECONDS:-}
+
+      # --- Сопоставление папок с каталогом ---
+      - A365_FUZZY_AUTO_THRESHOLD=${A365_FUZZY_AUTO_THRESHOLD:-}
+      - A365_FUZZY_SUGGEST_THRESHOLD=${A365_FUZZY_SUGGEST_THRESHOLD:-}
+
+      # --- Права на создаваемые файлы ---
+      - A365_PUID=${A365_PUID:-}
+      - A365_PGID=${A365_PGID:-}
+      - A365_UMASK=${A365_UMASK:-}
+
+      # --- Безопасность ---
+      - A365_UI_PASSWORD=${A365_UI_PASSWORD:-}  # секрет
+
+      # --- Дополнительно ---
+      - A365_ENABLE_FFPROBE=${A365_ENABLE_FFPROBE:-}
+      - A365_ENABLE_JELLYFIN=${A365_ENABLE_JELLYFIN:-}
+      - A365_JELLYFIN_URL=${A365_JELLYFIN_URL:-}
+      - A365_JELLYFIN_PUBLIC_URL=${A365_JELLYFIN_PUBLIC_URL:-}
+      - A365_JELLYFIN_API_KEY=${A365_JELLYFIN_API_KEY:-}  # секрет
+
     volumes:
       - ./config:/config
       - ./data:/data
@@ -81,7 +148,14 @@ services:
           memory: 512M
 
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health"]
+      # На Python, а не curl: curl из образа убран намеренно — полноценный
+      # загрузчик внутри контейнера это готовый способ утащить что угодно
+      # извне. Python там есть в любом случае.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/api/health', timeout=4).status == 200 else 1)"
       interval: 30s
       timeout: 5s
       retries: 3

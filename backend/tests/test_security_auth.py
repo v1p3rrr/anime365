@@ -468,3 +468,32 @@ class TestTokenIsSentWithEveryRequest:
         assert seen[0]["access_token"] == "из-формы"
         # Служебный ключ наружу уходить не должен.
         assert "_token_override" not in seen[0]
+
+
+class TestCompression:
+    """Статика обязана отдаваться сжатой.
+
+    Замер показал, зачем это нужно: бандл интерфейса весит 876 КБ и уходил
+    как есть — `StaticFiles` сам ничего не сжимает, а `Accept-Encoding` без
+    middleware просто игнорируется. На загрузке и разборе этого файла уходило
+    около 370 мс до первого запроса к API, то есть больше половины времени
+    открытия страницы тайтла.
+    """
+
+    def test_large_response_is_gzipped(self, client) -> None:
+        response = client.get("/api/settings", headers={"Accept-Encoding": "gzip"})
+        assert response.status_code == 200
+        # httpx распаковывает прозрачно, поэтому смотрим на заголовок.
+        assert response.headers.get("content-encoding") == "gzip", (
+            "ответ не сжат — значит и бандл интерфейса уйдёт целиком"
+        )
+
+    def test_small_response_is_not_gzipped(self, client) -> None:
+        """У коротких ответов сжатие дороже выигрыша."""
+        response = client.get("/api/health", headers={"Accept-Encoding": "gzip"})
+        assert "content-encoding" not in response.headers
+
+    def test_security_headers_survive_compression(self, client) -> None:
+        """Сжатие добавлено под заголовками безопасности, а не над ними."""
+        response = client.get("/api/settings", headers={"Accept-Encoding": "gzip"})
+        assert "content-security-policy" in response.headers
