@@ -270,6 +270,7 @@ export const ja: Dictionary = {
     badgeInLibrary: 'ライブラリにあり',
     badgeCheckMapping: '要確認',
     cardOngoing: '放送中',
+    cardAnnounced: '放送予定',
     emptyNotSynced:
       'カタログがまだ同期されていません。右上の更新ボタンを押してください。1 分ほどかかります。',
     emptySearch:
@@ -343,6 +344,13 @@ export const ja: Dictionary = {
   },
 
   title: {
+    noEpisodesYet: 'Anime365 にはまだエピソードがありません。',
+    noEpisodesMovie: 'Anime365 にはまだこの映画がありません。',
+    studio: 'スタジオ: {name}',
+    nextEpisode: '次回 {date}',
+    aired: '放送済み {aired} 話',
+    airedWithGap: '放送済み {aired} 話・入手可能 {available} 話',
+    airsFrom: '{date} 放送開始',
     loadFailed: '作品を読み込めませんでした',
     notFound: '作品が見つかりません',
     allTitles: 'すべての名称',

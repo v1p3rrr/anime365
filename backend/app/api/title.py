@@ -17,7 +17,7 @@ from app.models.catalog import Series
 from app.services.anime365 import Anime365Error, SubscriptionRequired
 from app.services.jellyfin import jellyfin
 from app.services.mapping_info import title_folder_paths
-from app.services.shikimori import ShikimoriError, get_relations
+from app.services.shikimori import ShikimoriError, get_details, get_relations
 from app.services.title_service import build_title_page, get_embed, quality_refiner
 
 log = logging.getLogger(__name__)
@@ -116,6 +116,32 @@ async def series_relations(series_id: int, refresh: Annotated[bool, Query()] = F
             502, errors.RELATIONS_UNAVAILABLE, f"Шикимори недоступен: {exc}", reason=str(exc)
         ) from exc
 
+    return {**data, "available": True}
+
+
+@router.get(
+    "/series/{series_id}/details",
+    dependencies=[Depends(rate_limit("shiki_details", limit=60, window=60))],
+)
+async def series_details(series_id: int, refresh: Annotated[bool, Query()] = False):
+    """Студия, режиссёр и состояние выхода — то, чего нет в API Anime365.
+
+    Отдельным запросом по той же причине, что и связи: источник внешний, и его
+    недоступность не должна мешать открыть страницу. Отсутствие данных здесь
+    нормальный исход — отвечаем `available: false`, а не ошибкой.
+    """
+    with session_scope() as session:
+        series = session.get(Series, series_id)
+        if series is None:
+            raise ApiError(404, errors.SERIES_NOT_FOUND, "Тайтл не найден")
+        mal_id = series.mal_id
+
+    if not mal_id:
+        return {"available": False}
+
+    data = await get_details(mal_id, force=refresh)
+    if data is None:
+        return {"available": False}
     return {**data, "available": True}
 
 

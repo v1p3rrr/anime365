@@ -271,6 +271,7 @@ export const en: Dictionary = {
     badgeInLibrary: 'In library',
     badgeCheckMapping: 'check match',
     cardOngoing: 'airing',
+    cardAnnounced: 'Announced',
     emptyNotSynced:
       'The catalog has not been synced yet. Press the refresh button in the top right — it takes about a minute.',
     emptySearch:
@@ -344,6 +345,13 @@ export const en: Dictionary = {
   },
 
   title: {
+    noEpisodesYet: 'No episodes on Anime365 yet.',
+    noEpisodesMovie: 'The movie is not on Anime365 yet.',
+    studio: 'Studio: {name}',
+    nextEpisode: 'Next episode {date}',
+    aired: 'Episodes aired: {aired}',
+    airedWithGap: '{aired} aired, {available} available',
+    airsFrom: 'Airs from {date}',
     loadFailed: 'Could not load the title',
     notFound: 'Title not found',
     allTitles: 'All titles',

@@ -164,6 +164,8 @@ export interface CatalogCard {
   local: LocalBadges | null
   /** Привязка нечёткая и ждёт подтверждения — стоит проверить глазами. */
   mapping_problem: boolean
+  /** Анонсирован, но ещё не начал выходить: ни одной серии, и год не в прошлом. */
+  announced: boolean
 }
 
 export interface CatalogIdsResponse {

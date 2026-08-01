@@ -1,0 +1,99 @@
+import { Badge, Group, Image, Text, Tooltip } from '@mantine/core'
+import { useQuery } from '@tanstack/react-query'
+
+import { titleApi } from '../api/title'
+import { useT } from '../i18n'
+
+interface Props {
+  seriesId: number
+  /** Сколько серий у тайтла на Anime365 — чтобы заметить расхождение с фактом. */
+  availableEpisodes: number
+}
+
+/** Дата вида `2027-01-01` в местном формате. Без времени: его источник не даёт. */
+function useDate() {
+  const { locale } = useT()
+  return (iso: string | null | undefined) => {
+    if (!iso) return null
+    const parsed = new Date(iso)
+    if (Number.isNaN(parsed.getTime())) return null
+    return parsed.toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' })
+  }
+}
+
+/**
+ * Студия, состояние выхода и ход онгоинга — данные с Шикимори.
+ *
+ * Anime365 ничего этого не отдаёт: в каталоге есть `isAiring`, но он не
+ * отличает «ещё не вышло» от «давно закончилось», а `numberOfEpisodes` — это
+ * план, а не факт.
+ *
+ * Блок молча исчезает, если данных нет: у тайтла может не быть `mal_id`, а
+ * Шикимори может быть недоступен. Ради студии страницу тайтла не ломаем.
+ */
+export function TitleDetails({ seriesId, availableEpisodes }: Props) {
+  const { t } = useT()
+  const formatDate = useDate()
+
+  const query = useQuery({
+    queryKey: ['shikimori-details', seriesId],
+    queryFn: () => titleApi.details(seriesId),
+    staleTime: 60 * 60 * 1000,
+    retry: false,
+  })
+
+  const data = query.data
+  if (!data?.available) return null
+
+  const studios = data.studios ?? []
+  const aired = data.episodes_aired ?? null
+  // Расхождение важно назвать вслух: вышло 12, а скачать можно 9 — это разные
+  // числа, и молча показывать одно из них значит вводить в заблуждение.
+  const gap = aired !== null && aired > availableEpisodes
+
+  return (
+    <Group gap="xs" wrap="wrap">
+      {data.status === 'anons' && (
+        <Badge color="violet" variant="light">
+          {t('catalog.cardAnnounced')}
+        </Badge>
+      )}
+
+      {studios.map((studio) => (
+        <Tooltip key={studio.id} label={t('title.studio', { name: studio.name })}>
+          <Badge
+            variant="light"
+            color="gray"
+            leftSection={
+              studio.image ? (
+                <Image src={studio.image} h={14} w={14} fit="contain" alt="" />
+              ) : undefined
+            }
+          >
+            {studio.name}
+          </Badge>
+        </Tooltip>
+      ))}
+
+      {data.next_episode_at && (
+        <Badge color="blue" variant="light">
+          {t('title.nextEpisode', { date: formatDate(data.next_episode_at) ?? '' })}
+        </Badge>
+      )}
+
+      {aired !== null && aired > 0 && (
+        <Badge color={gap ? 'orange' : 'gray'} variant="light">
+          {gap
+            ? t('title.airedWithGap', { aired, available: availableEpisodes })
+            : t('title.aired', { aired })}
+        </Badge>
+      )}
+
+      {data.status === 'anons' && data.aired_on && (
+        <Text size="xs" c="dimmed">
+          {t('title.airsFrom', { date: formatDate(data.aired_on) ?? '' })}
+        </Text>
+      )}
+    </Group>
+  )
+}

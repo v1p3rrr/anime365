@@ -49,6 +49,7 @@ import { EpisodeRow } from '../components/EpisodeRow'
 import { ErrorState } from '../components/ErrorState'
 import { MappingPanel } from '../components/MappingPanel'
 import { TranslationGroups } from '../components/TranslationGroups'
+import { TitleDetails } from '../components/TitleDetails'
 import { useSeriesTypeLabel } from '../i18n/seriesType'
 import { useT, type TranslationKey } from '../i18n'
 import { LangTag } from '../components/Flag'
@@ -201,6 +202,14 @@ export function TitlePage() {
     data.episodes.filter((e) => e.is_content && e.episode_num != null).map((e) => e.episode_num!),
   )
   const hiddenCount = data.episodes.length - data.episodes.filter((e) => e.is_content).length
+  // То же правило, что на сервере (см. is_announced): ни одной серии-контента,
+  // не идёт сейчас, год не в прошлом. Дублировать его сюда пришлось потому, что
+  // карточка каталога и страница тайтла считаются разными эндпоинтами, а
+  // тащить признак через всю страницу ради одного условия — дороже.
+  const isAnnounced =
+    !data.episodes.some((e) => e.is_content) &&
+    !series.is_airing &&
+    (series.year == null || series.year >= new Date().getFullYear())
   // Частей у тайтла: по нему решается, связка это или одиночный фильм.
   const contentEpisodeCount = data.episodes.filter((e) => e.is_content).length
 
@@ -334,6 +343,10 @@ export function TitlePage() {
               </Tooltip>
             )}
           </Group>
+
+          {/* Студия, «Анонс» и ход онгоинга — отдельным запросом к Шикимори.
+              Блока может не быть вовсе: у тайтла может не быть mal_id. */}
+          <TitleDetails seriesId={series.id} availableEpisodes={data.total_episodes} />
 
           <Group gap={6} mt={4}>
             {data.genres.map((g) => (
@@ -512,6 +525,10 @@ export function TitlePage() {
         />
       </div>
 
+      {/* Раздела серий нет вовсе, когда на Anime365 нет ни одной записи —
+          даже трейлера. Пустая таблица с заголовками колонок выглядит как
+          сломавшаяся страница, а не как «ещё ничего не вышло». */}
+      {data.episodes.length > 0 ? (
       <div>
         <Group justify="space-between" align="center" mb="xs">
           <Title order={5}>{t('title.episodes')}</Title>
@@ -563,6 +580,16 @@ export function TitlePage() {
           </Table.ScrollContainer>
         </div>
       </div>
+      ) : (
+        /* Записей нет. У анонса это ожидаемо и уже сказано чипом выше, поэтому
+           повторяться незачем — а вот у вышедшего тайтла это значит, что на
+           Anime365 его просто ещё не выложили, и об этом стоит сказать прямо. */
+        !isAnnounced && (
+          <Alert color="gray">
+            {series.effective_is_movie ? t('title.noEpisodesMovie') : t('title.noEpisodesYet')}
+          </Alert>
+        )
+      )}
 
       <BindFolderModal
         opened={binding}

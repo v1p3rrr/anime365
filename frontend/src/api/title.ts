@@ -198,6 +198,8 @@ export interface RelationNode {
   series_id: number | null
   /** Наши названия — чтобы показать на языке интерфейса. */
   titles: Record<string, string> | null
+  /** Постер из нашего каталога. null — тайтла у нас нет, показывать нечего. */
+  poster_url_small: string | null
 }
 
 export interface RelationsResponse {
@@ -224,6 +226,27 @@ export interface JellyfinLink {
   missing?: Array<'url' | 'api_key'>
 }
 
+/**
+ * То, чего нет в API Anime365, — приходит с Шикимори отдельным запросом.
+ *
+ * `available: false` — нормальный исход, а не ошибка: у тайтла может не быть
+ * mal_id, а Шикимори может быть недоступен. Страница тайтла от этого не
+ * страдает, просто блок студии не рисуется.
+ */
+export interface ShikimoriDetails {
+  available: boolean
+  studios?: { id: number; name: string; image: string | null }[]
+  /** anons | ongoing | released — дословно как ответил источник. */
+  status?: string | null
+  aired_on?: string | null
+  released_on?: string | null
+  /** Сколько серий реально вышло. У Anime365 это план, а не факт. */
+  episodes_aired?: number | null
+  next_episode_at?: string | null
+  rating?: string | null
+  duration?: number | null
+}
+
 export const titleApi = {
   page: (id: number, refresh = false) =>
     api.get<TitlePageData>(`/series/${id}${refresh ? '?refresh=true' : ''}`),
@@ -233,6 +256,7 @@ export const titleApi = {
     ),
   relations: (seriesId: number) =>
     api.get<RelationsResponse>(`/series/${seriesId}/relations`),
+  details: (seriesId: number) => api.get<ShikimoriDetails>(`/series/${seriesId}/details`),
   jellyfin: (seriesId: number) => api.get<JellyfinLink>(`/series/${seriesId}/jellyfin`),
   audio: (seriesId: number) =>
     api.get<{ tracks: import('./library').AudioTrack[] }>(`/series/${seriesId}/audio`),

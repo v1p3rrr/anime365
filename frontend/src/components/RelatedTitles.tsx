@@ -105,6 +105,16 @@ export function RelatedTitles({ seriesId }: Props) {
 
               return (
                 <div key={node.mal_id} className={classes.row} data-current={current || undefined}>
+                  {/* Мини-постер: строка из одного текста плохо читается, а
+                      обложку глаз узнаёт быстрее названия. Тайтлы, которых нет
+                      в нашем каталоге, остаются без картинки — постер берётся
+                      оттуда, а не с Шикимори. */}
+                  <div className={classes.poster}>
+                    {node.poster_url_small && (
+                      <img src={node.poster_url_small} alt="" loading="lazy" />
+                    )}
+                  </div>
+
                   <Text size="xs" c="dimmed" className={classes.year}>
                     {node.year ?? '—'}
                   </Text>

@@ -237,6 +237,37 @@ class SeriesRelations(Base):
     checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
+class SeriesDetails(Base):
+    """Сведения о тайтле, которых нет в API Anime365, — из Шикимори.
+
+    Ключ тот же, что у связей: `mal_id`. Anime365 не отдаёт ни студию, ни
+    состояние выхода, а Шикимори отдаёт то и другое одним запросом
+    `/api/animes/{mal_id}` — отдельно ходить незачем.
+
+    `status` принимает значения `anons`, `ongoing`, `released` — это ответ
+    Шикимори дословно, без перевода в наши термины: пусть в базе лежит то, что
+    сказал источник, а трактовка живёт в коде.
+
+    `studios` — список как пришёл: `{id, name, image}`. Картинка отдаётся
+    относительным путём (`/system/studios/original/11.png?...`), поэтому при
+    показе к ней приписывается адрес Шикимори.
+    """
+
+    __tablename__ = "series_details"
+
+    mal_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    studios: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str | None] = mapped_column(String(32))
+    aired_on: Mapped[str | None] = mapped_column(String(16))
+    released_on: Mapped[str | None] = mapped_column(String(16))
+    episodes_aired: Mapped[int | None] = mapped_column(Integer)
+    rating: Mapped[str | None] = mapped_column(String(32))
+    duration: Mapped[int | None] = mapped_column(Integer)
+    # Дата следующей серии — только у онгоингов, у остальных пусто.
+    next_episode_at: Mapped[str | None] = mapped_column(String(32))
+    checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class SeriesTranslations(Base):
     """Какие типы переводов есть у тайтла НА САЙТЕ.
 

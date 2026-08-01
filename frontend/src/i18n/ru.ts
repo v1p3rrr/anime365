@@ -270,6 +270,7 @@ export const ru = {
     badgeInLibrary: 'В библиотеке',
     badgeCheckMapping: 'проверить привязку',
     cardOngoing: 'онгоинг',
+    cardAnnounced: 'Анонс',
     emptyNotSynced:
       'Каталог ещё не синхронизирован. Нажмите кнопку обновления справа сверху — это занимает около минуты.',
     emptySearch:
@@ -343,6 +344,13 @@ export const ru = {
   },
 
   title: {
+    noEpisodesYet: 'Серий на Anime365 пока нет.',
+    noEpisodesMovie: 'Фильма на Anime365 пока нет.',
+    studio: 'Студия: {name}',
+    nextEpisode: 'Следующая серия {date}',
+    aired: 'Вышло серий: {aired}',
+    airedWithGap: 'Вышло {aired}, доступно {available}',
+    airsFrom: 'Выход с {date}',
     loadFailed: 'Не удалось загрузить тайтл',
     notFound: 'Тайтл не найден',
     allTitles: 'Все названия',

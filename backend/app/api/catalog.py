@@ -20,11 +20,19 @@ from sqlalchemy import and_, func, or_, select
 
 from app.api.deps import rate_limit
 from app.core.db import session_scope
-from app.models.catalog import Genre, ScanRun, Series, SeriesGenre, SeriesTranslations
+from app.models.catalog import (
+    Episode,
+    Genre,
+    ScanRun,
+    Series,
+    SeriesGenre,
+    SeriesTranslations,
+)
 from app.models.library import TitleMapping
 from app.services.anime365 import Anime365Client, Anime365Error
 from app.services.catalog_sync import cache_series, catalog_sync
 from app.services.fts import search_ids
+from app.services.coverage import NON_CONTENT_EPISODE_TYPES, is_announced
 from app.services.mapping_info import series_badges
 
 log = logging.getLogger(__name__)
@@ -78,10 +86,16 @@ class CatalogCard(BaseModel):
     # Привязка есть, но она нечёткая и ждёт подтверждения. Ошибка привязки должна
     # быть видна в каталоге, а не обнаруживаться после того, как файлы уехали не туда.
     mapping_problem: bool = False
+    # Анонсирован, но ещё не выходит. Считается локально (см. is_announced):
+    # спрашивать Шикимори на каждую карточку нельзя — их сотня на экран.
+    announced: bool = False
 
 
 def _card(
-    series: Series, badges: dict[str, Any] | None, problem: bool = False
+    series: Series,
+    badges: dict[str, Any] | None,
+    problem: bool = False,
+    announced: bool = False,
 ) -> CatalogCard:
     titles = series.titles or {}
     return CatalogCard(
@@ -100,6 +114,7 @@ def _card(
         is_airing=series.is_airing,
         local=LocalBadges(**badges) if badges else None,
         mapping_problem=problem,
+        announced=announced,
     )
 
 
@@ -280,8 +295,28 @@ def catalog_cards(ids: Annotated[list[int], Body(embed=True)]) -> list[CatalogCa
                 )
             ).all()
         }
+        # Сколько у каждого тайтла серий-контента. Одним запросом на всё окно:
+        # считать по одному — сотня запросов на каждый шаг прокрутки.
+        counts = dict(
+            session.execute(
+                select(Episode.series_id, func.count(Episode.id))
+                .where(
+                    Episode.series_id.in_(ids),
+                    Episode.episode_type.notin_(NON_CONTENT_EPISODE_TYPES),
+                )
+                .group_by(Episode.series_id)
+            ).all()
+        )
         rows = session.execute(select(Series).where(Series.id.in_(ids))).scalars().all()
-        by_id = {s.id: _card(s, badges.get(s.id), s.id in problems) for s in rows}
+        by_id = {
+            s.id: _card(
+                s,
+                badges.get(s.id),
+                s.id in problems,
+                is_announced(s.year, s.is_airing, counts.get(s.id, 0)),
+            )
+            for s in rows
+        }
 
     return [by_id[i] for i in ids if i in by_id]
 

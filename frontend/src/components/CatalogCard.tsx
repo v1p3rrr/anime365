@@ -94,11 +94,17 @@ export function CatalogCard({ card, visibleBadges = DEFAULT_BADGES }: Props) {
           <PosterPlaceholder />
         )}
 
-        {card.is_airing && (
+        {/* «Идёт» и «анонс» взаимоисключающи по построению признака, поэтому
+            занимают один угол и никогда не наезжают друг на друга. */}
+        {card.is_airing ? (
           <Badge className={classes.cornerBadge} size="xs" color="red" variant="filled">
             {t('catalog.cardOngoing')}
           </Badge>
-        )}
+        ) : card.announced ? (
+          <Badge className={classes.cornerBadge} size="xs" color="violet" variant="filled">
+            {t('catalog.cardAnnounced')}
+          </Badge>
+        ) : null}
 
         {/* Тайтл заведён в библиотеке. Это не то же самое, что «скачан»:
             папка может быть привязана и пустой, и счётчики ниже покажут нули. */}

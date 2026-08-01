@@ -42,7 +42,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.db import session_scope
-from app.models.catalog import Series, SeriesRelations
+from app.models.catalog import Series, SeriesDetails, SeriesRelations
 
 log = logging.getLogger(__name__)
 
@@ -240,3 +240,80 @@ async def get_relations(mal_id: int, force: bool = False) -> dict[str, Any]:
         "current_mal_id": data["current_id"],
         "from_cache": False,
     }
+
+
+# Состояние выхода меняется куда чаще связей: анонс становится онгоингом, а
+# онгоинг — вышедшим. Неделя тут была бы слишком грубо.
+DETAILS_TTL = timedelta(days=1)
+
+
+async def fetch_details(mal_id: int) -> dict[str, Any] | None:
+    """Студии и состояние выхода — одним запросом `/api/animes/{mal_id}`.
+
+    Anime365 ни того ни другого не отдаёт: в каталоге есть `isAiring`, но он не
+    различает «ещё не вышло» и «уже закончилось» — у обоих он ноль.
+
+    Из ответа берём только нужное. Он большой: там же описание, скриншоты,
+    ролики, статистика оценок — всё это у нас уже есть из Anime365 или не нужно.
+    """
+    data = await _fetch(f"/api/animes/{mal_id}")
+    if not data:
+        return None
+
+    studios = [
+        {
+            "id": item.get("id"),
+            "name": item.get("name") or "",
+            # Путь относительный, приписываем адрес — иначе картинка не
+            # загрузится, а alt-текста у логотипа нет.
+            "image": f"{BASE_URL}{item['image']}" if item.get("image") else None,
+        }
+        for item in (data.get("studios") or [])
+        if item.get("name")
+    ]
+
+    return {
+        "studios": studios,
+        "next_episode_at": data.get("next_episode_at"),
+        "status": data.get("status"),
+        "aired_on": data.get("aired_on"),
+        "released_on": data.get("released_on"),
+        "episodes_aired": data.get("episodes_aired"),
+        "rating": data.get("rating"),
+        "duration": data.get("duration"),
+    }
+
+
+async def get_details(mal_id: int, force: bool = False) -> dict[str, Any] | None:
+    """Детали тайтла с кэшированием — как и связи, ради вежливости к источнику.
+
+    Молчаливый отказ здесь намеренный: студия и пометка «анонс» — приятное
+    дополнение, а не то, ради чего открывают страницу. Недоступность Шикимори
+    не должна её ронять.
+    """
+    if not force:
+        with session_scope() as session:
+            cached = session.get(SeriesDetails, mal_id)
+            if cached is not None and cached.checked_at > datetime.utcnow() - DETAILS_TTL:
+                return {
+                    "studios": list(cached.studios or []),
+                    "status": cached.status,
+                    "aired_on": cached.aired_on,
+                    "released_on": cached.released_on,
+                    "episodes_aired": cached.episodes_aired,
+                    "rating": cached.rating,
+                    "duration": cached.duration,
+                    "next_episode_at": cached.next_episode_at,
+                }
+
+    try:
+        data = await fetch_details(mal_id)
+    except (ShikimoriError, httpx.HTTPError) as exc:
+        log.info("Детали с Шикимори не получены для mal_id=%s: %s", mal_id, exc)
+        return None
+    if data is None:
+        return None
+
+    with session_scope() as session:
+        session.merge(SeriesDetails(mal_id=mal_id, checked_at=datetime.utcnow(), **data))
+    return data
