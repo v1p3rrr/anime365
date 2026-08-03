@@ -213,6 +213,14 @@ def update_settings(
 
         jellyfin.forget()
 
+    if "max_concurrent_downloads" in applied:
+        # Число воркеров читается при старте очереди, поэтому без перезапуска
+        # правка не делала бы ничего до перезапуска контейнера — а человек
+        # видел бы сохранённое значение и считал, что оно работает.
+        from app.services.download_queue import download_queue
+
+        download_queue.request_restart()
+
     if password_changed:
         issue_session_after_password_change(response, request)
 

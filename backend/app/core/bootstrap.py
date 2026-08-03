@@ -55,6 +55,9 @@ def bootstrap() -> None:
 
     load_settings_from_db()
 
+    # После загрузки настроек: имя и пароль администратора берутся из них.
+    ensure_admin_user()
+
     # Проверяем ПОСЛЕ загрузки слоя БД: действующее значение может прийти и из
     # переменной окружения, и из правки в UI. Проверка на эндпоинте настроек
     # ловит только второе — заданные в docker-compose пересекающиеся пути
@@ -74,6 +77,56 @@ def bootstrap() -> None:
             "Пароль на UI не задан: вход открыт всем, у кого есть доступ к порту. "
             "Через UI доступен премиум-токен и запись в файловую систему."
         )
+
+
+def ensure_admin_user() -> None:
+    """Приводит главного администратора в соответствие настройкам.
+
+    Зовётся ПОСЛЕ загрузки слоёв настроек: имя и пароль берутся из них, а на
+    момент `bootstrap()` слой БД ещё не прочитан.
+
+    Что делает:
+
+    * заводит пользователя с именем из `admin_login`, если такого нет;
+    * всегда держит его администратором — иначе достаточно снять галочку, чтобы
+      запереть себя снаружи;
+    * записывает ему пароль из `ui_password`. Тот же пароль продолжает работать
+      и без логина: вход по одному общему паролю никуда не делся, логин просто
+      добавляет к нему имя.
+
+    Пароль пересчитывается на каждый старт: он приходит из настроек, а те могли
+    смениться в `.env` между запусками, и старый хеш тогда врал бы.
+    """
+    from app.core.security import hash_password
+
+    login = (settings.get_str("admin_login") or "admin").strip()
+    password = settings.get_str("ui_password")
+    if not login:
+        return
+
+    with session_scope() as session:
+        user = session.execute(select(AppUser).where(AppUser.name == login)).scalar_one_or_none()
+        if user is None:
+            # Первым делом пробуем переименовать пользователя по умолчанию, а не
+            # плодить второго: задачи и права уже привязаны к нему, и новый
+            # администратор рядом со старым «default» только запутал бы.
+            user = session.get(AppUser, DEFAULT_USER_ID)
+            if user is not None and user.name == "default":
+                log.info("Пользователь по умолчанию переименован в %r", login)
+                user.name = login
+            else:
+                user = AppUser(name=login, is_admin=True, permissions=[])
+                session.add(user)
+                log.info("Заведён администратор %r", login)
+
+        user.is_admin = True
+        if password:
+            # Пароль в настройке может быть уже хешем (его туда мог положить UI)
+            # — второй раз хешировать нельзя, иначе войти станет невозможно.
+            user.password_hash = password if password.startswith("$argon2") else hash_password(
+                password
+            )
+        log.info("Вход по логину %r доступен: %s", login, "да" if password else "нет")
 
 
 def load_settings_from_db() -> None:

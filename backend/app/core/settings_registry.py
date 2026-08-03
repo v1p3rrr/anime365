@@ -454,6 +454,19 @@ SETTINGS: tuple[Setting, ...] = (
     ),
     # --- Безопасность ---
     Setting(
+        key="admin_login",
+        type=SettingType.STR,
+        default="admin",
+        group=SettingGroup.SECURITY,
+        label_ru="Логин администратора",
+        help_ru=(
+            "Имя, под которым вы входите. Пользователь с этим именем заводится при "
+            "старте и всегда остаётся администратором. Пароль ему задаёт соседняя "
+            "настройка; если её не заполнить, вход останется без логина — по одному "
+            "общему паролю."
+        ),
+    ),
+    Setting(
         key="ui_password",
         type=SettingType.STR,
         default="",

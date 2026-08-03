@@ -20,6 +20,7 @@ export const en: Dictionary = {
     features: 'Advanced',
   },
   settingLabel: {
+    admin_login: 'Administrator login',
     base_url: 'Mirror base address',
     mirrors: 'Mirror allowlist',
     access_token: 'Access token',
@@ -54,6 +55,7 @@ export const en: Dictionary = {
     jellyfin_api_key: 'Jellyfin API key',
   },
   settingHelp: {
+    admin_login: 'The name you sign in with. A user with this name is created at startup and always stays an administrator. The password comes from the setting below; leave it empty and login stays off — a single shared password as before.',
     base_url: 'Chosen from the list of known mirrors. embed always returns links to smotret-anime.org, so the host of download links is rewritten to the selected one.',
     mirrors: 'Comma-separated. Server-side only: it cannot be changed from the UI — that is the SSRF guard.',
     access_token: 'Token of an account with a premium subscription. Required to download video. Does not expire.',
@@ -230,6 +232,8 @@ export const en: Dictionary = {
   },
 
   login: {
+    login: 'Login',
+    loginHint: 'Can be left empty — then the shared password is used',
     title: 'Anime365 Downloader',
     hint: 'Enter the password set in settings or in the A365_UI_PASSWORD variable.',
     password: 'Password',

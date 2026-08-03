@@ -614,6 +614,10 @@ class DownloadQueue:
         self._stop = asyncio.Event()
         self._paused = False
         self._cancelled: set[int] = set()
+        # Цикл, в котором живут воркеры. Нужен, чтобы попросить перезапуск из
+        # синхронного обработчика: FastAPI выполняет их в отдельном потоке, где
+        # работающего цикла нет вовсе.
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     # ------------------------------------------------------------------ #
     # Управление
@@ -642,6 +646,12 @@ class DownloadQueue:
         self._cancelled.discard(task_id)
 
     def start(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
+        try:
+            self._loop = loop or asyncio.get_running_loop()
+        except RuntimeError:
+            # Запуск вне цикла бывает в тестах — там перезапускать нечего.
+            self._loop = None
+
         count = settings.get_int("max_concurrent_downloads")
         # 0 означает «без ограничения», но бесконечных воркеров не бывает:
         # берём разумный потолок, иначе сотня параллельных загрузок положит сеть.
@@ -664,6 +674,37 @@ class DownloadQueue:
         for worker in self._workers:
             worker.cancel()
         self._workers.clear()
+
+    def worker_count(self) -> int:
+        """Сколько воркеров загрузки сейчас живо. Постобработка не в счёт."""
+        # Последний в списке — воркер постобработки, он всегда один.
+        return max(0, len(self._workers) - 1)
+
+    def request_restart(self) -> bool:
+        """Просит перезапустить воркеров. Безопасно из синхронного кода.
+
+        Возвращает False, если цикла нет — тогда перезапускать нечего и звать
+        было неоткуда.
+        """
+        if self._loop is None or self._loop.is_closed():
+            return False
+        asyncio.run_coroutine_threadsafe(self.restart(), self._loop)
+        return True
+
+    async def restart(self) -> None:
+        """Перезапускает воркеров под текущее значение настройки.
+
+        Нужно потому, что число воркеров читается один раз при старте: без
+        этого правка «параллельных загрузок» в интерфейсе не делала ничего до
+        перезапуска контейнера, и человек видел сохранённое значение, которое
+        ни на что не влияет.
+
+        Активные загрузки при этом не теряются: воркер снимается между
+        задачами, а незавершённые задачи возвращаются в очередь тем же
+        механизмом, что и после перезапуска контейнера, — с докачкой по Range.
+        """
+        await self.stop()
+        self.start()
 
     # ------------------------------------------------------------------ #
     # Воркер

@@ -19,6 +19,7 @@ export const ja: Dictionary = {
     features: '詳細',
   },
   settingLabel: {
+    admin_login: '管理者のログイン名',
     base_url: 'ミラーのベースアドレス',
     mirrors: 'ミラー許可リスト',
     access_token: 'アクセストークン',
@@ -53,6 +54,7 @@ export const ja: Dictionary = {
     jellyfin_api_key: 'Jellyfin API キー',
   },
   settingHelp: {
+    admin_login: 'サインインに使う名前です。この名前のユーザーは起動時に作成され、常に管理者のままです。パスワードは下の設定から取られます。空のままならログイン名は使われず、従来どおり共通パスワードのみになります。',
     base_url: '既知のミラーから選択します。embed は常に smotret-anime.org のリンクを返すため、ダウンロードリンクのホストは選択したミラーへ書き換えられます。',
     mirrors: 'カンマ区切り。サーバー側でのみ設定します。UI からは変更できません（SSRF 対策）。',
     access_token: 'プレミアム購読アカウントのトークン。動画のダウンロードに必要です。有効期限はありません。',
@@ -229,6 +231,8 @@ export const ja: Dictionary = {
   },
 
   login: {
+    login: 'ログイン名',
+    loginHint: '空欄でも構いません。その場合は共通パスワードでの入室になります',
     title: 'Anime365 Downloader',
     hint: '設定または A365_UI_PASSWORD で指定したパスワードを入力してください。',
     password: 'パスワード',

@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass
 
 from argon2 import PasswordHasher
+from sqlalchemy import select
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
 from app.core.config import settings
@@ -29,6 +30,10 @@ SESSION_TTL_SECONDS = 30 * 24 * 3600
 # миллисекунд — для формы логина это незаметно, для перебора смертельно.
 _hasher = PasswordHasher()
 
+# Хеш заведомо недостижимого пароля — только чтобы тратить время на проверке
+# несуществующего пользователя. Значение неважно, важна стоимость.
+_DUMMY_HASH = _hasher.hash("нет такого пользователя")
+
 # Полноценный argon2-хеш всегда начинается с `$argon2`. Всё остальное считаем
 # паролем в открытом виде: так `A365_UI_PASSWORD=secret` в docker-compose
 # работает без предварительного хеширования руками.
@@ -37,6 +42,40 @@ HASH_PREFIX = "$argon2"
 
 def hash_password(plain: str) -> str:
     return _hasher.hash(plain)
+
+
+def verify_user(login: str, plain: str) -> int | None:
+    """Проверяет пару логин-пароль. Возвращает id пользователя или None.
+
+    Пароль хранится argon2-хешем у самого пользователя. Пустой хеш означает,
+    что под этим именем входить нельзя: такая запись существует только как
+    владелец задач и прав.
+
+    Сравнение идёт всегда, даже когда пользователя нет: иначе по времени ответа
+    было бы видно, какие имена существуют, — а это половина подбора.
+    """
+    from app.core.db import session_scope
+    from app.models import AppUser
+
+    with session_scope() as session:
+        user = session.execute(
+            select(AppUser).where(AppUser.name == login.strip())
+        ).scalar_one_or_none()
+        stored = user.password_hash if user is not None else None
+        user_id = user.id if user is not None else None
+
+    if not stored:
+        # Холостая проверка, чтобы время ответа не выдавало отсутствие записи.
+        try:
+            _hasher.verify(_DUMMY_HASH, plain)
+        except (VerifyMismatchError, InvalidHashError):
+            pass
+        return None
+
+    try:
+        return user_id if _hasher.verify(stored, plain) else None
+    except (VerifyMismatchError, InvalidHashError):
+        return None
 
 
 def verify_password(plain: str) -> bool:
