@@ -217,7 +217,10 @@ def _already_local(translation_ids: list[int]) -> dict[int, set[str]]:
     "/batch",
     # Один батч — до 2000 задач. Десяток таких подряд забьёт диск быстрее,
     # чем пользователь успеет заметить, поэтому частота ограничена.
-    dependencies=[Depends(rate_limit("batch", limit=20, window=60))],
+    dependencies=[
+        Depends(require(Permission.DOWNLOADS)),
+        Depends(rate_limit("batch", limit=20, window=60)),
+    ],
 )
 def create_batch(payload: BatchRequest) -> dict[str, Any]:
     """Пакетная постановка: «все видео», «все субтитры», «видео и субтитры»."""

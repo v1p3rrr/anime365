@@ -18,6 +18,7 @@ from app.core.security import (
     SESSION_COOKIE,
     SESSION_TTL_SECONDS,
     login_limiter,
+    login_name_limiter,
     password_required,
     sessions,
     verify_password,
@@ -71,7 +72,17 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
         return {"ok": True, "password_required": False}
 
     key = _client_key(request)
-    wait = login_limiter.check(key)
+    # Имя нормализуем: иначе «Admin» и «admin » считались бы разными целями и
+    # обходили счётчик простой сменой регистра.
+    name_key = (payload.login or "").strip().casefold()
+
+    # Два счётчика, и оба обязательны. Только по адресу — ботнет размазывает
+    # попытки по сотне машин, и каждая остаётся в пределах лимита. Только по
+    # имени — достаточно долбиться в чужой логин, чтобы запереть его владельца.
+    wait = max(
+        login_limiter.check(key),
+        login_name_limiter.check(name_key) if name_key else 0.0,
+    )
     if wait > 0:
         response.status_code = 429
         return {"ok": False, "detail": f"Слишком много попыток, подождите {int(wait) + 1} с"}
@@ -87,11 +98,14 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
 
     if not ok:
         login_limiter.register_failure(key)
+        if name_key:
+            login_name_limiter.register_failure(name_key)
         # Пауза бьёт по скорости перебора сильнее, чем лимит: даже в пределах
         # разрешённых попыток быстрее секунды не выйдет.
         await asyncio.sleep(1.0)
-        # Имя в лог не пишем: в него легко по ошибке ввести пароль, а лог
-        # читают и хранят дольше, чем стоило бы хранить такую ошибку.
+        # Ни имени, ни пароля в лог: в поле логина легко по ошибке ввести
+        # пароль, а лог читают и хранят дольше, чем стоило бы хранить такую
+        # ошибку. Адреса достаточно, чтобы заметить перебор.
         log.warning("Неудачная попытка входа с %s", key)
         response.status_code = 401
         # Формулировка одна на оба случая: «такого пользователя нет» подсказало
@@ -99,8 +113,12 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
         return {"ok": False, "detail": "Неверный логин или пароль"}
 
     login_limiter.reset(key)
+    if name_key:
+        login_name_limiter.reset(name_key)
     token = sessions.create(user_id) if user_id is not None else sessions.create()
     _set_cookie(response, token, secure=request.url.scheme == "https")
+    # Имя не пишем и здесь: журнал входов — отдельная задача, и делать его
+    # побочным эффектом отладочной строки неправильно.
     log.info("Успешный вход с %s", key)
     return {"ok": True, "password_required": True}
 

@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from app.core.permissions import Permission, require
 from sqlalchemy import text
 
 from app.core.db import session_scope
@@ -16,7 +18,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/maintenance", tags=["service"])
 
 
-@router.post("/purge-junk")
+@router.post("/purge-junk", dependencies=[Depends(require(Permission.SETTINGS))])
 def purge_junk() -> dict[str, Any]:
     """Удаляет пустые записи каталога, попавшие в БД до появления фильтра.
 
@@ -46,6 +48,8 @@ def purge_junk() -> dict[str, Any]:
     return {"deleted": len(ids), "ids": ids[:50]}
 
 
-@router.post("/rebuild-search-index")
+@router.post(
+    "/rebuild-search-index", dependencies=[Depends(require(Permission.SETTINGS))]
+)
 def rebuild_search_index() -> dict[str, Any]:
     return {"indexed": rebuild_all()}

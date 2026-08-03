@@ -93,7 +93,7 @@ def _live_hints() -> dict[str, str]:
     return out
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require(Permission.SETTINGS))])
 def list_settings() -> dict[str, Any]:
     """Все настройки с текущими значениями и источником каждого."""
     items = settings.describe_all()
@@ -313,7 +313,11 @@ async def test_token(payload: TokenCheckRequest | None = None) -> dict[str, Any]
     }
 
 
-@router.get("/env-example", response_class=Response)
+@router.get(
+    "/env-example",
+    response_class=Response,
+    dependencies=[Depends(require(Permission.SETTINGS))],
+)
 def env_example() -> Response:
     """`.env.example`, сгенерированный из реестра.
 

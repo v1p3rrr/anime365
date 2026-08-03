@@ -171,27 +171,47 @@ sessions = SessionStore()
 
 
 class AttemptLimiter:
-    """Скользящее окно неудачных попыток по IP.
+    """Скользящее окно неудачных попыток.
 
-    Нужен именно на логине: пароль один на всех, поэтому его подбор — самый
-    дешёвый путь внутрь. Задержка на неудаче добивает остаток скорости перебора.
+    Нужен именно на логине: подбор пароля — самый дешёвый путь внутрь. Задержка
+    на неудаче добивает остаток скорости перебора.
+
+    Ключ передаёт вызывающий, и на логине их два: адрес и имя пользователя.
+    Только по адресу мало — ботнет распределяет попытки по сотне адресов, и
+    каждый остаётся в пределах лимита, пока пароль одной учётки перебирается
+    как ни в чём не бывало. Только по имени тоже мало: тогда достаточно
+    долбиться в чужой логин, чтобы запереть его владельца.
+
+    Задержка растёт: после исчерпания лимита окно удваивается за каждый
+    следующий промах, до потолка. Разовая ошибка человека стоит ему минут, а
+    перебор упирается в часы.
     """
 
-    def __init__(self, limit: int = 10, window: float = 300.0) -> None:
+    def __init__(
+        self, limit: int = 10, window: float = 300.0, max_window: float = 3600.0
+    ) -> None:
         self.limit = limit
         self.window = window
+        self.max_window = max_window
         self._lock = threading.Lock()
         self._attempts: dict[str, list[float]] = {}
+
+    def _window_for(self, failures: int) -> float:
+        """Окно с удвоением после каждого промаха сверх лимита."""
+        extra = max(0, failures - self.limit)
+        return min(self.window * (2**extra), self.max_window)
 
     def check(self, key: str) -> float:
         """Возвращает 0, если попытка разрешена, иначе — сколько секунд ждать."""
         now = time.time()
         with self._lock:
-            hits = [t for t in self._attempts.get(key, []) if now - t < self.window]
+            recorded = self._attempts.get(key, [])
+            window = self._window_for(len(recorded))
+            hits = [t for t in recorded if now - t < window]
             self._attempts[key] = hits
             if len(hits) < self.limit:
                 return 0.0
-            return self.window - (now - hits[0])
+            return window - (now - hits[0])
 
     def register_failure(self, key: str) -> None:
         now = time.time()
@@ -203,7 +223,13 @@ class AttemptLimiter:
             self._attempts.pop(key, None)
 
 
+#: По адресу — против перебора с одной машины.
 login_limiter = AttemptLimiter()
+
+#: По имени пользователя — против перебора, размазанного по многим адресам.
+#: Лимит выше, чем по адресу: у семьи один внешний адрес на всех, и общий
+#: счётчик по нему исчерпывался бы чужими опечатками.
+login_name_limiter = AttemptLimiter(limit=20, window=300.0)
 
 
 class RateLimiter:

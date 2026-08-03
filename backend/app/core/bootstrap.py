@@ -112,12 +112,12 @@ def ensure_admin_user() -> None:
             # администратор рядом со старым «default» только запутал бы.
             user = session.get(AppUser, DEFAULT_USER_ID)
             if user is not None and user.name == "default":
-                log.info("Пользователь по умолчанию переименован в %r", login)
+                log.info("Пользователь по умолчанию стал администратором")
                 user.name = login
             else:
                 user = AppUser(name=login, is_admin=True, permissions=[])
                 session.add(user)
-                log.info("Заведён администратор %r", login)
+                log.info("Заведена учётная запись администратора")
 
         user.is_admin = True
         if password:
@@ -126,7 +126,9 @@ def ensure_admin_user() -> None:
             user.password_hash = password if password.startswith("$argon2") else hash_password(
                 password
             )
-        log.info("Вход по логину %r доступен: %s", login, "да" if password else "нет")
+        # Имя администратора в лог не пишем: логи читают и хранят, а это
+        # половина учётных данных. Достаточно сказать, готов вход или нет.
+        log.info("Учётная запись администратора настроена, пароль задан: %s", "да" if password else "нет")
 
 
 def load_settings_from_db() -> None:

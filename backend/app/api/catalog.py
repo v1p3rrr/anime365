@@ -15,6 +15,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from app.core import errors
 from app.core.errors import ApiError
+from app.core.permissions import Permission, require
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, select
 
@@ -373,7 +374,7 @@ class SyncRequest(BaseModel):
     mode: str = Field("incremental", pattern="^(full|incremental|airing)$")
 
 
-@router.post("/sync")
+@router.post("/sync", dependencies=[Depends(require(Permission.SETTINGS))])
 async def trigger_sync(payload: SyncRequest) -> dict[str, Any]:
     if catalog_sync.running:
         raise ApiError(

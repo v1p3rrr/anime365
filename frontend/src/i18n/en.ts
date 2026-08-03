@@ -20,7 +20,7 @@ export const en: Dictionary = {
     features: 'Advanced',
   },
   settingLabel: {
-    admin_login: 'Administrator login',
+    admin_login: 'The name you sign in with. A user with this name is created at startup and always stays an administrator, so an unchecked box cannot lock you out. Its password comes from the setting below.',
     base_url: 'Mirror base address',
     mirrors: 'Mirror allowlist',
     access_token: 'Access token',
@@ -55,7 +55,7 @@ export const en: Dictionary = {
     jellyfin_api_key: 'Jellyfin API key',
   },
   settingHelp: {
-    admin_login: 'The name you sign in with. A user with this name is created at startup and always stays an administrator. The password comes from the setting below; leave it empty and login stays off — a single shared password as before.',
+    admin_login: 'The name you sign in with. A user with this name is created at startup and always stays an administrator, so an unchecked box cannot lock you out. Its password comes from the setting below.',
     base_url: 'Chosen from the list of known mirrors. embed always returns links to smotret-anime.org, so the host of download links is rewritten to the selected one.',
     mirrors: 'Comma-separated. Server-side only: it cannot be changed from the UI — that is the SSRF guard.',
     access_token: 'Token of an account with a premium subscription. Required to download video. Does not expire.',
@@ -175,8 +175,8 @@ export const en: Dictionary = {
     everything: 'everything',
     adminHint: 'Can do everything, including settings and user management',
     password: 'Password',
-    passwordHint: 'Optional: while the login is shared, it is not used',
-    noPassword: 'no password set',
+    passwordHint: 'Without a password this name cannot sign in — the record stays an owner of tasks and permissions only',
+    noPassword: 'cannot sign in: no password set',
     lastAdmin: 'This is the last administrator — nobody would be left to manage permissions',
     singleUserHint:
       'Every account is an administrator, so permissions have no effect yet. They start applying once there is at least one regular user.',

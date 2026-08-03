@@ -138,3 +138,64 @@ class TestLoginEndpoint:
         _, password = admin
         assert client.post("/api/auth/login", json={"password": password}).status_code == 200
         assert client.get("/api/settings").status_code == 200
+
+
+class TestBruteForceProtection:
+    """Защита формы входа.
+
+    Подбор пароля — самый дешёвый путь внутрь, и мешать ему надо в нескольких
+    местах сразу: лимит по адресу, лимит по имени, растущая пауза и задержка на
+    каждой неудаче.
+    """
+
+    def test_ip_limit_blocks_after_burst(self, client, admin) -> None:
+        from app.core.security import login_limiter, login_name_limiter
+
+        login_limiter.reset("testclient")
+        login_name_limiter.reset("бочка")
+        try:
+            codes = [
+                client.post(
+                    "/api/auth/login", json={"login": "бочка", "password": f"мимо-{i}"}
+                ).status_code
+                for i in range(login_limiter.limit + 1)
+            ]
+            # Первые попытки отвергаются как неверные, последняя — как частые.
+            assert 429 in codes, "перебор не упёрся в ограничитель"
+        finally:
+            login_limiter.reset("testclient")
+            login_name_limiter.reset("бочка")
+
+    def test_window_grows_with_each_failure(self) -> None:
+        """Пауза удваивается: разовая ошибка стоит минут, перебор — часов."""
+        from app.core.security import AttemptLimiter
+
+        limiter = AttemptLimiter(limit=2, window=10.0, max_window=100.0)
+        assert limiter._window_for(2) == 10.0
+        assert limiter._window_for(3) == 20.0
+        assert limiter._window_for(4) == 40.0
+        # Потолок обязателен: иначе окно уходит в бесконечность и запирает
+        # владельца навсегда.
+        assert limiter._window_for(20) == 100.0
+
+    def test_name_key_is_normalized(self, client, admin) -> None:
+        """Смена регистра не должна обходить счётчик по имени."""
+        from app.core.security import login_name_limiter
+
+        login_name_limiter.reset("бочка")
+        try:
+            client.post("/api/auth/login", json={"login": "БОЧКА", "password": "мимо"})
+            client.post("/api/auth/login", json={"login": " Бочка ", "password": "мимо"})
+            assert len(login_name_limiter._attempts.get("бочка", [])) == 2
+        finally:
+            login_name_limiter.reset("бочка")
+
+    def test_successful_login_clears_counters(self, client, admin) -> None:
+        from app.core.security import login_limiter, login_name_limiter
+
+        login, password = admin
+        client.post("/api/auth/login", json={"login": login, "password": "мимо"})
+        client.post("/api/auth/login", json={"login": login, "password": password})
+
+        assert not login_limiter._attempts.get("testclient")
+        assert not login_name_limiter._attempts.get(login.casefold())

@@ -85,7 +85,12 @@ def _pick_stream_url(embed_stream: list[dict[str, Any]], height: int | None) -> 
     "/{translation_id}/video",
     # Плеер открывает поток один раз и потом тянет диапазоны по тому же URL,
     # но каждый новый запрос — это обращение к embed. Ограничиваем частоту.
-    dependencies=[Depends(rate_limit("stream", limit=60, window=60))],
+    dependencies=[
+        # Просмотр — отдельное право: роль «пусть смотрит, но ничего не качает»
+        # без него не имела бы смысла, а видео шло бы любому вошедшему.
+        Depends(require(Permission.WATCH)),
+        Depends(rate_limit("stream", limit=60, window=60)),
+    ],
 )
 async def stream_video(
     translation_id: int,
@@ -159,8 +164,14 @@ async def stream_video(
 # определяет формат по РАСШИРЕНИЮ адреса (`getExt(url) === "ass"`), и на пути
 # без него молча ничего не грузит. Оставляем оба: старый уже мог где-то
 # сохраниться, а ломать работающие ссылки ради нового ни к чему.
-@router.get("/{translation_id}/subtitles.ass")
-@router.get("/{translation_id}/subtitles")
+@router.get(
+    "/{translation_id}/subtitles.ass",
+    dependencies=[Depends(require(Permission.WATCH))],
+)
+@router.get(
+    "/{translation_id}/subtitles",
+    dependencies=[Depends(require(Permission.WATCH))],
+)
 async def stream_subtitles(translation_id: int) -> Response:
     """Файл субтитров перевода.
 

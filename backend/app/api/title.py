@@ -13,6 +13,7 @@ from app.api.deps import rate_limit
 from app.core import errors
 from app.core.db import session_scope
 from app.core.errors import ApiError
+from app.core.permissions import Permission, require
 from app.models.catalog import Series
 from app.services.anime365 import Anime365Error, SubscriptionRequired
 from app.services.jellyfin import jellyfin
@@ -74,7 +75,10 @@ async def translation_embed(
     "/series/{series_id}/refine-quality",
     # Один запрос к Anime365 на серию: у длинного тайтла это сотни обращений,
     # и повторять их подряд незачем.
-    dependencies=[Depends(rate_limit("refine-quality", limit=5, window=60))],
+    dependencies=[
+        Depends(require(Permission.DOWNLOADS)),
+        Depends(rate_limit("refine-quality", limit=5, window=60)),
+    ],
 )
 async def refine_quality(series_id: int) -> dict[str, Any]:
     """Заменяет оценку качества точными ступенями скачивания.
@@ -231,7 +235,10 @@ class TreatAsMovieRequest(BaseModel):
     treat_as_movie: bool | None = None
 
 
-@router.put("/series/{series_id}/treat-as-movie")
+@router.put(
+    "/series/{series_id}/treat-as-movie",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
 def set_treat_as_movie(series_id: int, payload: TreatAsMovieRequest) -> dict[str, Any]:
     """Считать тайтл фильмом или сериалом.
 
