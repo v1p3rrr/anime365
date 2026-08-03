@@ -434,6 +434,8 @@ export const ja: Dictionary = {
   },
 
   episode: {
+    audioFromSub: '日本語音声',
+    audioFromSubHint: '日本語トラックを抽出します。字幕版もローも同じトラックなので、セクションにつきボタンは 1 つです。同じ話数の重複抽出は拒否されます。',
     playLocal: 'ダウンロード済みを再生',
     playLocalTitle: 'ダウンロード済み — {episode}',
     playLocalFile: 'ファイル',

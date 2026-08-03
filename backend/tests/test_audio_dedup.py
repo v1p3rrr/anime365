@@ -69,3 +69,74 @@ class TestAlreadyExtracted:
         with session_scope() as session:
             session.get(DownloadTask, task_id).status = TaskStatus.DOWNLOADING
         assert existing_audio_path(TRANSLATION) is None
+
+
+class TestJapaneseTrackIsSharedByEpisode:
+    """Японская дорожка у серии одна, сколько бы переводов её ни несли.
+
+    Перевод с субтитрами — это то же видео с той же японской дорожкой, что и
+    равка. Извлекать её отдельно с каждого значило бы разложить рядом несколько
+    одинаковых файлов. У озвучек наоборот: RU и EN у разных студий разные, и
+    вторая озвучка той же серии — другая дорожка, а не дубль.
+    """
+
+    SERIES = 770001
+
+    def _done_audio(self, tmp_path, translation_id: int, lang: str, episode: float):
+        target = tmp_path / f"Тайтл - {episode:g} [{lang}].m4a"
+        target.write_bytes(b"audio")
+        with session_scope() as session:
+            session.add(
+                DownloadTask(
+                    translation_id=translation_id,
+                    series_id=self.SERIES,
+                    episode=episode,
+                    lang=lang,
+                    kind="audio",
+                    status=TaskStatus.DONE,
+                    target_path=str(target),
+                    series_title="Тайтл",
+                )
+            )
+        return target
+
+    def _pending(self, translation_id: int, lang: str, episode: float):
+        """Запись о переводе, для которого мы спрашиваем «уже есть ли звук»."""
+        with session_scope() as session:
+            session.add(
+                DownloadTask(
+                    translation_id=translation_id,
+                    series_id=self.SERIES,
+                    episode=episode,
+                    lang=lang,
+                    kind="video",
+                    status=TaskStatus.QUEUED,
+                    series_title="Тайтл",
+                )
+            )
+
+    def test_other_japanese_translation_counts_as_present(self, tmp_path) -> None:
+        """Скачали японский звук с равки — с субтитров он уже не нужен."""
+        raw = self._done_audio(tmp_path, 771001, "ja", 1.0)
+        self._pending(771002, "ja", 1.0)
+
+        assert existing_audio_path(771002) == raw
+
+    def test_another_episode_is_not_confused(self, tmp_path) -> None:
+        self._done_audio(tmp_path, 771011, "ja", 1.0)
+        self._pending(771012, "ja", 2.0)
+
+        assert existing_audio_path(771012) is None
+
+    def test_russian_dubs_are_kept_apart(self, tmp_path) -> None:
+        """Две озвучки одной серии — разные студии, а не дубль."""
+        self._done_audio(tmp_path, 771021, "ru", 1.0)
+        self._pending(771022, "ru", 1.0)
+
+        assert existing_audio_path(771022) is None
+
+    def test_japanese_does_not_cover_russian(self, tmp_path) -> None:
+        self._done_audio(tmp_path, 771031, "ja", 1.0)
+        self._pending(771032, "ru", 1.0)
+
+        assert existing_audio_path(771032) is None

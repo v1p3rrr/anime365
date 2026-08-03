@@ -435,6 +435,8 @@ export const en: Dictionary = {
   },
 
   episode: {
+    audioFromSub: 'Japanese audio',
+    audioFromSubHint: 'Extract the Japanese track. It is the same across all subtitle translations and the raw, so there is one button per section — extracting it twice for the same episode is refused.',
     playLocal: 'Play downloaded',
     playLocalTitle: 'Downloaded — {episode}',
     playLocalFile: 'File',

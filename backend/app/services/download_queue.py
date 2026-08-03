@@ -407,7 +407,7 @@ def already_downloaded(translation_id: int) -> bool:
 
 
 def existing_audio_path(translation_id: int) -> Path | None:
-    """Путь к уже извлечённой дорожке этого перевода, если она на месте.
+    """Путь к уже извлечённой дорожке, если она на месте.
 
     Проверяем по завершённой задаче, а не по имени файла: имя зависит от
     расширения, а оно известно только после разбора источника — то есть уже
@@ -416,13 +416,38 @@ def existing_audio_path(translation_id: int) -> Path | None:
 
     Файл на диске проверяем обязательно: запись о задаче могла пережить
     удаление файла руками, и тогда «уже скачано» было бы неправдой.
+
+    ⚠️ Для японской дорожки совпадение ищется по СЕРИИ, а не по переводу.
+    Причина в устройстве источника: перевод с субтитрами — это то же видео с
+    той же японской дорожкой, что и равка, и что другой перевод с другими
+    субтитрами. Извлекать её по разу с каждого значило бы разложить рядом
+    несколько одинаковых файлов.
+
+    Для озвучек так делать нельзя: RU и EN у разных студий разные, и вторая
+    озвучка той же серии — это другая дорожка, а не дубль.
     """
     with session_scope() as session:
+        source = session.execute(
+            select(DownloadTask.series_id, DownloadTask.episode, DownloadTask.lang)
+            .where(DownloadTask.translation_id == translation_id)
+            .limit(1)
+        ).first()
+
+        condition = DownloadTask.translation_id == translation_id
+        if source is not None:
+            series_id, episode, lang = source
+            if lang == "ja" and series_id is not None and episode is not None:
+                condition = (
+                    (DownloadTask.series_id == series_id)
+                    & (DownloadTask.episode == episode)
+                    & (DownloadTask.lang == "ja")
+                )
+
         rows = (
             session.execute(
                 select(DownloadTask)
                 .where(
-                    DownloadTask.translation_id == translation_id,
+                    condition,
                     DownloadTask.kind == "audio",
                     DownloadTask.status.in_([TaskStatus.DONE, TaskStatus.ALREADY_EXISTS]),
                 )
