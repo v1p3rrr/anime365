@@ -17,7 +17,13 @@ from app.api.deps import rate_limit
 from app.core.db import session_scope
 from app.core.permissions import Permission, require
 from app.models.catalog import Episode, Translation
-from app.models.downloads import ACTIVE_KEY, ACTIVE_STATUSES, DownloadTask, TaskStatus
+from app.models.downloads import (
+    ACTIVE_KEY,
+    ACTIVE_STATUSES,
+    TERMINAL_STATUSES,
+    DownloadTask,
+    TaskStatus,
+)
 from app.models.library import LibraryFolder, LibraryRoot, TitleMapping
 from app.services.anime365 import Anime365Error, SubscriptionRequired
 from app.services.download_queue import QueueError, download_queue, enqueue
@@ -382,5 +388,99 @@ def clear_finished() -> dict[str, Any]:
                     [TaskStatus.DONE, TaskStatus.CANCELLED, TaskStatus.ALREADY_EXISTS]
                 )
             )
+        )
+    return {"deleted": result.rowcount}
+
+
+@router.post(
+    "/{task_id}/requeue",
+    dependencies=[Depends(require(Permission.DOWNLOADS))],
+)
+def requeue_task(task_id: int) -> dict[str, Any]:
+    """Отправляет задачу в конец очереди.
+
+    Нужно, когда одна тяжёлая загрузка держит очередь, а хочется пропустить
+    вперёд остальные. Раньше выбора не было вовсе: порядок определялся временем
+    постановки и не менялся.
+
+    Активную задачу сначала останавливаем — иначе она продолжит качаться, и
+    «в конец» ничего не изменит. Уже скачанные байты остаются: докачка идёт по
+    Range, поэтому возврат к задаче не начнёт всё заново.
+    """
+    with session_scope() as session:
+        task = session.get(DownloadTask, task_id)
+        if task is None:
+            raise ApiError(404, errors.TASK_NOT_FOUND, "Задача не найдена")
+        if task.status in TERMINAL_STATUSES:
+            raise ApiError(
+                400,
+                errors.TASK_NOT_ACTIVE,
+                "Задача уже завершена — двигать её в очереди нечего",
+            )
+        was_active = task.status in ACTIVE_STATUSES
+
+    if was_active:
+        download_queue.cancel(task_id)
+
+    with session_scope() as session:
+        task = session.get(DownloadTask, task_id)
+        if task is None:
+            raise ApiError(404, errors.TASK_NOT_FOUND, "Задача не найдена")
+        task.status = TaskStatus.QUEUED
+        task.queued_at = datetime.utcnow()
+        task.retry_after = None
+        task.last_error = None
+        task.finished_at = None
+        task.active_key = ACTIVE_KEY
+    return {"id": task_id, "status": TaskStatus.QUEUED}
+
+
+@router.delete(
+    "/{task_id}",
+    dependencies=[Depends(require(Permission.DOWNLOADS))],
+)
+def delete_task(task_id: int) -> dict[str, Any]:
+    """Убирает одну задачу из списка.
+
+    До этого удалить можно было только всё завершённое разом, и ошибочные
+    задачи не удалялись вовсе — а именно они и копятся: перевод со вшитыми
+    субтитрами будет падать при каждой попытке, и висеть в списке вечно.
+
+    Активную задачу сначала останавливаем: удалить запись из-под работающего
+    воркера значило бы оставить его писать во временный файл, о котором уже
+    некому вспомнить.
+    """
+    from sqlalchemy import delete as sql_delete
+
+    with session_scope() as session:
+        task = session.get(DownloadTask, task_id)
+        if task is None:
+            raise ApiError(404, errors.TASK_NOT_FOUND, "Задача не найдена")
+        was_active = task.status in ACTIVE_STATUSES
+
+    if was_active:
+        download_queue.cancel(task_id)
+
+    with session_scope() as session:
+        session.execute(sql_delete(DownloadTask).where(DownloadTask.id == task_id))
+    return {"id": task_id, "deleted": True}
+
+
+@router.post(
+    "/clear-failed",
+    dependencies=[Depends(require(Permission.DOWNLOADS))],
+)
+def clear_failed() -> dict[str, Any]:
+    """Убирает из списка все задачи с ошибкой.
+
+    Отдельно от `clear-finished`: то — про историю успешных, а это про разбор
+    завалов. Часть ошибок повторяется при каждой попытке (вшитые субтитры,
+    удалённый перевод), и без такой кнопки список только растёт.
+    """
+    from sqlalchemy import delete as sql_delete
+
+    with session_scope() as session:
+        result = session.execute(
+            sql_delete(DownloadTask).where(DownloadTask.status == TaskStatus.FAILED)
         )
     return {"deleted": result.rowcount}

@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 
 import { LANG_COLORS, titleApi, type EpisodeTranslation } from '../api/title'
-import { useT } from '../i18n'
+import { useT, type TranslationKey } from '../i18n'
 // Подписи вариантов в Select — строки, флаг-компонент туда не вставить.
 import { langCode } from '../i18n/flags'
 
@@ -247,6 +247,32 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
     `${langCode(item.lang)} · ${item.authors}` +
     (item.height ? ` · ${Math.min(item.height, 1080)}p` : '')
 
+  /**
+   * Раскладывает переводы по группам «вид · язык».
+   *
+   * Плоский список из двух десятков строк читать невозможно: озвучки, равки и
+   * субтитры идут вперемешку. Mantine рисует между группами заголовок, и он же
+   * служит той самой чертой.
+   *
+   * Внутри группы — по убыванию качества. Оно оценочное (высота исходника, а
+   * не реальная ступень), но для сравнения дорожек между собой годится: выбрать
+   * из двух озвучек ту, что лучше, — ровно та задача, где нужен порядок.
+   */
+  const grouped = (items: EpisodeTranslation[]) => {
+    const groups = new Map<string, EpisodeTranslation[]>()
+    for (const item of items) {
+      const key = `${t(`kind.${item.kind}` as TranslationKey)} · ${langCode(item.lang)}`
+      groups.set(key, [...(groups.get(key) ?? []), item])
+    }
+    return [...groups.entries()].map(([group, list]) => ({
+      group,
+      items: list
+        .slice()
+        .sort((a, b) => (b.height ?? 0) - (a.height ?? 0))
+        .map((item) => ({ value: String(item.id), label: describe(item) })),
+    }))
+  }
+
   return (
     <Modal opened={opened} onClose={onClose} title={t('player.title', { episode: episodeLabel })} size="xl">
       <Stack gap="sm">
@@ -278,7 +304,7 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
             <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs">
               <Select
                 label={t('player.track')}
-                data={playable.map((item) => ({ value: String(item.id), label: describe(item) }))}
+                data={grouped(playable)}
                 value={videoId}
                 onChange={setVideoId}
                 allowDeselect={false}
@@ -286,14 +312,19 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
               <Select
                 label={t('player.subtitles')}
                 placeholder={t('player.noSubtitles')}
-                data={subtitleOptions.map((item) => ({
-                  value: String(item.id),
-                  label: describe(item),
-                }))}
+                data={grouped(subtitleOptions)}
                 value={subId}
                 onChange={(value) => {
                   setSubTouched(true)
                   setSubId(value)
+                  // Выбрали субтитры — переключаем и видео на тот же перевод,
+                  // если он есть среди дорожек. Перевод с субтитрами это и
+                  // есть видео с японской дорожкой, так что чаще всего он там
+                  // и лежит; без этого человек выбирал субтитры, а смотрел
+                  // чужую озвучку, поверх которой они не совпадают по таймингу.
+                  if (value && playable.some((item) => String(item.id) === value)) {
+                    setVideoId(value)
+                  }
                 }}
                 clearable
               />

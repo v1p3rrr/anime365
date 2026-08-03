@@ -385,14 +385,22 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
     # Адрес страницы серии на сайте. Считаем по ПОЛНЫМ записям переводов:
     # в by_episode ниже уходит урезанный набор полей для клиента, и `url`
     # в него не входит.
-    url_by_episode: dict[float, str] = {}
+    #
+    # ⚠️ Ключ — идентификатор эпизода, а НЕ его номер. Номер для этого не
+    # годится: у трейлеров он свой и начинается с единицы, поэтому первая серия
+    # и трейлер к ней имеют одинаковый `episode_num`. Кто первым попадался в
+    # списке переводов, тот и занимал ключ — и кнопка «открыть серию» на первой
+    # серии вела на страницу трейлера. Ровно это и увидел пользователь:
+    #   …/treyler-1-seriya-356260/…  вместо  …/1-seriya-370730/
+    # Соседний цикл про длительность эту ловушку учитывал, здесь её упустили.
+    url_by_episode: dict[int, str] = {}
     for item in normalized:
-        episode_num = item.get("episode_num")
-        if episode_num is None or episode_num in url_by_episode:
+        episode_id = item.get("episode_id")
+        if episode_id is None or episode_id in url_by_episode:
             continue
         page = _episode_url([item])
         if page:
-            url_by_episode[episode_num] = page
+            url_by_episode[episode_id] = page
 
     # Переводы, сгруппированные по серии: из них строится выбор при загрузке
     # конкретной серии.
@@ -437,7 +445,7 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
                 # Отрезав хвост перевода, получаем адрес серии. Выведено из
                 # данных, а не угадано — но если переводов нет, ссылки не будет:
                 # выдумывать её мы не станем.
-                "url": url_by_episode.get(e.episode_num),
+                "url": url_by_episode.get(e.id),
                 # Что уже есть локально: video, sub_ru, sub_ja, sub_en.
                 "have": sorted(set(have_by_episode.get(e.episode_num, []))),
                 # Языки звука локального видео. Пустой список при наличии видео

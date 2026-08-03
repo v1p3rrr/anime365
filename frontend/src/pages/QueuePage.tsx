@@ -17,6 +17,7 @@ import {
   IconAlertTriangle,
   IconPlayerPause,
   IconPlayerPlay,
+  IconArrowDown,
   IconRefresh,
   IconTrash,
   IconX,
@@ -40,8 +41,28 @@ import { useT, type TranslationKey } from '../i18n'
 import { useApiError } from '../i18n/apiError'
 import scrollClasses from './ScrollPage.module.css'
 
+/**
+ * Подпись вида задачи.
+ *
+ * Раньше проверка была бинарной: всё, что не видео, подписывалось субтитрами.
+ * Видов три, и звук попадал под чужую подпись — пользователь видел «субтитры»
+ * там, где извлекалась дорожка. Неизвестный вид показываем как есть, а не
+ * подставляем наугад: так новая разновидность будет заметна, а не притворится
+ * старой.
+ */
+function useKindLabel() {
+  const { t } = useT()
+  return (kind: string) => {
+    if (kind === 'video') return t('queue.kindVideo')
+    if (kind === 'subtitle') return t('queue.kindSubtitle')
+    if (kind === 'audio') return t('queue.kindAudio')
+    return kind
+  }
+}
+
 export function QueuePage() {
   const { t } = useT()
+  const kindLabel = useKindLabel()
   const apiError = useApiError()
   const statusLabel = (key: string) => t(`status.${key}` as TranslationKey)
   const queryClient = useQueryClient()
@@ -95,6 +116,17 @@ export function QueuePage() {
   const resumeAll = useMutation({ mutationFn: downloadsApi.resumeAll, onSuccess: refresh })
   const clearFinished = useMutation({
     mutationFn: downloadsApi.clearFinished,
+    onSuccess: (result) => {
+      notifications.show({ color: 'teal', message: t('queue.cleared', { count: result.deleted }) })
+      refresh()
+    },
+  })
+
+  // Отдельно от очистки завершённых: то про историю успешных, а это про
+  // разбор завалов. Часть ошибок повторяется при каждой попытке — вшитые
+  // субтитры, удалённый перевод — и без такой кнопки список только растёт.
+  const clearFailed = useMutation({
+    mutationFn: downloadsApi.clearFailed,
     onSuccess: (result) => {
       notifications.show({ color: 'teal', message: t('queue.cleared', { count: result.deleted }) })
       refresh()
@@ -181,6 +213,17 @@ export function QueuePage() {
           <Button
             size="xs"
             variant="subtle"
+            color="red"
+            leftSection={<IconTrash size={14} />}
+            onClick={() => clearFailed.mutate()}
+            loading={clearFailed.isPending}
+            disabled={failed.length === 0}
+          >
+            {t('queue.clearFailed')}
+          </Button>
+          <Button
+            size="xs"
+            variant="subtle"
             color="gray"
             leftSection={<IconTrash size={14} />}
             onClick={() => clearFinished.mutate()}
@@ -212,7 +255,7 @@ export function QueuePage() {
                 <Text size="sm" style={{ wordBreak: 'break-word' }}>
                   {task.series_title}
                   {task.episode != null && t('queue.episodeSuffix', { n: task.episode })}
-                  {` (${task.kind === 'subtitle' ? t('queue.kindSubtitle') : t('queue.kindVideo')})`}
+                  {` (${kindLabel(task.kind)})`}
                 </Text>
                 <Text size="xs" c="dimmed" style={{ wordBreak: 'break-word' }}>
                   {task.last_error ?? t('queue.reasonUnknown')}
@@ -300,12 +343,18 @@ function TaskTable({ title, tasks, action }: TableProps) {
 
 function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['action'] }) {
   const { t } = useT()
+  const kindLabel = useKindLabel()
   const format = useFormat()
   const statusLabel = (key: string) => t(`status.${key}` as TranslationKey)
   const canPause = task.status === 'downloading' || task.status === 'queued'
   const canResume = task.status === 'paused'
-  const canRetry = task.status === 'failed' || task.status === 'cancelled'
+  // Перезапуск нужен и зависшей загрузке, а не только упавшей: активную
+  // сервер сначала остановит. Скачанные байты не теряются — докачка идёт по
+  // Range.
+  const canRetry = task.status !== 'done' && task.status !== 'already_exists'
   const canCancel = ACTIVE_STATUSES.includes(task.status)
+  // Двигать в очереди можно только незавершённое: у завершённого очереди нет.
+  const canRequeue = !['done', 'already_exists', 'cancelled', 'failed'].includes(task.status)
 
   return (
     <Table.Tr>
@@ -313,7 +362,7 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
         <Link to={`/series/${task.series_id}`}>{task.series_title || `#${task.series_id}`}</Link>
         <Text size="xs" c="dimmed">
           {task.episode != null && t('queue.episodePrefix', { n: task.episode })}
-          {task.kind === 'video' ? t('queue.kindVideo') : t('queue.kindSubtitle')}
+          {kindLabel(task.kind)}
           {task.lang && ` · ${task.lang}`}
           {task.authors && ` · ${task.authors}`}
           {task.resolved_height && ` · ${task.resolved_height}p`}
@@ -404,6 +453,30 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
               </ActionIcon>
             </Tooltip>
           )}
+          {canRequeue && (
+            <Tooltip label={t('queue.requeueHint')}>
+              <ActionIcon
+                size="sm"
+                variant="subtle"
+                onClick={() => action.mutate({ fn: downloadsApi.requeue, id: task.id })}
+              >
+                <IconArrowDown size={14} />
+              </ActionIcon>
+            </Tooltip>
+          )}
+          {/* Удаление доступно всегда: активную задачу сервер сперва отменит.
+              Иначе ошибочные загрузки — например вшитые субтитры, которые
+              будут падать при каждой попытке, — оставалось бы только терпеть. */}
+          <Tooltip label={t('queue.removeHint')}>
+            <ActionIcon
+              size="sm"
+              variant="subtle"
+              color="red"
+              onClick={() => action.mutate({ fn: downloadsApi.remove, id: task.id })}
+            >
+              <IconTrash size={14} />
+            </ActionIcon>
+          </Tooltip>
           {canCancel && (
             <Tooltip label={t('queue.cancelHint')}>
               <ActionIcon

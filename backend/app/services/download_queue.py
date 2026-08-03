@@ -20,7 +20,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.config import settings
 from app.core.db import session_scope
@@ -639,7 +639,10 @@ class DownloadQueue:
                     DownloadTask.status == TaskStatus.QUEUED,
                     (DownloadTask.retry_after.is_(None)) | (DownloadTask.retry_after <= now),
                 )
-                .order_by(DownloadTask.created_at)
+                # Сдвинутые вручную идут по своему времени, остальные — по
+                # времени создания. Отдельное поле нужно, чтобы «в конец
+                # очереди» не переписывало дату постановки.
+                .order_by(func.coalesce(DownloadTask.queued_at, DownloadTask.created_at))
                 .limit(1)
             ).scalar_one_or_none()
             if task is None:

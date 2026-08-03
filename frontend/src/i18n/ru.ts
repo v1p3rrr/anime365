@@ -536,6 +536,9 @@ export const ru = {
   },
 
   queue: {
+    requeueHint: 'В конец очереди',
+    removeHint: 'Убрать из списка',
+    clearFailed: 'Убрать ошибки',
     pausedNote: 'Очередь на паузе. Незавершённые файлы сохранены и докачаются с того же места.',
     retryAllFailed: 'Повторить все неудачные',
     failedTitle: 'Не удалось скачать: {count}',

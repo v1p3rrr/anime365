@@ -65,6 +65,14 @@ class DownloadTask(Base):
 
     # video | subtitle
     kind: Mapped[str] = mapped_column(String(16))
+
+    # Место в очереди, если его двигали руками. Пусто — очередь идёт по времени
+    # создания, как и раньше.
+    #
+    # Отдельным полем, а не правкой created_at: время создания показывается в
+    # истории, и подменять его ради порядка значило бы врать пользователю о
+    # том, когда он поставил задачу.
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime)
     # Запрошенное качество; фактическое может оказаться ниже, если такой ступени нет.
     requested_height: Mapped[int | None] = mapped_column(Integer)
     resolved_height: Mapped[int | None] = mapped_column(Integer)

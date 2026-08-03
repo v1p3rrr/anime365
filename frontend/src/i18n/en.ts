@@ -537,6 +537,9 @@ export const en: Dictionary = {
   },
 
   queue: {
+    requeueHint: 'Move to the end of the queue',
+    removeHint: 'Remove from the list',
+    clearFailed: 'Clear failed',
     pausedNote: 'The queue is paused. Unfinished files are kept and will resume from the same place.',
     retryAllFailed: 'Retry all failed',
     failedTitle: 'Failed to download: {count}',

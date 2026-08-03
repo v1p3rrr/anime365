@@ -98,7 +98,12 @@ export const downloadsApi = {
   cancel: (id: number) => api.post<unknown>(`/downloads/${id}/cancel`),
   pauseAll: () => api.post<unknown>('/downloads/pause-all'),
   resumeAll: () => api.post<unknown>('/downloads/resume-all'),
+  /** В конец очереди: активную задачу сперва останавливает сервер. */
+  requeue: (id: number) => api.post<unknown>(`/downloads/${id}/requeue`),
+  /** Убрать одну запись. Активную сервер сначала отменяет. */
+  remove: (id: number) => api.del<{ deleted: boolean }>(`/downloads/${id}`),
   clearFinished: () => api.post<{ deleted: number }>('/downloads/clear-finished'),
+  clearFailed: () => api.post<{ deleted: number }>('/downloads/clear-failed'),
 }
 
 /**

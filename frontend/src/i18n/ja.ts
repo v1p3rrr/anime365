@@ -536,6 +536,9 @@ export const ja: Dictionary = {
   },
 
   queue: {
+    requeueHint: 'キューの最後へ',
+    removeHint: '一覧から削除',
+    clearFailed: 'エラーを消去',
     pausedNote: 'キューは一時停止中です。未完了のファイルは保持され、同じ位置から再開します。',
     retryAllFailed: '失敗した項目を再試行',
     failedTitle: 'ダウンロード失敗: {count}',

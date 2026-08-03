@@ -41,6 +41,8 @@ ROOT_READ_ONLY = "root_read_only"
 HARDSUB = "hardsub"
 QUEUE_REJECTED = "queue_rejected"
 TASK_NOT_FOUND = "task_not_found"
+# Задача уже завершена — двигать её в очереди нечего.
+TASK_NOT_ACTIVE = "task_not_active"
 
 # --- Библиотека --------------------------------------------------------------
 SCAN_RUNNING = "scan_running"
