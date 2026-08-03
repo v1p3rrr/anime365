@@ -1,13 +1,18 @@
-"""`docker-compose.yml` обязан перечислять все настройки из реестра.
+"""Настройки должны доезжать из файла окружения до приложения.
 
-Пользователь попросил объявлять переменные в compose явно, со ссылками на
-`.env`, — «чтобы более явно это всё было». Смысл в том, что список того, чем
-управляют, лежит в репозитории и виден в одном месте, а значения остаются в
-`.env`, который не коммитится.
+Здесь сторожится ошибка, которая стоила пользователю дня отладки на сервере:
+настройки из его env-файла не доходили вообще, а снаружи это выглядело как
+«часть параметров работает, часть нет» — на деле работали значения по
+умолчанию, случайно совпавшие с ожидаемыми.
 
-Цена такого дубля — он разъезжается. Ровно это уже случалось со списком
-зависимостей в Dockerfile: в образе не оказалось socksio, и SOCKS5-прокси не
-работал вовсе, хотя был описан в документации. Поэтому здесь тест.
+Причина была в compose. Подстановка `${VAR}` в `environment:` выполняется при
+разборе файла и берёт значения только из окружения оболочки и из `.env`; файла
+из `env_file:` для неё не существует. А `environment:` имеет приоритет над
+`env_file:` — поэтому строка `- A365_ACCESS_TOKEN=${A365_ACCESS_TOKEN:-}`
+подставляла пустую строку и затирала значение из подключённого файла.
+
+Проверено на живом compose, включая голую форму `- A365_ACCESS_TOKEN` без «=»:
+она гасит `env_file:` точно так же.
 """
 
 from __future__ import annotations
@@ -17,26 +22,13 @@ from pathlib import Path
 
 from app.core.settings_registry import SETTINGS
 
-COMPOSE = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+ROOT = Path(__file__).resolve().parents[2]
+COMPOSE = ROOT / "docker-compose.yml"
+ENV_EXAMPLE = ROOT / ".env.example"
 
-
-def _declared() -> set[str]:
-    text = COMPOSE.read_text(encoding="utf-8")
-    return set(re.findall(r"^\s*- (A365_[A-Z0-9_]+)=", text, re.MULTILINE))
-
-
-def test_every_setting_is_declared() -> None:
-    missing = {s.env for s in SETTINGS} - _declared()
-    assert not missing, (
-        f"в docker-compose.yml нет переменных: {sorted(missing)}. "
-        "Настройку добавили в реестр, но управлять ей из compose нельзя — "
-        "а именно ради этого список там и держится"
-    )
-
-
-# Настройки, которых нет в реестре: они меняются только через окружение, и
-# формы в интерфейсе у них нет. В compose перечислены наравне с остальными,
-# иначе про них никто не узнает.
+# Настройки, которых нет в реестре: они меняются только через окружение, формы
+# в интерфейсе у них нет. В шаблоне перечислены наравне с остальными, иначе про
+# них никто не узнает.
 ENV_ONLY = {
     "A365_TRANSLATION_SCAN_HOURS",
     "A365_TRANSLATION_SCAN_RPM",
@@ -44,46 +36,65 @@ ENV_ONLY = {
 }
 
 
-def test_no_unknown_variables() -> None:
-    extra = _declared() - {s.env for s in SETTINGS} - ENV_ONLY
-    assert not extra, (
-        f"в docker-compose.yml есть лишние переменные: {sorted(extra)}. "
-        "Приложение их не читает, и заполнивший их будет ждать эффекта зря"
-    )
+def _lines_without_comments(text: str) -> list[str]:
+    return [line for line in text.splitlines() if not line.lstrip().startswith("#")]
 
 
-def test_values_come_from_env_file() -> None:
-    """Значения должны быть ссылками, а не вписанными строками.
+def _example_vars() -> set[str]:
+    return set(re.findall(r"^(A365_[A-Z0-9_]+)=", ENV_EXAMPLE.read_text(encoding="utf-8"), re.M))
 
-    Вписанное значение — это секрет в репозитории, если речь о токене, и
-    расхождение с `.env` во всех остальных случаях.
-    """
-    text = COMPOSE.read_text(encoding="utf-8")
-    for name, value in re.findall(r"^\s*- (A365_[A-Z0-9_]+)=(.*)$", text, re.MULTILINE):
-        value = value.split("#")[0].strip()
-        assert value == "${%s:-}" % name, (
-            f"{name} задан значением {value!r}, а должен ссылаться на .env"
+
+class TestComposeDoesNotClobberEnvFile:
+    """Главная проверка: compose не должен затирать значения из env-файла."""
+
+    def test_env_file_is_declared(self) -> None:
+        lines = _lines_without_comments(COMPOSE.read_text(encoding="utf-8"))
+        assert any(line.strip().startswith("env_file:") for line in lines), (
+            "из compose пропал env_file: — настройки приложения браться неоткуда"
+        )
+
+    def test_no_app_settings_in_environment(self) -> None:
+        """Ни одной A365_-переменной в `environment:` быть не должно.
+
+        Достаточно одной такой строки, чтобы значение из env-файла молча
+        обнулилось — причём именно у той настройки, которую человек и правил.
+        """
+        lines = _lines_without_comments(COMPOSE.read_text(encoding="utf-8"))
+        offenders = [line.strip() for line in lines if re.match(r"^\s*- A365_", line)]
+        assert not offenders, (
+            f"в environment: снова появились настройки приложения: {offenders}. "
+            "Они перекроют env_file: и обнулят его значения"
         )
 
 
-def test_env_file_is_not_mixed_with_interpolation() -> None:
-    """`env_file:` и `${VAR}` в `environment:` нельзя смешивать.
+class TestExampleIsComplete:
+    """`.env.example` — единственное место, где список настроек полный.
 
-    Проверено на живом compose: подстановка `${VAR}` берёт значения только из
-    окружения оболочки и из `.env`, файл из `env_file:` для неё не существует.
-    А `environment:` имеет приоритет над `env_file:` — поэтому строка
-    `- A365_ACCESS_TOKEN=${A365_ACCESS_TOKEN:-}` подставляла пустую строку и
-    затирала значение из подключённого файла.
-
-    Снаружи это выглядело как «часть настроек из .env не подтягивается»: на
-    деле не подтягивалась ни одна, а работали значения по умолчанию.
+    Он же шаблон для рабочего файла, поэтому пропуск здесь означает настройку,
+    о существовании которой никто не узнает.
     """
-    text = COMPOSE.read_text(encoding="utf-8")
-    lines = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
-    assert not any(line.strip().startswith("env_file:") for line in lines), (
-        "env_file: вернулся в compose вместе со списком ${VAR} в environment: — "
-        "эта пара молча обнуляет все настройки"
-    )
+
+    def test_every_setting_is_in_example(self) -> None:
+        missing = {s.env for s in SETTINGS} - _example_vars()
+        assert not missing, (
+            f"в .env.example нет переменных: {sorted(missing)}. "
+            "Настройку добавили в реестр, но в шаблоне её нет"
+        )
+
+    def test_env_only_settings_are_in_example(self) -> None:
+        missing = ENV_ONLY - _example_vars()
+        assert not missing, (
+            f"в .env.example нет переменных: {sorted(missing)}. "
+            "У них нет формы в интерфейсе, и шаблон — единственное место, "
+            "где о них можно узнать"
+        )
+
+    def test_no_unknown_variables(self) -> None:
+        extra = _example_vars() - {s.env for s in SETTINGS} - ENV_ONLY
+        assert not extra, (
+            f"в .env.example есть лишние переменные: {sorted(extra)}. "
+            "Приложение их не читает, и заполнивший их будет ждать эффекта зря"
+        )
 
 
 def test_healthcheck_does_not_use_curl() -> None:
@@ -94,5 +105,4 @@ def test_healthcheck_does_not_use_curl() -> None:
     """
     text = COMPOSE.read_text(encoding="utf-8")
     block = text[text.index("healthcheck:") :].split("logging:")[0]
-    command = [line for line in block.splitlines() if not line.lstrip().startswith("#")]
-    assert "curl" not in "\n".join(command)
+    assert "curl" not in "\n".join(_lines_without_comments(block))
