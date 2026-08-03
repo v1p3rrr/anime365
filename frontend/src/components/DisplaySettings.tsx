@@ -15,6 +15,7 @@ import {
   PAGE_SIZES,
   splitType,
   TRANSLATION_TYPES,
+  useRomajiPreference,
   usePreferences,
   type PagingMode,
 } from '../stores/preferences'
@@ -30,6 +31,7 @@ import {
 export function DisplaySettings() {
   const { t } = useT()
   const { prefs, toggleType, setPaging, setPageSize } = usePreferences()
+  const [preferRomaji, setPreferRomaji] = useRomajiPreference()
 
   // Последний включённый выключить нельзя — блокируем сам переключатель,
   // а не молча игнорируем клик: иначе выглядит как поломка.
@@ -84,6 +86,19 @@ export function DisplaySettings() {
       <Text size="xs" c="dimmed" mt="sm">
         {t('display.orderHint')}
       </Text>
+
+      <Divider my="md" />
+
+      {/* Отдельно от языка интерфейса намеренно: язык интерфейса — про подписи
+          и кнопки, а это про то, под каким названием человек привык узнавать
+          тайтл. Многие читают интерфейс по-русски, но ищут аниме по ромадзи. */}
+      <Switch
+        size="sm"
+        checked={preferRomaji}
+        onChange={(event) => setPreferRomaji(event.currentTarget.checked)}
+        label={t('display.preferRomaji')}
+        description={t('display.preferRomajiHint')}
+      />
 
       <Divider my="md" />
 

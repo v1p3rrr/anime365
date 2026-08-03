@@ -275,6 +275,10 @@ def get_local_files(series_id: int) -> list[dict[str, Any]]:
             {
                 "episode": float(mapping.episode),
                 "role": mapping.role,
+                # Нужен, чтобы отдать файл на просмотр по идентификатору:
+                # путь от клиента здесь принимать нельзя — это было бы чтение
+                # любого файла на сервере.
+                "file_id": file.id,
                 "filename": file.filename,
                 "folder": folder.rel_path,
                 "size_bytes": file.size_bytes,

@@ -6,6 +6,7 @@ import {
   IconExternalLink,
   IconFolderSymlink,
   IconLink,
+  IconDeviceDesktop,
   IconPlayerPlay,
 } from '@tabler/icons-react'
 import { useState } from 'react'
@@ -20,6 +21,7 @@ import { isTypeVisible, type TranslationType } from '../stores/preferences'
 import classes from './EpisodeRow.module.css'
 import { BindEpisodeModal } from './BindEpisodeModal'
 import { EpisodeDownloadPanel } from './EpisodeDownloadPanel'
+import { LocalPlayerModal } from './LocalPlayerModal'
 import { PlayerModal } from './PlayerModal'
 
 interface Props {
@@ -58,6 +60,7 @@ export function EpisodeRow({
   const format = useFormat()
   const [binding, setBinding] = useState(false)
   const [playing, setPlaying] = useState(false)
+  const [playingLocal, setPlayingLocal] = useState(false)
   const [expanded, setExpanded] = useState(false)
   // В подсказку идёт полная фраза, в сам значок — флаг. Один флаг не говорит,
   // о чём речь: у серии бывают и субтитры этого языка, и звуковая дорожка.
@@ -218,6 +221,26 @@ export function EpisodeRow({
               </Tooltip>
             )}
 
+            {/* Просмотр того, что уже скачано. Отдельной кнопкой, а не
+                пунктом внутри плеера: у локального файла и у стрима разная
+                природа — первый уже на диске и играет сразу, второй тянется с
+                сайта. Смешивать их в одном списке значило бы прятать разницу,
+                из-за которой человек и качал. */}
+            {episode.local_videos.length > 0 && (
+              <Tooltip label={t('episode.playLocal')}>
+                <Button
+                  size="compact-xs"
+                  variant="light"
+                  color="grape"
+                  px={6}
+                  onClick={() => setPlayingLocal(true)}
+                  aria-label={t('episode.playLocal')}
+                >
+                  <IconDeviceDesktop size={12} />
+                </Button>
+              </Tooltip>
+            )}
+
             {/* Ссылка ведёт на страницу СЕРИИ, если её удалось вывести из
                 адресов переводов, и только иначе — на страницу тайтла. Раньше
                 здесь всегда был адрес тайтла, хотя подпись обещала серию. */}
@@ -272,6 +295,13 @@ export function EpisodeRow({
               </Tooltip>
             )}
           </Group>
+
+          <LocalPlayerModal
+            opened={playingLocal}
+            onClose={() => setPlayingLocal(false)}
+            videos={episode.local_videos}
+            episodeLabel={episode.episode_full || episode.episode_int}
+          />
 
           <PlayerModal
             opened={playing}

@@ -92,6 +92,17 @@ class EmbedInfo:
         """
         return sorted({int(d["height"]) for d in self.download if d.get("height")}, reverse=True)
 
+    @property
+    def stream_heights(self) -> list[int]:
+        """Ступени, доступные для ПРОСМОТРА, по убыванию.
+
+        Отдельно от `heights` намеренно: `download` и `stream` — разные списки
+        в ответе embed, и совпадение их наборов ниоткуда не следует. Предлагать
+        в плеере ступень из списка скачивания значило бы обещать то, чего может
+        не оказаться; выбор бы молча сползал на другое качество.
+        """
+        return sorted({int(d["height"]) for d in self.stream if d.get("height")}, reverse=True)
+
     def url_for_height(self, height: int) -> str | None:
         for item in self.download:
             if int(item.get("height", 0)) == height:

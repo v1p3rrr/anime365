@@ -435,6 +435,10 @@ export const en: Dictionary = {
   },
 
   episode: {
+    playLocal: 'Play downloaded',
+    playLocalTitle: 'Downloaded — {episode}',
+    playLocalFile: 'File',
+    playLocalUnsupported: 'The browser cannot play this file. Usually it is the codec inside the container — HEVC or FLAC, for example. The file itself is fine and opens in an external player.',
     download: 'Download',
     noTranslations: 'no translations in the selected languages',
     queued: 'Added to the queue',
@@ -475,6 +479,7 @@ export const en: Dictionary = {
   },
 
   player: {
+    quality: 'Quality',
     title: 'Watching — {episode}',
     noPlayable: 'This episode has no translations of the selected types. Enable the type you need in display settings.',
     subsOn: 'Subs',
@@ -823,6 +828,8 @@ export const en: Dictionary = {
   },
 
   display: {
+    preferRomaji: 'Show romaji as the main title',
+    preferRomajiHint: 'Romaji on top, the translated name below it. Applies to the catalog, title page and lists.',
     title: 'Display',
     personalHint:
       'These are stored in your browser and apply to you only — everything else on this page is shared by everyone who opens the site.',

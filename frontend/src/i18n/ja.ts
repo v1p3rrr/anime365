@@ -434,6 +434,10 @@ export const ja: Dictionary = {
   },
 
   episode: {
+    playLocal: 'ダウンロード済みを再生',
+    playLocalTitle: 'ダウンロード済み — {episode}',
+    playLocalFile: 'ファイル',
+    playLocalUnsupported: 'このファイルはブラウザーで再生できません。多くはコンテナ内のコーデック（HEVC や FLAC など）が原因です。ファイル自体は正常で、外部プレイヤーで開けます。',
     download: 'ダウンロード',
     noTranslations: '選択した言語の翻訳がありません',
     queued: 'キューに追加しました',
@@ -474,6 +478,7 @@ export const ja: Dictionary = {
   },
 
   player: {
+    quality: '画質',
     title: '再生 — {episode}',
     noPlayable: 'この話には選択した種類の翻訳がありません。表示設定で必要な種類を有効にしてください。',
     subsOn: '字幕',
@@ -823,6 +828,8 @@ export const ja: Dictionary = {
   },
 
   display: {
+    preferRomaji: 'ローマ字をメインのタイトルにする',
+    preferRomajiHint: 'ローマ字を上に大きく、訳題をその下に。カタログ、作品ページ、一覧に適用されます。',
     title: '表示',
     personalHint:
       'これらはブラウザーに保存され、あなたにだけ適用されます。このページの他の設定はサイトを開く全員で共有されます。',

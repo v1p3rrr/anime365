@@ -88,6 +88,15 @@ export interface Preferences {
   paging: PagingMode
   /** Сколько тайтлов запрашивать за раз. Меньше — легче слабому устройству. */
   pageSize: number
+  /**
+   * Показывать ромадзи главным названием, а перевод — вторым.
+   *
+   * Отдельно от языка интерфейса намеренно: это разные вопросы. Язык
+   * интерфейса — на каком языке подписи и кнопки; здесь — под каким названием
+   * человек привык узнавать тайтл. Многие читают интерфейс по-русски, но
+   * ищут и обсуждают аниме по ромадзи.
+   */
+  preferRomaji: boolean
 }
 
 /** Допустимые размеры порции. Ограничены сверху лимитом сервера. */
@@ -99,6 +108,7 @@ const DEFAULTS: Preferences = {
   types: ['sub_ja', 'sub_ru', 'raw_ja', 'voice_ru'],
   paging: 'scroll',
   pageSize: 200,
+  preferRomaji: false,
 }
 
 function read<T>(key: string, fallback: T): T {
@@ -162,6 +172,7 @@ export function usePreferences() {
     pageSize: PAGE_SIZES.includes(read('pageSize', DEFAULTS.pageSize) as never)
       ? read('pageSize', DEFAULTS.pageSize)
       : DEFAULTS.pageSize,
+    preferRomaji: read('preferRomaji', DEFAULTS.preferRomaji),
   }))
 
   useEffect(() => {
@@ -190,5 +201,53 @@ export function usePreferences() {
     setPrefs((prev) => ({ ...prev, pageSize }))
   }, [])
 
-  return { prefs, setPrefs, toggleType, setPaging, setPageSize }
+  const setPreferRomaji = useCallback((preferRomaji: boolean) => {
+    setPrefs((prev) => ({ ...prev, preferRomaji }))
+  }, [])
+
+  return { prefs, setPrefs, toggleType, setPaging, setPageSize, setPreferRomaji }
+}
+
+
+/**
+ * Предпочтение ромадзи — отдельным маленьким хранилищем.
+ *
+ * Почему не через `usePreferences`: тот держит своё состояние в каждом
+ * вызывающем компоненте, и переключатель в настройках не дошёл бы до карточек
+ * каталога и заголовков — они обновились бы только после перезагрузки
+ * страницы. Названия показываются буквально везде, поэтому здесь нужна
+ * подписка, а не копия.
+ *
+ * Реализация нарочно крошечная: заводить внешнюю библиотеку состояния ради
+ * одного булева значения незачем.
+ */
+const ROMAJI_KEY = 'preferRomaji'
+const romajiListeners = new Set<(value: boolean) => void>()
+
+export function getPreferRomaji(): boolean {
+  return read(ROMAJI_KEY, DEFAULTS.preferRomaji)
+}
+
+export function setPreferRomajiGlobal(value: boolean): void {
+  write(ROMAJI_KEY, value)
+  for (const listener of romajiListeners) listener(value)
+}
+
+export function useRomajiPreference(): [boolean, (value: boolean) => void] {
+  const [value, setValue] = useState(getPreferRomaji)
+
+  useEffect(() => {
+    romajiListeners.add(setValue)
+    // Ещё и storage: настройку могли поменять в соседней вкладке.
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === PREFIX + ROMAJI_KEY) setValue(getPreferRomaji())
+    }
+    window.addEventListener('storage', onStorage)
+    return () => {
+      romajiListeners.delete(setValue)
+      window.removeEventListener('storage', onStorage)
+    }
+  }, [])
+
+  return [value, setPreferRomajiGlobal]
 }

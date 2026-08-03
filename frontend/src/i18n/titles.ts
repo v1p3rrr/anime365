@@ -10,6 +10,7 @@
  * русское было бы хуже, чем romaji, который читается на латинице.
  */
 
+import { useRomajiPreference } from '../stores/preferences'
 import { useT } from './index'
 
 type Variant = 'ru' | 'romaji' | 'en' | 'ja'
@@ -53,15 +54,33 @@ export function pickTitle(titles: TitleVariants, locale: string, fallback = ''):
  */
 export function useTitleName() {
   const { locale } = useT()
+  const [preferRomaji] = useRomajiPreference()
 
   return {
-    primary: (titles: TitleVariants, fallback = '') => pickTitle(titles, locale, fallback),
+    primary: (titles: TitleVariants, fallback = '') => {
+      // Ромадзи главным — по личной настройке. Она отдельно от языка
+      // интерфейса намеренно: язык интерфейса про подписи и кнопки, а это про
+      // то, под каким названием человек привык узнавать тайтл. Многие читают
+      // интерфейс по-русски, но ищут аниме по ромадзи.
+      if (preferRomaji) {
+        const romaji = variant(titles, 'romaji')
+        if (romaji) return romaji
+      }
+      return pickTitle(titles, locale, fallback)
+    },
     secondary: (titles: TitleVariants) => {
-      const primary = pickTitle(titles, locale)
+      const translated = pickTitle(titles, locale)
+      if (preferRomaji) {
+        // Местами меняется только пара «ромадзи ↔ перевод». Если ромадзи нет,
+        // главным осталось название на языке интерфейса, и повторять его
+        // вторым не надо.
+        const romaji = variant(titles, 'romaji')
+        return romaji && translated !== romaji ? translated : null
+      }
       // Подзаголовком всегда romaji: он есть почти всегда и помогает опознать
       // тайтл по названию, под которым его знают в сообществе.
       const romaji = variant(titles, 'romaji')
-      return romaji && romaji !== primary ? romaji : null
+      return romaji && romaji !== translated ? romaji : null
     },
   }
 }

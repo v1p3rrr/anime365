@@ -345,12 +345,24 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
     # имея оригинальную дорожку, человек смотрит с субтитрами, и озвучки ему
     # не нужны, а имея озвучку — наоборот, оригинал ещё впереди.
     audio_by_episode: dict[float, set[str]] = {}
+    # Скачанные видеофайлы по сериям — чтобы можно было посмотреть то, что уже
+    # лежит на диске, не обращаясь к сайту. Файлов на серию бывает несколько
+    # (озвучка и оригинал), поэтому список, а не одно значение.
+    local_video_by_episode: dict[float, list[dict[str, Any]]] = {}
     lang_by_translation = {t["id"]: t.get("type_lang") for t in normalized}
 
     for item in get_local_files(series_id):
         have_by_episode.setdefault(item["episode"], []).append(item["role"])
         if item["role"] != "video":
             continue
+        local_video_by_episode.setdefault(item["episode"], []).append(
+            {
+                "file_id": item["file_id"],
+                "filename": item["filename"],
+                "size_bytes": item["size_bytes"],
+                "langs": sorted(_local_audio_langs(item, lang_by_translation)),
+            }
+        )
         langs = audio_by_episode.setdefault(item["episode"], set())
         langs.update(_local_audio_langs(item, lang_by_translation))
 
@@ -432,6 +444,8 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
                 # означает «не удалось определить» — в этом случае UI не прячет
                 # ничего, потому что скрывать по догадке хуже, чем показать лишнее.
                 "audio_langs": sorted(audio_by_episode.get(e.episode_num, set())),
+                # Что можно посмотреть прямо с диска, без обращения к сайту.
+                "local_videos": local_video_by_episode.get(e.episode_num, []),
                 # Секунды. None — переводов с известной длительностью нет.
                 "duration": median_duration(durations_by_episode.get(e.episode_num, [])),
                 # Доступные переводы этой серии — для выбора при загрузке.
@@ -492,6 +506,7 @@ async def get_embed(
                     "translation_id": translation_id,
                     "has_subtitles": cached.has_subtitles,
                     "heights": cached.download_heights,
+                    "stream_heights": cached.stream_heights or [],
                     "sizes": cached.download_sizes or {},
                     "from_cache": True,
                 }
@@ -507,6 +522,7 @@ async def get_embed(
                 has_subtitles=info.subtitles_url is not None,
                 subtitles_url=info.subtitles_url,
                 download_heights=info.heights,
+                stream_heights=info.stream_heights,
                 download_sizes=sizes,
                 fetched_at=datetime.utcnow(),
             )
@@ -516,6 +532,7 @@ async def get_embed(
         "translation_id": translation_id,
         "has_subtitles": info.subtitles_url is not None,
         "heights": info.heights,
+        "stream_heights": info.stream_heights,
         "sizes": sizes,
         "from_cache": False,
     }

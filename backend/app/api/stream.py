@@ -18,6 +18,8 @@ import logging
 from typing import Annotated, Any
 
 import httpx
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 
 from app.core import errors
@@ -211,32 +213,20 @@ async def stream_subtitles(translation_id: int) -> Response:
 AUDIO_CHUNK = 256 * 1024
 
 
-@router.get(
-    "/audio/{task_id}",
-    dependencies=[Depends(require(Permission.WATCH))],
-)
-def stream_audio(
-    task_id: int,
-    range_header: Annotated[str | None, Header(alias="Range")] = None,
-) -> Response:
-    """Отдаёт извлечённую звуковую дорожку.
 
-    ⚠️ Путь берётся из записи задачи по её идентификатору, а НЕ из параметра
+
+def serve_file_with_range(path: Path, media_type: str, range_header: str | None) -> Response:
+    """Отдаёт файл с диска, поддерживая перемотку.
+
+    Range обязателен для медиа: без него браузер не даёт перемотку вовсе — он
+    не станет запрашивать середину файла, если сервер не обещал, что умеет её
+    отдать, и ползунок останется декоративным.
+
+    ⚠️ `path` обязан приходить из базы по идентификатору, а не из параметра
     запроса: принять путь от клиента здесь означало бы отдать наружу чтение
     любого файла на сервере.
-
-    Range обязателен. Без него `<audio>` не даёт перемотку вовсе: браузер не
-    станет запрашивать середину файла, если сервер не обещал, что умеет её
-    отдать, — и ползунок останется декоративным.
     """
-    from app.services.audio_library import content_type_for, track_path
-
-    path = track_path(task_id)
-    if path is None:
-        raise ApiError(404, errors.FILE_NOT_FOUND, "Дорожка не найдена или файл удалён")
-
     size = path.stat().st_size
-    media_type = content_type_for(path)
     start, end = 0, size - 1
     status_code = 200
 
@@ -284,3 +274,82 @@ def stream_audio(
     return StreamingResponse(
         body(), status_code=status_code, media_type=media_type, headers=headers
     )
+
+
+@router.get(
+    "/audio/{task_id}",
+    dependencies=[Depends(require(Permission.WATCH))],
+)
+def stream_audio(
+    task_id: int,
+    range_header: Annotated[str | None, Header(alias="Range")] = None,
+) -> Response:
+    """Отдаёт извлечённую звуковую дорожку.
+
+    ⚠️ Путь берётся из записи задачи по её идентификатору, а НЕ из параметра
+    запроса: принять путь от клиента здесь означало бы отдать наружу чтение
+    любого файла на сервере.
+
+    Range обязателен. Без него `<audio>` не даёт перемотку вовсе: браузер не
+    станет запрашивать середину файла, если сервер не обещал, что умеет её
+    отдать, — и ползунок останется декоративным.
+    """
+    from app.services.audio_library import content_type_for, track_path
+
+    path = track_path(task_id)
+    if path is None:
+        raise ApiError(404, errors.FILE_NOT_FOUND, "Дорожка не найдена или файл удалён")
+
+    return serve_file_with_range(path, content_type_for(path), range_header)
+
+
+# Расширение → тип содержимого для локальных видеофайлов. Список короткий
+# намеренно: это то, что вообще может лежать в аниме-библиотеке.
+LOCAL_VIDEO_TYPES = {
+    ".mp4": "video/mp4",
+    ".mkv": "video/x-matroska",
+    ".webm": "video/webm",
+    ".m4v": "video/mp4",
+    ".avi": "video/x-msvideo",
+    ".mov": "video/quicktime",
+}
+
+
+@router.get(
+    "/local/{file_id}",
+    dependencies=[Depends(require(Permission.WATCH))],
+)
+def stream_local(
+    file_id: int,
+    range_header: Annotated[str | None, Header(alias="Range")] = None,
+) -> Response:
+    """Отдаёт уже скачанный файл библиотеки.
+
+    ⚠️ Путь берётся из записи по идентификатору, а не из параметра запроса:
+    иначе это был бы способ прочитать любой файл на сервере.
+
+    Про форматы. Браузер играет далеко не всё, что лежит в библиотеке: `.mkv`
+    с H.264 и AAC обычно проигрывается, а с HEVC или FLAC внутри — уже нет, и
+    это зависит от браузера, а не от нас. Мы отдаём файл как есть и не
+    перекодируем: перекодирование на слабом домашнем сервере съело бы процессор
+    ради одной вкладки. Что именно не сыграло, показывает сам плеер.
+    """
+    from app.core.db import session_scope
+    from app.models.library import LibraryFile, LibraryFolder, LibraryRoot
+
+    with session_scope() as session:
+        row = session.get(LibraryFile, file_id)
+        if row is None or row.kind != "video":
+            raise ApiError(404, errors.FILE_NOT_FOUND, "Файл не найден")
+        folder = session.get(LibraryFolder, row.folder_id)
+        root = session.get(LibraryRoot, folder.root_id) if folder else None
+        if folder is None or root is None:
+            raise ApiError(404, errors.FILE_NOT_FOUND, "Файл не найден")
+        path = Path(root.path) / folder.rel_path / row.filename
+
+    if not path.exists():
+        # Файл могли удалить после скана — это не ошибка сервера.
+        raise ApiError(404, errors.FILE_NOT_FOUND, "Файл удалён с диска")
+
+    media_type = LOCAL_VIDEO_TYPES.get(path.suffix.lower(), "application/octet-stream")
+    return serve_file_with_range(path, media_type, range_header)

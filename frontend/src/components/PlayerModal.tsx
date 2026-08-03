@@ -1,11 +1,15 @@
 import { Alert, Badge, Group, Modal, Select, SimpleGrid, Stack } from '@mantine/core'
 import { IconAlertTriangle } from '@tabler/icons-react'
+import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 
-import { LANG_COLORS, type EpisodeTranslation } from '../api/title'
+import { LANG_COLORS, titleApi, type EpisodeTranslation } from '../api/title'
 import { useT } from '../i18n'
 // Подписи вариантов в Select — строки, флаг-компонент туда не вставить.
 import { langCode } from '../i18n/flags'
+
+// Стабильная ссылка на пустой список: см. heightsKey ниже.
+const EMPTY_HEIGHTS: number[] = []
 
 interface Props {
   opened: boolean
@@ -68,6 +72,22 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
   const [subId, setSubId] = useState<string | null>(null)
   const [subTouched, setSubTouched] = useState(false)
 
+  // Ступени качества для выбранной дорожки. Спрашиваем embed: в списке
+  // переводов есть только `height` исходника, а это оценка — набор реально
+  // доступных ступеней из неё не выводится (526 даёт [478], 528 даёт [720, 360]).
+  const quality = useQuery({
+    queryKey: ['embed-stream-heights', videoId],
+    queryFn: () => titleApi.embed(Number(videoId)),
+    enabled: opened && videoId !== null,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  })
+  const streamHeights = quality.data?.stream_heights ?? EMPTY_HEIGHTS
+  // Ключ вместо массива в зависимостях эффекта. `?? []` возвращал бы новый
+  // массив на каждый рендер, эффект видел бы изменение и пересоздавал плеер
+  // бесконечно — с обрывом воспроизведения на каждом круге.
+  const heightsKey = streamHeights.join(',')
+
   useEffect(() => {
     if (!opened) {
       setSubTouched(false)
@@ -118,6 +138,44 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
         const art = new Artplayer({
           container: containerRef.current,
           url: `/api/stream/${videoId}/video`,
+          // Выбор качества — пунктом в меню под шестерёнкой, рядом со
+          // скоростью и субтитрами, а не отдельной кнопкой на панели: штатная
+          // опция `quality` у Artplayer ставит собственный контрол справа
+          // (`position: "right"`), и настройки воспроизведения оказывались бы
+          // в двух разных местах.
+          //
+          // Ступени — только те, что отдал сам API для ПРОСМОТРА. Числа среди
+          // них попадаются непривычные (478p, 396p), но это настоящие ступени,
+          // а не мусор: набор не выводится из разрешения исходника, и оценка в
+          // сводке тайтла с ним намеренно не совпадает.
+          //
+          // Одна ступень — меню не показываем: выбирать не из чего.
+          ...(streamHeights.length > 1
+            ? {
+                settings: [
+                  {
+                    html: t('player.quality'),
+                    width: 160,
+                    tooltip: `${streamHeights[0]}p`,
+                    selector: streamHeights.map((height, index) => ({
+                      html: `${height}p`,
+                      default: index === 0,
+                    })),
+                    // Адрес выводим из подписи, а не храним отдельным полем:
+                    // тип Setting у Artplayer посторонних свойств не допускает,
+                    // а обходить это приведением значило бы отключить проверку
+                    // там, где она как раз полезна.
+                    onSelect(item) {
+                      const height = parseInt(item.html, 10)
+                      // switchQuality сохраняет текущее время и состояние
+                      // воспроизведения, в отличие от switchUrl.
+                      art.switchQuality(`/api/stream/${videoId}/video?height=${height}`)
+                      return item.html
+                    },
+                  },
+                ],
+              }
+            : {}),
           // ⚠️ Ключ `subtitle` либо есть объектом, либо его нет вовсе.
           // `subtitle: undefined` Artplayer не принимает и падает с
           // «'option.subtitle' require 'object' type, but got 'undefined'» —
@@ -178,7 +236,10 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
       artRef.current?.destroy(true)
       artRef.current = null
     }
-  }, [opened, videoId, subId, t])
+    // streamHeights в зависимостях: ступени приходят отдельным запросом и
+    // обычно позже создания плеера. Без пересоздания меню качества не
+    // появилось бы до переключения дорожки.
+  }, [opened, videoId, subId, heightsKey, t])
 
   // Параметр намеренно не `t`: так называется функция перевода, и затенение
   // её внутри JSX читается как ошибка, даже когда работает.
