@@ -65,16 +65,24 @@ def only_default_user():
 
 @pytest.fixture
 def viewer_client(client: TestClient):
-    """Клиент, работающий от пользователя с одним лишь правом просмотра.
+    """Клиент от пользователя, которому можно только смотреть.
 
-    Подменяем зависимость, а не заводим сессию: вход пока общий по паролю, и
-    настоящего многопользовательского логина ещё нет — а проверять поведение
-    эндпоинтов надо уже сейчас.
+    Права ровно два: видеть каталог и смотреть видео. Ни качать, ни менять
+    библиотеку, ни трогать настройки он не должен.
+
+    Подменяем зависимость, а не заводим настоящую сессию: так тест проверяет
+    поведение эндпоинта при заданных правах, не завися от того, как именно
+    пользователь вошёл.
     """
     from app.core.permissions import current_user
     from app.main import app
 
-    viewer = CurrentUser(99, "гость", is_admin=False, permissions=[Permission.WATCH.value])
+    viewer = CurrentUser(
+        99,
+        "гость",
+        is_admin=False,
+        permissions=[Permission.CATALOG.value, Permission.WATCH.value],
+    )
     app.dependency_overrides[current_user] = lambda: viewer
     yield client
     app.dependency_overrides.pop(current_user, None)
@@ -108,10 +116,20 @@ class TestServerSideEnforcement:
         )
 
     def test_reading_stays_open(self, viewer_client: TestClient):
-        # Смотреть очередь и каталог можно и без права менять их: иначе роль
-        # «только просмотр» означала бы пустой интерфейс.
-        assert viewer_client.get("/api/downloads").status_code == 200
+        # Каталог и состояние библиотеки читаются по праву CATALOG, без права
+        # что-либо менять: иначе роль «только просмотр» означала бы пустой
+        # интерфейс.
         assert viewer_client.get("/api/catalog/genres").status_code == 200
+        assert viewer_client.get("/api/library/status").status_code == 200
+
+    def test_queue_belongs_to_downloads(self, viewer_client: TestClient):
+        """Очередь читается по праву DOWNLOADS, а не CATALOG.
+
+        Раньше список отдавался всем, кто видит каталог. Это давало страницу,
+        на которой все кнопки отвечают отказом, а заодно показывало пути внутри
+        библиотеки тому, кто загрузками не занимается.
+        """
+        assert viewer_client.get("/api/downloads").status_code == 403
 
 
 class TestDefaultInstallIsUnrestricted:

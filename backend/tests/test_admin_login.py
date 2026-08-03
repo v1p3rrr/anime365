@@ -133,11 +133,19 @@ class TestLoginEndpoint:
         # Сообщение одно на оба случая: иначе видно, какие имена существуют.
         assert "логин или пароль" in response.json()["detail"]
 
-    def test_shared_password_still_works(self, client, admin) -> None:
-        """Совместимость: вход без логина никуда не делся."""
+    def test_login_is_required(self, client, admin) -> None:
+        """Входа «по одному паролю без имени» больше не существует.
+
+        Учётная запись без имени не даёт ни разделения прав, ни понимания, кто
+        что сделал, а счётчик попыток по имени без него не работает вовсе.
+        """
         _, password = admin
-        assert client.post("/api/auth/login", json={"password": password}).status_code == 200
-        assert client.get("/api/settings").status_code == 200
+        # 422: поле обязательно на уровне схемы, до всякой проверки пароля.
+        assert client.post("/api/auth/login", json={"password": password}).status_code == 422
+        assert (
+            client.post("/api/auth/login", json={"login": "", "password": password}).status_code
+            == 422
+        )
 
 
 class TestBruteForceProtection:

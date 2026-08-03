@@ -42,6 +42,7 @@ import { JellyfinAudit } from '../components/JellyfinAudit'
 import { ErrorState } from '../components/ErrorState'
 import { MapFolderModal } from '../components/MapFolderModal'
 import { MappingReport } from '../components/MappingReport'
+import { usePermissions } from '../hooks/usePermissions'
 import { useT, type TranslationKey } from '../i18n'
 import { useApiError } from '../i18n/apiError'
 import { useFormat } from '../i18n/format'
@@ -97,6 +98,9 @@ export function LibraryPage() {
   const apiError = useApiError()
   const { size } = useFormat()
   const sourceLabel = (key: string) => t(`source.${key}` as TranslationKey)
+  // Состояние библиотеки — чтение (`catalog`). Сканирование и правка привязок
+  // меняют то, куда лягут файлы, и требуют `library`.
+  const canEdit = usePermissions().can('library')
   const [mappingFolder, setMappingFolder] = useState<UnmappedFolder | null>(null)
 
   const status = useQuery({
@@ -189,13 +193,15 @@ export function LibraryPage() {
             </Tooltip>
           ) : null}
         </Group>
-        <Button
-          leftSection={<IconRefresh size={16} />}
-          onClick={() => scan.mutate()}
-          loading={scan.isPending || data?.scanning}
-        >
-          {t('library.scan')}
-        </Button>
+        {canEdit && (
+          <Button
+            leftSection={<IconRefresh size={16} />}
+            onClick={() => scan.mutate()}
+            loading={scan.isPending || data?.scanning}
+          >
+            {t('library.scan')}
+          </Button>
+        )}
       </Group>
 
       {missingRoots.map((root) => (
@@ -309,9 +315,13 @@ export function LibraryPage() {
           <Tabs.Tab value="report" leftSection={<IconChartBar size={14} />}>
             {t('library.tabReport')}
           </Tabs.Tab>
-          <Tabs.Tab value="jellyfin" leftSection={<IconDeviceTv size={14} />}>
-            {t('library.tabJellyfin')}
-          </Tabs.Tab>
+          {/* Сверка обходит библиотеку Jellyfin целиком — это обслуживание, а
+              не просмотр, и живёт под тем же правом, что скан и привязки. */}
+          {canEdit && (
+            <Tabs.Tab value="jellyfin" leftSection={<IconDeviceTv size={14} />}>
+              {t('library.tabJellyfin')}
+            </Tabs.Tab>
+          )}
           <Tabs.Tab value="audio" leftSection={<IconMusic size={14} />}>
             {t('audio.tab')}
           </Tabs.Tab>
@@ -331,7 +341,7 @@ export function LibraryPage() {
                   <Table.Th w={200}>{t('library.columnNfoTitle')}</Table.Th>
                   <Table.Th w={80}>{t('library.columnVideos')}</Table.Th>
                   <Table.Th w={90}>{t('library.columnSize')}</Table.Th>
-                  <Table.Th w={120}>{t('library.columnAction')}</Table.Th>
+                  {canEdit && <Table.Th w={120}>{t('library.columnAction')}</Table.Th>}
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -354,11 +364,13 @@ export function LibraryPage() {
                     </Table.Td>
                     <Table.Td>{folder.video_count || '—'}</Table.Td>
                     <Table.Td>{size(folder.size_bytes)}</Table.Td>
-                    <Table.Td>
-                      <Button size="compact-xs" onClick={() => setMappingFolder(folder)}>
-                        {t('library.bind')}
-                      </Button>
-                    </Table.Td>
+                    {canEdit && (
+                      <Table.Td>
+                        <Button size="compact-xs" onClick={() => setMappingFolder(folder)}>
+                          {t('library.bind')}
+                        </Button>
+                      </Table.Td>
+                    )}
                   </Table.Tr>
                 ))}
               </Table.Tbody>
@@ -409,14 +421,23 @@ export function LibraryPage() {
                     </Tooltip>
                   </Table.Td>
                   <Table.Td>
+                    {/* Подтверждение слабой связи меняет привязку — оно под
+                        `library`. Сам факт «требует подтверждения» виден и без
+                        права: это состояние библиотеки, а не действие. */}
                     {row.needs_confirmation ? (
-                      <Button
-                        size="compact-xs"
-                        onClick={() => confirm.mutate(row.id)}
-                        loading={confirm.isPending}
-                      >
-                        {t('library.confirm')}
-                      </Button>
+                      canEdit ? (
+                        <Button
+                          size="compact-xs"
+                          onClick={() => confirm.mutate(row.id)}
+                          loading={confirm.isPending}
+                        >
+                          {t('library.confirm')}
+                        </Button>
+                      ) : (
+                        <Text size="xs" c="dimmed">
+                          {t('mapping.needsConfirmation')}
+                        </Text>
+                      )
                     ) : (
                       <Text size="xs" c="dimmed">
                         {row.is_manual ? t('library.manual') : t('library.auto')}
@@ -463,9 +484,11 @@ export function LibraryPage() {
         <Tabs.Panel value="report" pt="sm">
           <MappingReport />
         </Tabs.Panel>
-        <Tabs.Panel value="jellyfin" pt="sm">
-          <JellyfinAudit />
-        </Tabs.Panel>
+        {canEdit && (
+          <Tabs.Panel value="jellyfin" pt="sm">
+            <JellyfinAudit />
+          </Tabs.Panel>
+        )}
 
         <Tabs.Panel value="audio" pt="sm">
           <AudioLibraryTab />
@@ -473,7 +496,9 @@ export function LibraryPage() {
 
       </Tabs>
 
-      <MapFolderModal folder={mappingFolder} onClose={() => setMappingFolder(null)} />
+      {canEdit && (
+        <MapFolderModal folder={mappingFolder} onClose={() => setMappingFolder(null)} />
+      )}
     </Stack>
   )
 }

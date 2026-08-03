@@ -12,19 +12,14 @@ interface LoginPageProps {
 
 export function LoginPage({ onSuccess }: LoginPageProps) {
   const [password, setPassword] = useState('')
-  // Логин необязателен: вход по одному общему паролю никуда не делся, и
-  // пустое поле означает именно его. Заполненное — вход под конкретным
-  // пользователем, и права дальше берутся его.
   const [login_, setLogin] = useState('')
   const { t } = useT()
 
   const login = useMutation({
     mutationFn: () =>
       api.post<{ ok: boolean }>('/auth/login', {
+        login: login_.trim(),
         password,
-        // Пустую строку не шлём вовсе: сервер отличает «без логина» от
-        // «логин пустой», и второе он отверг бы.
-        ...(login_.trim() ? { login: login_.trim() } : {}),
       }),
     onSuccess,
   })
@@ -55,7 +50,6 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
             <Stack gap="sm">
               <TextInput
                 label={t('login.login')}
-                description={t('login.loginHint')}
                 value={login_}
                 onChange={(event) => setLogin(event.currentTarget.value)}
                 leftSection={<IconUser size={16} />}
@@ -71,7 +65,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                 // пароль на сервис, его будут вводить с разных устройств.
                 autoComplete="current-password"
               />
-              <Button type="submit" loading={login.isPending} disabled={!password}>
+              <Button type="submit" loading={login.isPending} disabled={!password || !login_.trim()}>
                 {t('login.submit')}
               </Button>
             </Stack>

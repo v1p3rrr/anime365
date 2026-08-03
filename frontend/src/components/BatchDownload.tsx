@@ -5,6 +5,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { downloadsApi } from '../api/downloads'
+import { usePermissions } from '../hooks/usePermissions'
 import { useT, type TranslationKey } from '../i18n'
 import { useApiError } from '../i18n/apiError'
 import type { Emphasis } from './DownloadButton'
@@ -96,6 +97,7 @@ export function BatchDownload({
   const queryClient = useQueryClient()
   const { t } = useT()
   const apiError = useApiError()
+  const canDownload = usePermissions().can('downloads')
   const [height, setHeight] = useState('1080')
   const [includeExtras, setIncludeExtras] = useState(false)
 
@@ -139,6 +141,10 @@ export function BatchDownload({
   })
 
   const label = String(ids.length)
+
+  // Сводка переводов остаётся видимой без права на загрузки — по ней смотрят,
+  // что вообще существует. Кнопки постановки в очередь при этом не рисуем.
+  if (!canDownload) return null
 
   return (
     <Menu position="bottom-end" closeOnItemClick={false}>

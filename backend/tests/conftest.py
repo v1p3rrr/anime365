@@ -48,10 +48,22 @@ def client():
     sessions.drop_all()
 
 
+#: Учётные данные, под которыми входят тесты. Логин обязателен: входа «по
+#: одному паролю без имени» больше нет — без имени не работает ни разделение
+#: прав, ни счётчик попыток по учётной записи.
+TEST_LOGIN = "тест-админ"
+TEST_PASSWORD = "правильный-пароль"
+
+
 @pytest.fixture
 def with_password():
-    """Включает пароль на время теста, не трогая БД."""
-    settings.set_db_override("ui_password", hash_password("правильный-пароль"))
-    yield
+    """Включает вход на время теста и заводит учётную запись администратора."""
+    from app.core.bootstrap import ensure_admin_user
+
+    settings.set_db_override("admin_login", TEST_LOGIN)
+    settings.set_db_override("ui_password", hash_password(TEST_PASSWORD))
+    ensure_admin_user()
+    yield {"login": TEST_LOGIN, "password": TEST_PASSWORD}
+    settings.set_db_override("admin_login", None)
     settings.set_db_override("ui_password", None)
     sessions.drop_all()

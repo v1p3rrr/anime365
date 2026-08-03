@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from app.core.events import bus, event_stream
+from app.core.permissions import Permission, require
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["service"])
 
 
-@router.get("/events")
+@router.get(
+    "/events",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
 async def events() -> StreamingResponse:
     """Живые события: прогресс загрузок, статусы задач, ход сканирования."""
     queue = await bus.subscribe()

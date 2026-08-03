@@ -1,6 +1,7 @@
 import { Alert, Badge, Group, Stack, Table, Text, Tooltip } from '@mantine/core'
 
 import { type AudioTrack } from '../api/library'
+import { usePermissions } from '../hooks/usePermissions'
 import { useT } from '../i18n'
 import { useFormat } from '../i18n/format'
 import { langCode } from '../i18n/flags'
@@ -31,6 +32,10 @@ interface Props {
 export function AudioTracks({ tracks, showTitle = false, emptyText }: Props) {
   const { t } = useT()
   const format = useFormat()
+  // Отдача файла — тот же эндпоинт, что и у видео, и то же право `watch`.
+  // Без него список дорожек остаётся (он про содержимое библиотеки), а
+  // проигрыватель — нет: он всё равно получил бы отказ на первом же байте.
+  const canWatch = usePermissions().can('watch')
 
   if (tracks.length === 0) {
     return <Alert color="gray">{emptyText ?? t('audio.none')}</Alert>
@@ -74,7 +79,11 @@ export function AudioTracks({ tracks, showTitle = false, emptyText }: Props) {
                 </Group>
               </Table.Td>
               <Table.Td>
-                {track.playable ? (
+                {!canWatch ? (
+                  <Text size="xs" c="dimmed">
+                    —
+                  </Text>
+                ) : track.playable ? (
                   <audio
                     controls
                     preload="none"

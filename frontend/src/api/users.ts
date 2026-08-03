@@ -10,6 +10,15 @@ export interface AppUser {
   created_at: string | null
 }
 
+/** Кто вошёл и что ему можно. Этим интерфейс решает, что показывать. */
+export interface Me {
+  id: number
+  name: string
+  is_admin: boolean
+  permissions: string[]
+  multiuser_enabled: boolean
+}
+
 export interface UsersResponse {
   users: AppUser[]
   all_permissions: string[]
@@ -37,6 +46,7 @@ export interface UserUpdate {
 }
 
 export const usersApi = {
+  me: () => api.get<Me>('/users/me'),
   list: () => api.get<UsersResponse>('/users'),
   create: (payload: UserCreate) => api.post<AppUser>('/users', payload),
   update: (id: number, payload: UserUpdate) => api.put<AppUser>(`/users/${id}`, payload),

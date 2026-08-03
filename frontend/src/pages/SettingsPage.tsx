@@ -25,6 +25,7 @@ import { api } from '../api/client'
 import { ErrorState } from '../components/ErrorState'
 import { useT, type TranslationKey } from '../i18n'
 import { useApiError } from '../i18n/apiError'
+import { usePermissions } from '../hooks/usePermissions'
 import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
 import scrollClasses from './ScrollPage.module.css'
 import settingsClasses from './SettingsPage.module.css'
@@ -101,6 +102,7 @@ export function SettingsPage() {
   const { t } = useT()
   const apiError = useApiError()
   const settingText = useSettingText()
+  const { can, isAdmin, ready } = usePermissions()
   const [draft, setDraft] = useState<Record<string, string>>({})
   // Черновик пользователей живёт в своей панели, но уход со страницы один на
   // всех — иначе правки по пользователям пропадали бы без предупреждения.
@@ -111,9 +113,15 @@ export function SettingsPage() {
   // на каждом рендере. React это ловит ошибкой #310 и роняет всю страницу.
   const guard = useUnsavedGuard(hasChanges || usersDirty)
 
+  // Без права `settings` запрос не отправляется вовсе. Иначе страница показывала
+  // бы ошибку «недостаточно прав» на месте блока, которого этому пользователю
+  // и не полагается видеть, — отказ вместо отсутствия. Ждём ответа про права
+  // (`ready`), потому что до него `can()` отвечает утвердительно.
+  const allowed = ready && can('settings')
   const query = useQuery({
     queryKey: ['settings'],
     queryFn: () => api.get<SettingsResponse>('/settings'),
+    enabled: allowed,
   })
 
   // Правки сбрасываем при перезагрузке списка, иначе форма показывает старое.
@@ -200,7 +208,7 @@ export function SettingsPage() {
       }),
   })
 
-  if (query.isLoading) {
+  if (!ready || query.isLoading) {
     return (
       <Group justify="center" p="xl">
         <Loader />
@@ -238,14 +246,19 @@ export function SettingsPage() {
         className={settingsClasses.stickyHeader}
       >
         <Title order={3}>{t('settings.title')}</Title>
-        <Button
-          leftSection={<IconDeviceFloppy size={16} />}
-          onClick={() => save.mutate()}
-          loading={save.isPending}
-          disabled={!hasChanges}
-        >
-          {hasChanges ? t('settings.saveCount', { count: Object.keys(draft).length }) : t('common.save')}
-        </Button>
+        {/* Кнопка сохранения принадлежит серверным настройкам: личные
+            применяются сразу, пользователей применяет своя панель. Без права
+            на серверные сохранять здесь нечего — и кнопки быть не должно. */}
+        {allowed && (
+          <Button
+            leftSection={<IconDeviceFloppy size={16} />}
+            onClick={() => save.mutate()}
+            loading={save.isPending}
+            disabled={!hasChanges}
+          >
+            {hasChanges ? t('settings.saveCount', { count: Object.keys(draft).length }) : t('common.save')}
+          </Button>
+        )}
       </Group>
 
       {/* Уход с несохранёнными правками. Три исхода, а не два: «сохранить и
@@ -299,11 +312,15 @@ export function SettingsPage() {
         </Alert>
       )}
 
-      <Alert color="gray" p="xs">
-        <Text size="xs">
-          {t('settings.layersHint')}
-        </Text>
-      </Alert>
+      {/* Про три слоя значений — справка к серверным настройкам. Без них
+          она объясняла бы то, чего на странице нет. */}
+      {allowed && (
+        <Alert color="gray" p="xs">
+          <Text size="xs">
+            {t('settings.layersHint')}
+          </Text>
+        </Alert>
+      )}
 
       {/* Личные настройки идут первыми: их меняют чаще всего, они применяются
           сразу и не участвуют в общем сохранении. */}
@@ -311,10 +328,16 @@ export function SettingsPage() {
 
       {/* Пользователи — после личных настроек, но до серверных: заводить их
           приходится редко, а серверные настройки длиннее и оттеснили бы форму
-          вниз, где её никто не найдёт. */}
-      <UsersPanel onDirtyChange={setUsersDirty} />
+          вниз, где её никто не найдёт.
 
-      {query.data?.groups.map((group) => (
+          Панель только для администратора: `/api/users` требует именно его, и
+          обычному пользователю она отвечала бы отказом на каждый рендер. */}
+      {isAdmin && <UsersPanel onDirtyChange={setUsersDirty} />}
+
+      {/* Серверные настройки — под правом. Личные (язык, отображение) выше
+          и остаются всем: они хранятся в браузере и никого не касаются. */}
+      {allowed &&
+        query.data?.groups.map((group) => (
         <Card key={group.key} withBorder padding="sm">
           <Group justify="space-between" mb="xs">
             <Text fw={600}>{settingText('settingGroup', group.key, group.label)}</Text>

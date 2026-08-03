@@ -94,7 +94,10 @@ def _container_folder_ids():
     )
 
 
-@router.get("/status")
+@router.get(
+    "/status",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
 def library_status() -> dict[str, Any]:
     """Состояние корней и последнего сканирования."""
     with session_scope() as session:
@@ -173,7 +176,10 @@ def start_scan(
         raise ApiError(409, errors.SCAN_REJECTED, str(exc), reason=str(exc)) from exc
 
 
-@router.get("/unmapped")
+@router.get(
+    "/unmapped",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
 def unmapped_folders(
     limit: Annotated[int, Query(ge=1, le=500)] = 200,
     only_with_video: Annotated[bool, Query()] = True,
@@ -245,7 +251,10 @@ def unmapped_folders(
         return result
 
 
-@router.get("/unmatched-files")
+@router.get(
+    "/unmatched-files",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
 def unmatched_files(limit: Annotated[int, Query(ge=1, le=500)] = 200) -> list[dict[str, Any]]:
     """Файлы, у которых не удалось определить номер серии."""
     with session_scope() as session:
@@ -270,7 +279,13 @@ def unmatched_files(limit: Annotated[int, Query(ge=1, le=500)] = 200) -> list[di
 @router.get(
     "/jellyfin-audit",
     # Обходит библиотеку Jellyfin целиком, поэтому не чаще, чем нужно человеку.
-    dependencies=[Depends(rate_limit("jellyfin_audit", limit=10, window=60))],
+    # Право `library`, а не `catalog`: метод хоть и читающий, но это не просмотр,
+    # а обслуживание — тяжёлый обход чужого сервера по нажатию кнопки, и отвечает
+    # он на вопрос того, кто эту библиотеку ведёт.
+    dependencies=[
+        Depends(require(Permission.LIBRARY)),
+        Depends(rate_limit("jellyfin_audit", limit=10, window=60)),
+    ],
 )
 async def jellyfin_audit() -> dict[str, Any]:
     """Какие наши файлы Jellyfin не распознал.
@@ -283,7 +298,10 @@ async def jellyfin_audit() -> dict[str, Any]:
     return await audit()
 
 
-@router.get("/audio")
+@router.get(
+    "/audio",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
 def audio_library() -> list[dict[str, Any]]:
     """Вся фонотека, сгруппированная по тайтлам."""
     from app.services.audio_library import library
@@ -291,7 +309,13 @@ def audio_library() -> list[dict[str, Any]]:
     return library()
 
 
-@router.get("/jellyfin/collections")
+@router.get(
+    "/jellyfin/collections",
+    # Читающий метод, но право то же, что у добавления в коллекцию: список нужен
+    # только форме добавления, и отдавать его тому, кому добавлять нельзя, — это
+    # показывать устройство чужой библиотеки без всякой пользы.
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
 async def list_jellyfin_collections(
     series_id: Annotated[int | None, Query(description="Отметить те, где тайтл уже состоит")] = None,
 ) -> dict[str, Any]:
@@ -415,7 +439,10 @@ async def create_jellyfin_collection(payload: CollectionRequest) -> dict[str, An
     return {"created": len(found), "missing": missing, "collection": result}
 
 
-@router.get("/mappings")
+@router.get(
+    "/mappings",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
 def list_mappings(limit: Annotated[int, Query(ge=1, le=1000)] = 500) -> list[dict[str, Any]]:
     """Все связи папка-тайтл с указанием, чем именно они получены."""
     with session_scope() as session:
@@ -542,7 +569,12 @@ def delete_mapping(mapping_id: int) -> dict[str, Any]:
     return {"deleted": mapping_id}
 
 
-@router.post("/parse-test")
+@router.post(
+    "/parse-test",
+    # Побочных действий нет, но это инструмент настройки правил разбора имён —
+    # тот же круг задач, что скан и привязки. Право `library`.
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
 def parse_test(
     names: Annotated[list[str], Body(embed=True)],
     scope: Annotated[str, Body(embed=True)] = "series",
@@ -590,7 +622,10 @@ def reload_parsing_rules() -> dict[str, Any]:
     return {"rules": len(rules.rules), "exclude_patterns": len(rules.exclude)}
 
 
-@router.get("/series/{series_id}/files")
+@router.get(
+    "/series/{series_id}/files",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
 def series_files(series_id: int) -> list[dict[str, Any]]:
     """Локальные файлы всех папок тайтла — кандидаты для ручной привязки серии.
 
@@ -652,7 +687,10 @@ class EpisodeTargetRequest(BaseModel):
     folder_id: int
 
 
-@router.get("/episode-targets/{series_id}")
+@router.get(
+    "/episode-targets/{series_id}",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
 def list_episode_targets(series_id: int) -> dict[str, Any]:
     """Серии этого тайтла, у которых своя папка назначения.
 
@@ -685,7 +723,10 @@ def list_episode_targets(series_id: int) -> dict[str, Any]:
         }
 
 
-@router.get("/episode-targets/{series_id}/folders")
+@router.get(
+    "/episode-targets/{series_id}/folders",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
 def episode_target_folders(series_id: int) -> list[dict[str, Any]]:
     """Папки, куда можно направить отдельную серию.
 
@@ -897,7 +938,10 @@ def delete_episode_mapping(mapping_id: int) -> dict[str, Any]:
     return {"deleted": mapping_id}
 
 
-@router.get("/mapping-report")
+@router.get(
+    "/mapping-report",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
 def mapping_report() -> dict[str, Any]:
     """Чем именно смапились папки и с какой уверенностью.
 

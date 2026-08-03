@@ -12,7 +12,7 @@ import logging
 import secrets
 
 from fastapi import APIRouter, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.security import (
     SESSION_COOKIE,
@@ -21,7 +21,6 @@ from app.core.security import (
     login_name_limiter,
     password_required,
     sessions,
-    verify_password,
     verify_user,
 )
 
@@ -31,10 +30,11 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 class LoginRequest(BaseModel):
-    password: str
-    # Логин необязателен намеренно: вход по одному общему паролю никуда не
-    # делся, и старые вкладки, которые его не шлют, продолжают работать.
-    login: str | None = None
+    # Оба поля обязательны. Входа «по одному паролю без имени» больше нет:
+    # учётная запись без имени не даёт ни разделения прав, ни понимания, кто
+    # что сделал, а счётчик попыток по имени без него не работает вовсе.
+    login: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1)
 
 
 def _client_key(request: Request) -> str:
@@ -74,32 +74,20 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
     key = _client_key(request)
     # Имя нормализуем: иначе «Admin» и «admin » считались бы разными целями и
     # обходили счётчик простой сменой регистра.
-    name_key = (payload.login or "").strip().casefold()
+    name_key = payload.login.strip().casefold()
 
     # Два счётчика, и оба обязательны. Только по адресу — ботнет размазывает
     # попытки по сотне машин, и каждая остаётся в пределах лимита. Только по
     # имени — достаточно долбиться в чужой логин, чтобы запереть его владельца.
-    wait = max(
-        login_limiter.check(key),
-        login_name_limiter.check(name_key) if name_key else 0.0,
-    )
+    wait = max(login_limiter.check(key), login_name_limiter.check(name_key))
     if wait > 0:
         response.status_code = 429
         return {"ok": False, "detail": f"Слишком много попыток, подождите {int(wait) + 1} с"}
 
-    # С логином — вход под конкретным пользователем, и права берутся его.
-    # Без логина — прежний общий пароль и пользователь по умолчанию.
-    user_id: int | None = None
-    if payload.login:
-        user_id = verify_user(payload.login, payload.password)
-        ok = user_id is not None
-    else:
-        ok = verify_password(payload.password)
-
-    if not ok:
+    user_id = verify_user(payload.login, payload.password)
+    if user_id is None:
         login_limiter.register_failure(key)
-        if name_key:
-            login_name_limiter.register_failure(name_key)
+        login_name_limiter.register_failure(name_key)
         # Пауза бьёт по скорости перебора сильнее, чем лимит: даже в пределах
         # разрешённых попыток быстрее секунды не выйдет.
         await asyncio.sleep(1.0)
@@ -113,9 +101,8 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
         return {"ok": False, "detail": "Неверный логин или пароль"}
 
     login_limiter.reset(key)
-    if name_key:
-        login_name_limiter.reset(name_key)
-    token = sessions.create(user_id) if user_id is not None else sessions.create()
+    login_name_limiter.reset(name_key)
+    token = sessions.create(user_id)
     _set_cookie(response, token, secure=request.url.scheme == "https")
     # Имя не пишем и здесь: журнал входов — отдельная задача, и делать его
     # побочным эффектом отладочной строки неправильно.

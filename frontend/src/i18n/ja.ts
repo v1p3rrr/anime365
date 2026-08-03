@@ -183,16 +183,18 @@ export const ja: Dictionary = {
     createFailed: 'ユーザーを作成できませんでした',
     changeFailed: '変更を保存できませんでした',
     permission: {
+      catalog: 'カタログ',
       settings: '設定',
       downloads: 'ダウンロード',
       library: 'ライブラリ',
       watch: '再生',
     },
     permissionHint: {
+      catalog: 'カタログ、作品ページ、ライブラリの状態の閲覧。読み取りのみで、これがないと画面には何も表示されません',
       settings: 'サーバー設定の編集。プレミアムトークンと書き込み先パスが見えます',
       downloads: 'ダウンロードのキュー投入と管理。ディスクと通信量を消費します',
       library: 'フォルダーとエピソードの紐づけ変更、スキャンの実行',
-      watch: 'ダウンロード済みの視聴。変更は行いません',
+      watch: '視聴：プロキシ経由のストリーミングとダウンロード済みファイル。変更は行いません',
     },
   },
   common: {
@@ -205,6 +207,8 @@ export const ja: Dictionary = {
     unbind: '解除',
     loading: '読み込み中…',
     nothingFound: '見つかりません',
+    noAccess: 'このセクションは利用できません',
+    noAccessHint: 'このアカウントには「{permission}」の権限がありません。管理者に付与を依頼してください。',
     episodes: '話',
     episodesOf: '{total} 話中 {have} 話',
     unknown: '原因不明',
@@ -232,9 +236,8 @@ export const ja: Dictionary = {
 
   login: {
     login: 'ログイン名',
-    loginHint: '空欄でも構いません。その場合は共通パスワードでの入室になります',
     title: 'Anime365 Downloader',
-    hint: '設定または A365_UI_PASSWORD で指定したパスワードを入力してください。',
+    hint: 'ログイン名とパスワードを入力してください。',
     password: 'パスワード',
     submit: 'ログイン',
   },
@@ -947,15 +950,16 @@ export const ja: Dictionary = {
     subtitles_unavailable: '字幕のリンクを取得できません。',
     subtitles_fetch_failed: '字幕を取得できませんでした：{reason}',
     subtitles_server_error: '字幕サーバーがエラー {status} を返しました。',
+    permission_denied: '権限が足りません：「{permission}」が必要です。管理者に付与を依頼してください。',
+    admin_required: 'この操作は管理者のみ実行できます。',
   },
 
   errorCodes: {
     retryShort: '再試行',
     e401: 'ログインが必要です',
     e401hint: 'セッションが切れました。もう一度ログインしてください。',
-    e403: '映像と字幕にアクセスできません',
-    e403hint:
-      'このリクエストには、有効なプレミアム契約のアカウントの access_token が必要です。設定でトークンを指定し、契約が失効していないか確認してください。',
+    e403: 'アクセスできません',
+    e403hint: 'リクエストは拒否されました：権限が足りないか、ソースを利用できません。',
     e404: '見つかりません',
     e404hint: 'カタログにレコードがありません。',
     e409: '処理はすでに実行中です',

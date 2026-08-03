@@ -2,6 +2,7 @@ import { Alert, Anchor, Group, Text, Tooltip } from '@mantine/core'
 import { IconFolderSymlink } from '@tabler/icons-react'
 
 import type { EpisodeTarget } from '../api/library'
+import { usePermissions } from '../hooks/usePermissions'
 import { useT } from '../i18n'
 import pathClasses from './PathLine.module.css'
 
@@ -25,6 +26,9 @@ const SHOWN_EPISODES = 3
 
 export function EpisodeTargetsAlert({ targets, onManage }: Props) {
   const { t } = useT()
+  // Само предупреждение остаётся всем: оно объясняет, куда уедут файлы, и это
+  // важно знать и тому, кто только качает. Ссылка на настройку — под `library`.
+  const canEdit = usePermissions().can('library')
 
   if (targets.length === 0) return null
 
@@ -66,9 +70,11 @@ export function EpisodeTargetsAlert({ targets, onManage }: Props) {
         </Text>
       )}
 
-      <Anchor component="button" type="button" size="xs" mt={6} onClick={onManage}>
-        {t('episodeTarget.manage')}
-      </Anchor>
+      {canEdit && (
+        <Anchor component="button" type="button" size="xs" mt={6} onClick={onManage}>
+          {t('episodeTarget.manage')}
+        </Anchor>
+      )}
     </Alert>
   )
 }

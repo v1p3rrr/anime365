@@ -62,16 +62,19 @@ class TestAuthGate:
         assert client.get("/api/health").status_code in (200, 503)
 
     def test_login_opens_access(self, client, with_password) -> None:
-        assert client.post("/api/auth/login", json={"password": "правильный-пароль"}).status_code == 200
+        assert client.post("/api/auth/login", json={"login": with_password["login"], "password": with_password["password"]}).status_code == 200
         assert client.get("/api/settings").status_code == 200
 
     def test_wrong_password_rejected(self, client, with_password) -> None:
-        response = client.post("/api/auth/login", json={"password": "неверный"})
+        response = client.post(
+            "/api/auth/login",
+            json={"login": with_password["login"], "password": "неверный"},
+        )
         assert response.status_code == 401
         assert client.get("/api/settings").status_code == 401
 
     def test_logout_closes_access(self, client, with_password) -> None:
-        client.post("/api/auth/login", json={"password": "правильный-пароль"})
+        client.post("/api/auth/login", json={"login": with_password["login"], "password": with_password["password"]})
         client.post("/api/auth/logout")
         assert client.get("/api/settings").status_code == 401
 
@@ -156,18 +159,17 @@ class TestSecretsNeverLeave:
         finally:
             settings.set_db_override("access_token", None)
 
-    def test_password_hash_is_masked_in_settings_response(self, client) -> None:
-        settings.set_db_override("ui_password", hash_password("тайна"))
+    def test_password_hash_is_masked_in_settings_response(self, client, with_password) -> None:
         try:
             # С заданным паролем настройки уже за входом, поэтому логинимся.
-            client.post("/api/auth/login", json={"password": "тайна"})
+            # Учётную запись заводит фикстура: входа без имени больше нет.
+            client.post("/api/auth/login", json=with_password)
             items = client.get("/api/settings").json()["groups"]
             flat = {s["key"]: s for group in items for s in group["settings"]}
             # Хеш наружу тоже не отдаём: по нему можно перебирать пароль офлайн.
             assert "$argon2" not in str(flat["ui_password"]["value"])
             assert flat["ui_password"]["is_set"] is True
         finally:
-            settings.set_db_override("ui_password", None)
             sessions.drop_all()
 
 

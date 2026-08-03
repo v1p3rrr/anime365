@@ -9,8 +9,9 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import (
@@ -31,6 +32,7 @@ from app.core import proxy
 from app.core.bootstrap import bootstrap
 from app.core.db import check_connection
 from app.core.logging_setup import setup_logging
+from app.core.permissions import Permission, require
 from app.services.download_queue import download_queue
 from app.workers.scheduler import start_scheduler, stop_scheduler
 
@@ -65,12 +67,33 @@ app = FastAPI(
     title="Anime365 Downloader",
     version="0.1.0",
     lifespan=lifespan,
-    # Документацию API оставляем — она сильно упрощает отладку руками.
-    docs_url="/api/docs",
-    openapi_url="/api/openapi.json",
+    # Штатные маршруты документации выключены и заведены ниже вручную: встроенным
+    # нельзя навесить зависимость, а значит и право. Сессию с них спрашивает
+    # middleware, но одной сессии мало — карта всех эндпоинтов вместе со схемой
+    # настроек это разведка, и обычному пользователю она ни к чему.
+    docs_url=None,
+    openapi_url=None,
 )
 
 middleware.install(app)
+
+
+@app.get("/api/openapi.json", include_in_schema=False)
+def openapi_schema(_: object = Depends(require(Permission.SETTINGS))) -> JSONResponse:
+    return JSONResponse(app.openapi())
+
+
+@app.get("/api/docs", include_in_schema=False)
+def swagger_ui(_: object = Depends(require(Permission.SETTINGS))) -> HTMLResponse:
+    """Документацию API оставляем — она сильно упрощает отладку руками.
+
+    ⚠️ Сама страница Swagger UI тянет скрипты и стили с CDN, а наша CSP
+    (`script-src 'self'`) их не пропускает — в браузере она останется пустой.
+    Рабочий способ — забрать `/api/openapi.json` и открыть его чем угодно.
+    Так было и до появления этого маршрута; чинить не стали: класть в образ
+    бандл Swagger UI ради отладки дороже, чем один `curl`.
+    """
+    return get_swagger_ui_html(openapi_url="/api/openapi.json", title="Anime365 Downloader")
 
 app.include_router(health.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")

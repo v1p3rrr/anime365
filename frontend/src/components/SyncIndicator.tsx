@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { notifications } from '@mantine/notifications'
 
 import { catalogApi } from '../api/client'
+import { usePermissions } from '../hooks/usePermissions'
 import { useT, type TranslationKey } from '../i18n'
 import { useApiError } from '../i18n/apiError'
 
@@ -23,6 +24,10 @@ export function SyncIndicator({ filteredTotal }: Props) {
   const queryClient = useQueryClient()
   const { t, locale } = useT()
   const apiError = useApiError()
+  // Ход синхронизации видит каждый — по нему понятно, почему каталог неполный.
+  // Запускать её вручную — право `settings`: это нагрузка на чужой API и на
+  // сервер, вопрос эксплуатации, а не просмотра.
+  const canSync = usePermissions().can('settings')
 
   const statusQuery = useQuery({
     queryKey: ['catalog-status'],
@@ -67,6 +72,7 @@ export function SyncIndicator({ filteredTotal }: Props) {
         </Text>
       ) : null}
 
+      {canSync && (
       <Menu position="bottom-end">
         <Menu.Target>
           <Tooltip label={t('sync.cached', { count: status?.total_series?.toLocaleString(locale) ?? '—' })}>
@@ -102,6 +108,7 @@ export function SyncIndicator({ filteredTotal }: Props) {
           </Menu.Item>
         </Menu.Dropdown>
       </Menu>
+      )}
     </Group>
   )
 }

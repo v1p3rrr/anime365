@@ -122,6 +122,13 @@ class TestStartupRefusesOverlap:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            # ⚠️ `errors` обязателен. Дочерний процесс пишет traceback в кодировке
+            # своей консоли, и на Windows это cp1251: тире в тексте ошибки даёт
+            # байт 0x97, на котором строгое декодирование падает. Падает при этом
+            # не тест, а поток-читатель внутри subprocess — исключение уходит в
+            # stderr самого pytest, а `result.stderr` остаётся None, и тест
+            # разваливается на `in None` вместо честной проверки.
+            errors="replace",
             cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         )
         assert result.returncode != 0, "запуск с пересекающимися путями в ENV не упал"

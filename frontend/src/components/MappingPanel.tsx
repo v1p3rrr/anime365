@@ -29,6 +29,7 @@ import {
   type TitleMappingInfo,
 } from '../api/title'
 import pathClasses from './PathLine.module.css'
+import { usePermissions } from '../hooks/usePermissions'
 import { useT, type TranslationKey } from '../i18n'
 import { useApiError } from '../i18n/apiError'
 import { useFormat } from '../i18n/format'
@@ -72,6 +73,9 @@ export function MappingPanel({
   const { t } = useT()
   const apiError = useApiError()
   const { size } = useFormat()
+  // Сама плашка — сведения о привязке, их видит каждый, кто видит тайтл.
+  // Кнопки правят привязку и решают, куда лягут файлы: это право `library`.
+  const canEdit = usePermissions().can('library')
   const sourceLabel = (key: string) => t(`source.${key}` as TranslationKey)
 
   const refresh = () => {
@@ -139,9 +143,11 @@ export function MappingPanel({
             {t('mapping.noneHint')}
           </Text>
         )}
-        <Button size="xs" leftSection={<IconFolderPlus size={14} />} onClick={onRebind}>
-          {proposed ? t('mapping.bindOther') : t('mapping.bindFolder')}
-        </Button>
+        {canEdit && (
+          <Button size="xs" leftSection={<IconFolderPlus size={14} />} onClick={onRebind}>
+            {proposed ? t('mapping.bindOther') : t('mapping.bindFolder')}
+          </Button>
+        )}
       </Alert>
     )
   }
@@ -257,7 +263,7 @@ export function MappingPanel({
               </div>
 
               <Stack gap={2} align="flex-end" style={{ flexShrink: 0 }}>
-                {multiple && !mapping.is_primary && (
+                {canEdit && multiple && !mapping.is_primary && (
                   <Tooltip label={t('mapping.makePrimaryHint')}>
                     <Button
                       size="compact-xs"
@@ -270,44 +276,48 @@ export function MappingPanel({
                     </Button>
                   </Tooltip>
                 )}
-                <Tooltip label={t('mapping.unbindHint')}>
-                  <Button
-                    size="compact-xs"
-                    variant="subtle"
-                    color="red"
-                    leftSection={<IconUnlink size={12} />}
-                    onClick={() => unbind.mutate(mapping.mapping_id)}
-                    loading={unbind.isPending}
-                  >
-                    {t('common.unbind')}
-                  </Button>
-                </Tooltip>
+                {canEdit && (
+                  <Tooltip label={t('mapping.unbindHint')}>
+                    <Button
+                      size="compact-xs"
+                      variant="subtle"
+                      color="red"
+                      leftSection={<IconUnlink size={12} />}
+                      onClick={() => unbind.mutate(mapping.mapping_id)}
+                      loading={unbind.isPending}
+                    >
+                      {t('common.unbind')}
+                    </Button>
+                  </Tooltip>
+                )}
               </Stack>
             </Group>
           </div>
         ))}
 
-        <Group gap="xs">
-          <Button
-            size="compact-xs"
-            variant="light"
-            leftSection={<IconFolderPlus size={12} />}
-            onClick={onRebind}
-          >
-            {t('mapping.bindAnother')}
-          </Button>
-          {/* Единственная точка входа, пока назначений нет: плашка со списком
-              появляется только когда они уже есть, и первое создать было бы
-              неоткуда. */}
-          <Button
-            size="compact-xs"
-            variant="subtle"
-            leftSection={<IconFolderSymlink size={12} />}
-            onClick={onManageEpisodeTargets}
-          >
-            {t('mapping.episodeFolders')}
-          </Button>
-        </Group>
+        {canEdit && (
+          <Group gap="xs">
+            <Button
+              size="compact-xs"
+              variant="light"
+              leftSection={<IconFolderPlus size={12} />}
+              onClick={onRebind}
+            >
+              {t('mapping.bindAnother')}
+            </Button>
+            {/* Единственная точка входа, пока назначений нет: плашка со списком
+                появляется только когда они уже есть, и первое создать было бы
+                неоткуда. */}
+            <Button
+              size="compact-xs"
+              variant="subtle"
+              leftSection={<IconFolderSymlink size={12} />}
+              onClick={onManageEpisodeTargets}
+            >
+              {t('mapping.episodeFolders')}
+            </Button>
+          </Group>
+        )}
 
         {local.has_local_files && (
           <Stack gap={4} mt={4}>

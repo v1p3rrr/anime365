@@ -43,6 +43,7 @@ import { EpisodeTargetsModal } from '../components/EpisodeTargetsModal'
 import { TitleAudioSection } from '../components/TitleAudioSection'
 import { episodeTargetApi, type EpisodeTarget } from '../api/library'
 import { useVisibleWidthVar } from '../hooks/useVisibleWidthVar'
+import { usePermissions } from '../hooks/usePermissions'
 import { LANG_COLORS, titleApi } from '../api/title'
 import { BindFolderModal } from '../components/BindFolderModal'
 import { EpisodeRow } from '../components/EpisodeRow'
@@ -62,6 +63,7 @@ export function TitlePage() {
   const { id } = useParams()
   const seriesId = Number(id)
   const { prefs, toggleType } = usePreferences()
+  const { can } = usePermissions()
   const panelWidthRef = useVisibleWidthVar('--episode-panel-width')
   const [posterFailed, setPosterFailed] = useState(false)
 
@@ -267,6 +269,27 @@ export function TitlePage() {
                 прежний тумблер не давал вовсе. Кнопка ещё и отделяет управление
                 от соседних значков: те только показывают, а этот меняет
                 поведение загрузок, и путать их нельзя. */}
+            {/* «Фильм или сериал» решает, в какой корень лягут файлы, поэтому
+                это право `library`. Без него состояние остаётся видимым —
+                значком вместо кнопки: знать, куда пойдут загрузки, полезно и
+                тому, кто не может это менять. */}
+            {!can('library') ? (
+              <Tooltip
+                label={
+                  series.effective_is_movie ? t('title.asMovieHint') : t('title.asSeriesHint')
+                }
+              >
+                <Badge
+                  variant="light"
+                  color={series.treat_as_movie != null ? 'teal' : 'gray'}
+                  leftSection={
+                    series.effective_is_movie ? <IconMovie size={12} /> : <IconDeviceTv size={12} />
+                  }
+                >
+                  {series.effective_is_movie ? t('title.asMovie') : t('title.asSeries')}
+                </Badge>
+              </Tooltip>
+            ) : (
             <Menu position="bottom-start" withinPortal>
               <Menu.Target>
                 <Tooltip
@@ -322,6 +345,7 @@ export function TitlePage() {
                 </Menu.Item>
               </Menu.Dropdown>
             </Menu>
+            )}
 
             <Divider orientation="vertical" />
 
@@ -436,18 +460,24 @@ export function TitlePage() {
           <Text size="sm" fw={600}>
             {t('title.quality')}
           </Text>
-          <Tooltip label={t('title.probeHint')}>
-            <Button
-              size="compact-xs"
-              variant="subtle"
-              color="gray"
-              onClick={() => probe.mutate()}
-              loading={probe.isPending}
-            >
-              {t('title.probeStreams')}
-            </Button>
-          </Tooltip>
-          {quality.buckets.length > 0 && quality.is_estimate && (
+          {/* ffprobe читает файлы библиотеки и переписывает наши данные о
+              дорожках — это `library`. */}
+          {can('library') && (
+            <Tooltip label={t('title.probeHint')}>
+              <Button
+                size="compact-xs"
+                variant="subtle"
+                color="gray"
+                onClick={() => probe.mutate()}
+                loading={probe.isPending}
+              >
+                {t('title.probeStreams')}
+              </Button>
+            </Tooltip>
+          )}
+          {/* «Уточнить качество» ходит в embed по каждой серии — расход чужого
+              API ради подготовки к загрузке, поэтому право `downloads`. */}
+          {can('downloads') && quality.buckets.length > 0 && quality.is_estimate && (
             <Tooltip label={t('title.refineHint')}>
               <Button
                 size="compact-xs"

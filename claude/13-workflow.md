@@ -94,6 +94,12 @@ docker run --rm --entrypoint sh -v "$PWD:/repo:ro" -u root anime365-downloader:0
 * **Кириллица в теле `curl` через Git Bash искажается.** Пароль доезжал до
   контейнера верно, а запрос уходил с другими байтами — выглядело как «вход не
   работает». Проверять учётные данные на латинице.
+* **Вывод python в Git Bash падает на кириллице.** `UnicodeEncodeError: charmap`
+  — нужен `export PYTHONIOENCODING=utf-8` перед разбором JSON-ответов.
+* **`subprocess` с `encoding="utf-8"` не читает stderr дочернего процесса на
+  Windows.** Тот пишет в кодировке консоли (cp1251), поток-читатель падает с
+  `UnicodeDecodeError`, а `result.stderr` молча становится `None` — тест
+  разваливается не там, где смотрит. Нужен `errors="replace"`.
 * **`node`/`npm` не на PATH** в Bash-инструменте: нужен
   `export PATH="/c/Program Files/nodejs:$PATH"`.
 * **Python в Bash — виндовый.** `subprocess.run(['find', ...])` вызовет
@@ -106,6 +112,7 @@ docker run --rm --entrypoint sh -v "$PWD:/repo:ro" -u root anime365-downloader:0
 
 | Изменил | Проверить |
 |---|---|
+| Новый эндпоинт | `tests/test_permissions_audit.py` — маршрут без права роняет тест. И спрятать соответствующую кнопку в UI через `usePermissions` |
 | Зависимости | `tests/test_dockerfile_deps.py` — списки в `pyproject` и `Dockerfile` продублированы намеренно, ради кэша слоёв |
 | Настройку в реестре | `tests/test_compose_env.py` и `tests/test_settings_i18n_sync.py` — переменная должна попасть в compose, а подписи в `ru.ts` совпадать дословно |
 | Dockerfile | Пересобрать и **прогнать скан**; проверить, что зачистка сработала (там стоят `test !`, но лишним не будет) |

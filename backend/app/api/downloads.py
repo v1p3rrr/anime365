@@ -269,7 +269,14 @@ def create_batch(payload: BatchRequest) -> dict[str, Any]:
     }
 
 
-@router.get("")
+# Право `downloads`, а не `catalog`: очередь — это раздел загрузок целиком, и
+# читается он теми же людьми, что им управляют. Отдать список на `catalog`
+# значило бы показать в интерфейсе страницу, на которой все кнопки отвечают
+# отказом, — а список задач ещё и называет пути в библиотеке.
+@router.get(
+    "",
+    dependencies=[Depends(require(Permission.DOWNLOADS))],
+)
 def list_tasks(
     status: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 200,

@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { titleApi } from '../api/title'
 import { CollectionButton } from './CollectionButton'
+import { usePermissions } from '../hooks/usePermissions'
 import { useT } from '../i18n'
 
 interface Props {
@@ -29,6 +30,7 @@ interface Props {
  */
 export function TitleQuickLinks({ seriesId, title, anime365Url }: Props) {
   const { t } = useT()
+  const { can } = usePermissions()
 
   const jellyfin = useQuery({
     queryKey: ['jellyfin-link', seriesId],
@@ -70,7 +72,8 @@ export function TitleQuickLinks({ seriesId, title, anime365Url }: Props) {
           нечего — и предлагать это значит вести к отказу «ни один тайтл не
           найден». Проверка есть и на сервере, здесь она просто убирает кнопку,
           которая всё равно ничего бы не сделала. */}
-      {link?.available && (
+      {/* Коллекция меняет чужую библиотеку — право `library`. */}
+      {link?.available && can('library') && (
         <CollectionButton seriesIds={[seriesId]} suggestedName={title ?? ''} />
       )}
 

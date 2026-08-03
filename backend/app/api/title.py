@@ -35,7 +35,10 @@ router = APIRouter(tags=["title"])
 _embed_limit = Depends(rate_limit("embed", limit=120, window=60))
 
 
-@router.get("/series/{series_id}")
+@router.get(
+    "/series/{series_id}",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
 async def title_page(
     series_id: int,
     refresh: Annotated[bool, Query(description="Перезапросить переводы, минуя кэш")] = False,
@@ -50,7 +53,8 @@ async def title_page(
     return data
 
 
-@router.get("/translations/{translation_id}/embed", dependencies=[_embed_limit])
+@router.get("/translations/{translation_id}/embed", dependencies=[
+        Depends(require(Permission.CATALOG)),_embed_limit])
 async def translation_embed(
     translation_id: int,
     refresh: Annotated[bool, Query()] = False,
@@ -99,7 +103,8 @@ async def refine_quality(series_id: int) -> dict[str, Any]:
     "/series/{series_id}/relations",
     # Запрос уходит на чужой сервис, поэтому частота ограничена. Кэш на неделю
     # снимает почти всю нагрузку, но повторные открытия страницы бывают частыми.
-    dependencies=[Depends(rate_limit("relations", limit=60, window=60))],
+    dependencies=[
+        Depends(require(Permission.CATALOG)),Depends(rate_limit("relations", limit=60, window=60))],
 )
 async def series_relations(series_id: int, refresh: Annotated[bool, Query()] = False):
     """Порядок просмотра франшизы.
@@ -130,7 +135,8 @@ async def series_relations(series_id: int, refresh: Annotated[bool, Query()] = F
 
 @router.get(
     "/series/{series_id}/details",
-    dependencies=[Depends(rate_limit("shiki_details", limit=60, window=60))],
+    dependencies=[
+        Depends(require(Permission.CATALOG)),Depends(rate_limit("shiki_details", limit=60, window=60))],
 )
 async def series_details(series_id: int, refresh: Annotated[bool, Query()] = False):
     """Студия, режиссёр и состояние выхода — то, чего нет в API Anime365.
@@ -159,7 +165,8 @@ async def series_details(series_id: int, refresh: Annotated[bool, Query()] = Fal
     # Картинка маленькая и запрашивается по одной на тайтл, но эндпоинт ходит
     # в чужой сервис — без ограничителя его можно было бы использовать как
     # генератор нагрузки на Шикимори.
-    dependencies=[Depends(rate_limit("studio_logo", limit=120, window=60))],
+    dependencies=[
+        Depends(require(Permission.CATALOG)),Depends(rate_limit("studio_logo", limit=120, window=60))],
 )
 async def studio_logo_image(studio_id: int, ext: str) -> Response:
     """Логотип студии со своего домена.
@@ -184,7 +191,8 @@ async def studio_logo_image(studio_id: int, ext: str) -> Response:
     "/series/{series_id}/jellyfin",
     # Первый вызов обходит библиотеку Jellyfin, дальше пять минут отвечает из
     # памяти. Ограничение здесь не про нагрузку на нас, а про чужой сервис.
-    dependencies=[Depends(rate_limit("jellyfin_link", limit=60, window=60))],
+    dependencies=[
+        Depends(require(Permission.CATALOG)),Depends(rate_limit("jellyfin_link", limit=60, window=60))],
 )
 async def series_jellyfin_link(series_id: int) -> dict[str, Any]:
     """Ссылка на страницу тайтла в Jellyfin.
@@ -222,7 +230,10 @@ async def series_jellyfin_link(series_id: int) -> dict[str, Any]:
     return {"available": True, **found}
 
 
-@router.get("/series/{series_id}/audio")
+@router.get(
+    "/series/{series_id}/audio",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
 def series_audio(series_id: int) -> dict[str, Any]:
     """Извлечённые звуковые дорожки этого тайтла."""
     from app.services.audio_library import tracks_for_series

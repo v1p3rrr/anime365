@@ -13,6 +13,7 @@ import { useState } from 'react'
 
 import type { EpisodeTarget } from '../api/library'
 import { type EpisodeItem } from '../api/title'
+import { usePermissions } from '../hooks/usePermissions'
 import { useT } from '../i18n'
 import { languageList } from '../i18n/languages'
 import { useFormat } from '../i18n/format'
@@ -58,6 +59,12 @@ export function EpisodeRow({
 }: Props) {
   const { t, locale } = useT()
   const format = useFormat()
+  // Три разных права сходятся в одной строке: скачать, посмотреть и разложить
+  // по папкам. Значки наличия остаются всем — это чтение.
+  const { can } = usePermissions()
+  const canDownload = can('downloads')
+  const canWatch = can('watch')
+  const canBind = can('library')
   const [binding, setBinding] = useState(false)
   const [playing, setPlaying] = useState(false)
   const [playingLocal, setPlayingLocal] = useState(false)
@@ -184,29 +191,31 @@ export function EpisodeRow({
             {/* Разворачивается вниз, а не выпадает меню: выбор загрузки — это
                 сравнение нескольких десятков вариантов, и в выпадашке поверх
                 страницы такое сравнивать нечем. */}
-            <Button
-              size="compact-xs"
-              leftSection={<IconDownload size={12} />}
-              rightSection={
-                <IconChevronDown
-                  size={11}
-                  style={{
-                    transform: expanded ? 'rotate(180deg)' : undefined,
-                    transition: 'transform 150ms ease',
-                  }}
-                />
-              }
-              variant={expanded ? 'light' : 'filled'}
-              disabled={available.length === 0}
-              onClick={() => setExpanded((value) => !value)}
-              aria-expanded={expanded}
-            >
-              {t('episode.download')}
-            </Button>
+            {canDownload && (
+              <Button
+                size="compact-xs"
+                leftSection={<IconDownload size={12} />}
+                rightSection={
+                  <IconChevronDown
+                    size={11}
+                    style={{
+                      transform: expanded ? 'rotate(180deg)' : undefined,
+                      transition: 'transform 150ms ease',
+                    }}
+                  />
+                }
+                variant={expanded ? 'light' : 'filled'}
+                disabled={available.length === 0}
+                onClick={() => setExpanded((value) => !value)}
+                aria-expanded={expanded}
+              >
+                {t('episode.download')}
+              </Button>
+            )}
 
             {/* Плеер идёт до ссылки на сайт: смотреть у себя — основной путь,
                 а сайт остаётся запасным, если браузер не тянет кодек. */}
-            {available.length > 0 && (
+            {canWatch && available.length > 0 && (
               <Tooltip label={t('episode.play')}>
                 <Button
                   size="compact-xs"
@@ -226,7 +235,7 @@ export function EpisodeRow({
                 природа — первый уже на диске и играет сразу, второй тянется с
                 сайта. Смешивать их в одном списке значило бы прятать разницу,
                 из-за которой человек и качал. */}
-            {episode.local_videos.length > 0 && (
+            {canWatch && episode.local_videos.length > 0 && (
               <Tooltip label={t('episode.playLocal')}>
                 <Button
                   size="compact-xs"
@@ -263,7 +272,7 @@ export function EpisodeRow({
 
             {/* Куда положить то, чего ещё нет. Не путать с привязкой к файлу
                 ниже: та связывает серию с уже лежащим на диске. */}
-            {episode.episode_num != null && onAssignFolder && (
+            {canBind && episode.episode_num != null && onAssignFolder && (
               <Tooltip label={t('episode.assignFolder')}>
                 <Button
                   size="compact-xs"
@@ -280,7 +289,7 @@ export function EpisodeRow({
 
             {/* Разбор имени ошибается на сдвинутой нумерации и на файлах без
                 номера — тогда серию привязывают к файлу руками. */}
-            {episode.episode_num != null && (
+            {canBind && episode.episode_num != null && (
               <Tooltip label={t('episode.bind')}>
                 <Button
                   size="compact-xs"

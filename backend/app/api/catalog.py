@@ -119,7 +119,10 @@ def _card(
     )
 
 
-@router.get("/ids")
+@router.get(
+    "/ids",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
 def catalog_ids(
     query: Annotated[str | None, Query(description="Поиск по названию (локальный, FTS5)")] = None,
     genres: Annotated[list[int] | None, Query(description="ID жанров")] = None,
@@ -269,7 +272,10 @@ def catalog_ids(
     return {"ids": ids, "total": total, "offset": offset, "limit": limit}
 
 
-@router.post("/cards")
+@router.post(
+    "/cards",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
 def catalog_cards(ids: Annotated[list[int], Body(embed=True)]) -> list[CatalogCard]:
     """Окно карточек. Порядок сохраняется тем, который прислал фронт."""
     if not ids:
@@ -322,7 +328,10 @@ def catalog_cards(ids: Annotated[list[int], Body(embed=True)]) -> list[CatalogCa
     return [by_id[i] for i in ids if i in by_id]
 
 
-@router.get("/genres")
+@router.get(
+    "/genres",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
 def catalog_genres() -> list[dict[str, Any]]:
     """Жанры со счётчиками. Их всего 74, поэтому фильтрация идёт локально."""
     with session_scope() as session:
@@ -339,7 +348,8 @@ def catalog_genres() -> list[dict[str, Any]]:
     "/search-online",
     # Каждый вызов — запрос на сайт. Локальный поиск по кэшу лимита не имеет,
     # он не выходит в сеть; ограничиваем только онлайновый.
-    dependencies=[Depends(rate_limit("search-online", limit=30, window=60))],
+    dependencies=[
+        Depends(require(Permission.CATALOG)),Depends(rate_limit("search-online", limit=30, window=60))],
 )
 async def search_online(query: Annotated[str, Query(min_length=1, max_length=200)]) -> list[dict]:
     """Поиск прямым запросом на сайт — ловит то, чего ещё нет в локальном кэше."""
@@ -398,7 +408,10 @@ async def trigger_sync(payload: SyncRequest) -> dict[str, Any]:
     return {"mode": payload.mode, "stats": stats}
 
 
-@router.get("/status")
+@router.get(
+    "/status",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
 def catalog_status() -> dict[str, Any]:
     """Состояние кэша и последних синхронизаций — для индикатора в UI."""
     with session_scope() as session:

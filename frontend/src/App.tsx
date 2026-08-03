@@ -24,16 +24,23 @@ import { Link, Outlet, useLocation } from 'react-router-dom'
 import { Logo } from './components/Logo'
 import { ThemeToggle } from './components/ThemeToggle'
 import { useAuth } from './hooks/useAuth'
+import { usePermissions } from './hooks/usePermissions'
 import { LOCALES, useT, type Locale } from './i18n'
 import { LoginPage } from './pages/LoginPage'
 import classes from './App.module.css'
 
+// `need` — право, без которого раздела не видно вовсе. Прятать, а не
+// показывать неработающим: кнопка, отвечающая отказом, читается как поломка.
+//
+// Настройки видны и без права `settings`: там же лежат личные настройки
+// отображения и язык интерфейса, которые нужны любому. Серверную часть
+// страница прячет сама.
 const NAV = [
-  { to: '/', key: 'nav.catalog', icon: IconLayoutGrid },
-  { to: '/ongoing', key: 'nav.ongoing', icon: IconBroadcast },
-  { to: '/queue', key: 'nav.queue', icon: IconDownload },
-  { to: '/library', key: 'nav.library', icon: IconFolders },
-  { to: '/settings', key: 'nav.settings', icon: IconSettings },
+  { to: '/', key: 'nav.catalog', icon: IconLayoutGrid, need: 'catalog' },
+  { to: '/ongoing', key: 'nav.ongoing', icon: IconBroadcast, need: 'catalog' },
+  { to: '/queue', key: 'nav.queue', icon: IconDownload, need: 'downloads' },
+  { to: '/library', key: 'nav.library', icon: IconFolders, need: 'catalog' },
+  { to: '/settings', key: 'nav.settings', icon: IconSettings, need: null },
 ] as const
 
 const WIDE = 200
@@ -43,6 +50,7 @@ export function App() {
   const { pathname } = useLocation()
   const auth = useAuth()
   const { t, locale, setLocale } = useT()
+  const { can } = usePermissions()
   // Свёрнуто по умолчанию: в узком окне развёрнутое меню съедало почти всю ширину.
   const [collapsed, setCollapsed] = useLocalStorage({
     key: 'a365.v1.navCollapsed',
@@ -64,7 +72,7 @@ export function App() {
   }
 
   const navItems = (showLabels: boolean, onNavigate?: () => void) =>
-    NAV.map(({ to, key, icon: Icon }) => {
+    NAV.filter((item) => item.need === null || can(item.need)).map(({ to, key, icon: Icon }) => {
       const label = t(key)
       const active = pathname === to
       const item = (

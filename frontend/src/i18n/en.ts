@@ -184,16 +184,18 @@ export const en: Dictionary = {
     createFailed: 'Could not create the user',
     changeFailed: 'Could not save the changes',
     permission: {
+      catalog: 'Catalog',
       settings: 'Settings',
       downloads: 'Downloads',
       library: 'Library',
       watch: 'Playback',
     },
     permissionHint: {
+      catalog: 'See the catalog, title pages and library status. Read only; without it the interface is empty',
       settings: 'Edit server settings. They expose the premium token and the write paths',
       downloads: 'Queue downloads and manage the queue. Costs disk and traffic',
       library: 'Change folder and episode bindings, start scans',
-      watch: 'Watch and listen to what is already downloaded. Changes nothing',
+      watch: 'Watch and listen: streaming through our proxy and local files. Changes nothing',
     },
   },
   common: {
@@ -206,6 +208,8 @@ export const en: Dictionary = {
     unbind: 'Unlink',
     loading: 'Loading…',
     nothingFound: 'Nothing found',
+    noAccess: 'Section unavailable',
+    noAccessHint: 'Your account does not have the “{permission}” right. Ask an administrator to grant it.',
     episodes: 'ep.',
     episodesOf: '{have} of {total}',
     unknown: 'reason unknown',
@@ -233,9 +237,8 @@ export const en: Dictionary = {
 
   login: {
     login: 'Login',
-    loginHint: 'Can be left empty — then the shared password is used',
     title: 'Anime365 Downloader',
-    hint: 'Enter the password set in settings or in the A365_UI_PASSWORD variable.',
+    hint: 'Enter your login and password.',
     password: 'Password',
     submit: 'Sign in',
   },
@@ -947,15 +950,16 @@ export const en: Dictionary = {
     subtitles_unavailable: 'The subtitle link is unavailable.',
     subtitles_fetch_failed: 'Could not fetch the subtitles: {reason}',
     subtitles_server_error: 'The subtitle server replied with error {status}.',
+    permission_denied: 'Not enough rights: “{permission}” is required. Ask an administrator to grant it.',
+    admin_required: 'Only an administrator can do this.',
   },
 
   errorCodes: {
     retryShort: 'try again',
     e401: 'Sign-in required',
     e401hint: 'The session expired — sign in again.',
-    e403: 'No access to video and subtitles',
-    e403hint:
-      'This request needs an access_token from an account with an active premium subscription. Set the token in settings and check that the subscription has not expired.',
+    e403: 'No access',
+    e403hint: 'The request was refused: rights are missing, or the source is not available.',
     e404: 'Not found',
     e404hint: 'The record is missing from the catalog.',
     e409: 'Operation already running',
