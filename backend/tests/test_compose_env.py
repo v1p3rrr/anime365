@@ -34,8 +34,18 @@ def test_every_setting_is_declared() -> None:
     )
 
 
+# Настройки, которых нет в реестре: они меняются только через окружение, и
+# формы в интерфейсе у них нет. В compose перечислены наравне с остальными,
+# иначе про них никто не узнает.
+ENV_ONLY = {
+    "A365_TRANSLATION_SCAN_HOURS",
+    "A365_TRANSLATION_SCAN_RPM",
+    "A365_TRANSLATION_SCAN_SCOPE",
+}
+
+
 def test_no_unknown_variables() -> None:
-    extra = _declared() - {s.env for s in SETTINGS}
+    extra = _declared() - {s.env for s in SETTINGS} - ENV_ONLY
     assert not extra, (
         f"в docker-compose.yml есть лишние переменные: {sorted(extra)}. "
         "Приложение их не читает, и заполнивший их будет ждать эффекта зря"
@@ -54,6 +64,26 @@ def test_values_come_from_env_file() -> None:
         assert value == "${%s:-}" % name, (
             f"{name} задан значением {value!r}, а должен ссылаться на .env"
         )
+
+
+def test_env_file_is_not_mixed_with_interpolation() -> None:
+    """`env_file:` и `${VAR}` в `environment:` нельзя смешивать.
+
+    Проверено на живом compose: подстановка `${VAR}` берёт значения только из
+    окружения оболочки и из `.env`, файл из `env_file:` для неё не существует.
+    А `environment:` имеет приоритет над `env_file:` — поэтому строка
+    `- A365_ACCESS_TOKEN=${A365_ACCESS_TOKEN:-}` подставляла пустую строку и
+    затирала значение из подключённого файла.
+
+    Снаружи это выглядело как «часть настроек из .env не подтягивается»: на
+    деле не подтягивалась ни одна, а работали значения по умолчанию.
+    """
+    text = COMPOSE.read_text(encoding="utf-8")
+    lines = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+    assert not any(line.strip().startswith("env_file:") for line in lines), (
+        "env_file: вернулся в compose вместе со списком ${VAR} в environment: — "
+        "эта пара молча обнуляет все настройки"
+    )
 
 
 def test_healthcheck_does_not_use_curl() -> None:

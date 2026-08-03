@@ -161,3 +161,37 @@ class TestOrder:
             # Попытки ещё есть, поэтому задача снова в очереди — но в конце.
             assert failed.status == TaskStatus.QUEUED
             assert failed.position > other.position
+
+
+class TestPrioritize:
+    """Подъём в начало очереди — зеркало отправки в конец."""
+
+    def test_moves_to_the_front(self, client) -> None:
+        first = _task(TaskStatus.QUEUED, 930001)
+        last = _task(TaskStatus.QUEUED, 930002)
+
+        assert client.post(f"/api/downloads/{last}/prioritize").status_code == 200
+
+        with session_scope() as session:
+            assert session.get(DownloadTask, last).position < session.get(
+                DownloadTask, first
+            ).position
+
+    def test_clears_backoff(self, client) -> None:
+        """«Сделай сейчас» не должно упираться в паузу перед повтором."""
+        from datetime import datetime, timedelta
+
+        task_id = _task(TaskStatus.QUEUED, 930003)
+        with session_scope() as session:
+            session.get(DownloadTask, task_id).retry_after = datetime.utcnow() + timedelta(
+                hours=1
+            )
+
+        client.post(f"/api/downloads/{task_id}/prioritize")
+
+        with session_scope() as session:
+            assert session.get(DownloadTask, task_id).retry_after is None
+
+    def test_finished_task_is_refused(self, client) -> None:
+        task_id = _task(TaskStatus.DONE, 930004)
+        assert client.post(f"/api/downloads/{task_id}/prioritize").status_code == 400

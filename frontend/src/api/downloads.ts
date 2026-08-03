@@ -100,6 +100,8 @@ export const downloadsApi = {
   resumeAll: () => api.post<unknown>('/downloads/resume-all'),
   /** Новый порядок очереди — идентификаторы сверху вниз. */
   reorder: (ids: number[]) => api.post<{ reordered: number }>('/downloads/reorder', { ids }),
+  /** В начало очереди. Активную не трогает — она и так качается первой. */
+  prioritize: (id: number) => api.post<unknown>(`/downloads/${id}/prioritize`),
   /** В конец очереди: активную задачу сперва останавливает сервер. */
   requeue: (id: number) => api.post<unknown>(`/downloads/${id}/requeue`),
   /** Убрать одну запись. Активную сервер сначала отменяет. */

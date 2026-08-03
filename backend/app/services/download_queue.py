@@ -538,6 +538,19 @@ def _next_position(session) -> int:
     return int(current or 0) + 1
 
 
+def _first_position(session) -> int:
+    """Номер перед первой задачей в очереди.
+
+    Позиции могут уйти в минус, и это нормально: порядок задаётся сравнением,
+    а не абсолютным значением. Иначе пришлось бы перенумеровывать всю очередь
+    на каждый подъём наверх.
+    """
+    current = session.execute(
+        select(func.min(func.coalesce(DownloadTask.position, DownloadTask.id)))
+    ).scalar()
+    return int(current or 1) - 1
+
+
 def _fail_with_backoff(task_id: int, error: str) -> None:
     """Помечает падение и назначает время повтора."""
     max_attempts = settings.get_int("max_attempts")

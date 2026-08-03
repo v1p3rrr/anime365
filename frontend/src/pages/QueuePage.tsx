@@ -37,6 +37,7 @@ import {
   IconPlayerPause,
   IconPlayerPlay,
   IconArrowDown,
+  IconArrowUp,
   IconGripVertical,
   IconRefresh,
   IconTrash,
@@ -570,6 +571,17 @@ function TaskRow({
                 onClick={() => action.mutate({ fn: downloadsApi.retry, id: task.id })}
               >
                 <IconRefresh size={14} />
+              </ActionIcon>
+            </Tooltip>
+          )}
+          {canRequeue && (
+            <Tooltip label={t('queue.prioritizeHint')}>
+              <ActionIcon
+                size="sm"
+                variant="subtle"
+                onClick={() => action.mutate({ fn: downloadsApi.prioritize, id: task.id })}
+              >
+                <IconArrowUp size={14} />
               </ActionIcon>
             </Tooltip>
           )}

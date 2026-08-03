@@ -536,6 +536,7 @@ export const ja: Dictionary = {
   },
 
   queue: {
+    prioritizeHint: 'キューの先頭へ',
     dragHint: 'ドラッグして並べ替え',
     requeueHint: 'キューの最後へ',
     removeHint: '一覧から削除',

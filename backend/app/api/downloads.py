@@ -28,6 +28,7 @@ from app.models.library import LibraryFolder, LibraryRoot, TitleMapping
 from app.services.anime365 import Anime365Error, SubscriptionRequired
 from app.services.download_queue import (
     QueueError,
+    _first_position,
     _next_position,
     download_queue,
     enqueue,
@@ -454,6 +455,36 @@ def requeue_task(task_id: int) -> dict[str, Any]:
         task.finished_at = None
         task.active_key = ACTIVE_KEY
     return {"id": task_id, "status": TaskStatus.QUEUED}
+
+
+@router.post(
+    "/{task_id}/prioritize",
+    dependencies=[Depends(require(Permission.DOWNLOADS))],
+)
+def prioritize_task(task_id: int) -> dict[str, Any]:
+    """Поднимает задачу в начало очереди.
+
+    Зеркало `requeue`. Нужно, в частности, упавшей задаче: она уходит вниз
+    автоматически, и если причина оказалась разовой — сетевой сбой, а не вшитые
+    субтитры, — ждать всю очередь незачем.
+
+    Активную задачу не трогаем: она уже качается, и поднимать её некуда, а
+    остановка ради перестановки только оборвала бы то, что и так идёт первым.
+    """
+    with session_scope() as session:
+        task = session.get(DownloadTask, task_id)
+        if task is None:
+            raise ApiError(404, errors.TASK_NOT_FOUND, "Задача не найдена")
+        if task.status in TERMINAL_STATUSES:
+            raise ApiError(
+                400,
+                errors.TASK_NOT_ACTIVE,
+                "Задача уже завершена — двигать её в очереди нечего",
+            )
+        task.position = _first_position(session)
+        # Ждать бэкоффа после явной просьбы «сделай сейчас» неправильно.
+        task.retry_after = None
+    return {"id": task_id, "status": task.status}
 
 
 @router.delete(

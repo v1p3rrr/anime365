@@ -537,6 +537,7 @@ export const en: Dictionary = {
   },
 
   queue: {
+    prioritizeHint: 'Move to the front of the queue',
     dragHint: 'Drag to reorder',
     requeueHint: 'Move to the end of the queue',
     removeHint: 'Remove from the list',
