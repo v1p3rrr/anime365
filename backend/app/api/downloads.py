@@ -26,7 +26,12 @@ from app.models.downloads import (
 )
 from app.models.library import LibraryFolder, LibraryRoot, TitleMapping
 from app.services.anime365 import Anime365Error, SubscriptionRequired
-from app.services.download_queue import QueueError, download_queue, enqueue
+from app.services.download_queue import (
+    QueueError,
+    _next_position,
+    download_queue,
+    enqueue,
+)
 from app.services.title_service import cached_has_subtitles, get_embed
 
 log = logging.getLogger(__name__)
@@ -266,7 +271,23 @@ def list_tasks(
     limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> dict[str, Any]:
     with session_scope() as session:
-        stmt = select(DownloadTask).order_by(DownloadTask.created_at.desc()).limit(limit)
+        # ⚠️ Порядок в списке обязан совпадать с порядком скачивания: воркер
+        # берёт наименьшую позицию, значит сверху должна быть та задача, что
+        # пойдёт первой. Раньше список шёл по времени создания вниз — то есть
+        # ровно наоборот, и первой качалась нижняя строка. Перетаскивание при
+        # таком показе было бы просто обманом.
+        #
+        # Завершённые — отдельная история: там интереснее свежее, поэтому они
+        # сортируются по времени завершения вниз. Разделение делает клиент, а
+        # здесь достаточно отдать оба набора в своём порядке.
+        stmt = (
+            select(DownloadTask)
+            .order_by(
+                DownloadTask.status.in_(TERMINAL_STATUSES),
+                func.coalesce(DownloadTask.position, DownloadTask.id),
+            )
+            .limit(limit)
+        )
         if status:
             stmt = stmt.where(DownloadTask.status == status)
         tasks = session.execute(stmt).scalars().all()
@@ -427,7 +448,7 @@ def requeue_task(task_id: int) -> dict[str, Any]:
         if task is None:
             raise ApiError(404, errors.TASK_NOT_FOUND, "Задача не найдена")
         task.status = TaskStatus.QUEUED
-        task.queued_at = datetime.utcnow()
+        task.position = _next_position(session)
         task.retry_after = None
         task.last_error = None
         task.finished_at = None
@@ -484,3 +505,56 @@ def clear_failed() -> dict[str, Any]:
             sql_delete(DownloadTask).where(DownloadTask.status == TaskStatus.FAILED)
         )
     return {"deleted": result.rowcount}
+
+
+class ReorderRequest(BaseModel):
+    """Новый порядок очереди — идентификаторы сверху вниз."""
+
+    ids: list[int] = Field(min_length=1, max_length=2000)
+
+
+@router.post(
+    "/reorder",
+    dependencies=[Depends(require(Permission.DOWNLOADS))],
+)
+def reorder(payload: ReorderRequest) -> dict[str, Any]:
+    """Задаёт порядок очереди целиком.
+
+    Клиент присылает список сверху вниз — ровно то, что человек видит после
+    перетаскивания. Перенумеровываем всё заново, а не вставляем между
+    соседями: очередь короткая, а сплошная нумерация избавляет от дробных
+    позиций и от их постепенного вырождения.
+
+    Задачи, которых нет в присланном списке, не трогаем: клиент мог показывать
+    не всю очередь, и перенумеровать невидимое было бы сюрпризом. Чтобы они не
+    оказались впереди, номера начинаются с текущего минимума.
+    """
+    with session_scope() as session:
+        known = {
+            row[0]
+            for row in session.execute(
+                select(DownloadTask.id).where(DownloadTask.id.in_(payload.ids))
+            ).all()
+        }
+        unknown = [task_id for task_id in payload.ids if task_id not in known]
+        if unknown:
+            raise ApiError(
+                404,
+                errors.TASK_NOT_FOUND,
+                "Часть задач не найдена — список устарел",
+                ids=unknown,
+            )
+
+        base = session.execute(
+            select(func.min(func.coalesce(DownloadTask.position, DownloadTask.id))).where(
+                DownloadTask.id.in_(payload.ids)
+            )
+        ).scalar()
+        start = int(base or 1)
+
+        for offset, task_id in enumerate(payload.ids):
+            task = session.get(DownloadTask, task_id)
+            if task is not None:
+                task.position = start + offset
+
+    return {"reordered": len(payload.ids)}

@@ -98,6 +98,8 @@ export const downloadsApi = {
   cancel: (id: number) => api.post<unknown>(`/downloads/${id}/cancel`),
   pauseAll: () => api.post<unknown>('/downloads/pause-all'),
   resumeAll: () => api.post<unknown>('/downloads/resume-all'),
+  /** Новый порядок очереди — идентификаторы сверху вниз. */
+  reorder: (ids: number[]) => api.post<{ reordered: number }>('/downloads/reorder', { ids }),
   /** В конец очереди: активную задачу сперва останавливает сервер. */
   requeue: (id: number) => api.post<unknown>(`/downloads/${id}/requeue`),
   /** Убрать одну запись. Активную сервер сначала отменяет. */

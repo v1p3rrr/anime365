@@ -16,6 +16,13 @@ SERIES = 880001
 
 
 def _task(status: TaskStatus, translation_id: int) -> int:
+    """Задача в очереди — так же, как её заводит `enqueue`.
+
+    Позицию выставляем тем же способом, что и рабочий код: без неё порядком
+    служит `id`, и тест сравнивал бы None с None вместо настоящих позиций.
+    """
+    from app.services.download_queue import _next_position
+
     with session_scope() as session:
         if session.get(Series, SERIES) is None:
             session.add(Series(id=SERIES, title="Тайтл", type="tv"))
@@ -28,6 +35,7 @@ def _task(status: TaskStatus, translation_id: int) -> int:
             series_title="Тайтл",
             created_by_user_id=1,
             active_key=translation_id,
+            position=_next_position(session),
         )
         session.add(task)
         session.flush()
@@ -42,10 +50,14 @@ class TestRequeue:
         with session_scope() as session:
             task = session.get(DownloadTask, task_id)
             assert task.status == TaskStatus.QUEUED
-            # Именно отдельное поле: время постановки трогать нельзя, оно
-            # показывается в истории.
-            assert task.queued_at is not None
-            assert task.queued_at >= task.created_at
+            # Позиция — явное число, а не производная от времени: порядок
+            # задаёт пользователь перетаскиванием, а время постановки
+            # показывается в истории и подменять его нельзя.
+            assert task.position is not None
+            others = session.query(DownloadTask).filter(DownloadTask.id != task_id).all()
+            assert all(
+                (other.position or other.id) <= task.position for other in others
+            ), "задача не оказалась в конце очереди"
 
     def test_finished_task_is_refused(self, client) -> None:
         """У завершённой задачи очереди нет — двигать нечего."""
@@ -86,3 +98,66 @@ class TestClearFailed:
             assert session.get(DownloadTask, failed) is None
             # Успешные — это история, её чистит другая кнопка.
             assert session.get(DownloadTask, done) is not None
+
+
+class TestOrder:
+    """Очередь идёт строго сверху вниз по тому порядку, что видит пользователь."""
+
+    def _queued(self, *translation_ids: int) -> list[int]:
+        return [_task(TaskStatus.QUEUED, tid) for tid in translation_ids]
+
+    def _next_claimed(self) -> int | None:
+        from app.services.download_queue import download_queue
+
+        return download_queue._claim_next()
+
+    def test_new_task_goes_to_the_end(self, client) -> None:
+        """Новая задача не должна лезть вперёд уже поставленных."""
+        first, second = self._queued(920001, 920002)
+        with session_scope() as session:
+            positions = {
+                task_id: session.get(DownloadTask, task_id).position
+                for task_id in (first, second)
+            }
+        assert positions[first] < positions[second]
+
+    def test_reorder_changes_who_goes_first(self, client) -> None:
+        first, second, third = self._queued(920011, 920012, 920013)
+
+        response = client.post(
+            "/api/downloads/reorder", json={"ids": [third, first, second]}
+        )
+        assert response.status_code == 200
+
+        with session_scope() as session:
+            order = sorted(
+                (first, second, third),
+                key=lambda i: session.get(DownloadTask, i).position,
+            )
+        assert order == [third, first, second]
+
+    def test_reorder_refuses_unknown_ids(self, client) -> None:
+        """Список у клиента мог устареть — молча пропускать это нельзя."""
+        task_id = _task(TaskStatus.QUEUED, 920021)
+        response = client.post(
+            "/api/downloads/reorder", json={"ids": [task_id, 99999999]}
+        )
+        assert response.status_code == 404
+
+    def test_failed_task_moves_to_the_end(self, client) -> None:
+        """Упавшая уходит вниз: её ошибка часто повторяется при каждой попытке.
+
+        Иначе она осталась бы первой и упиралась бы в ту же ошибку раньше
+        всего остального, не давая очереди двигаться.
+        """
+        from app.services.download_queue import _fail_with_backoff
+
+        first, second = self._queued(920031, 920032)
+        _fail_with_backoff(first, "сеть отвалилась")
+
+        with session_scope() as session:
+            failed = session.get(DownloadTask, first)
+            other = session.get(DownloadTask, second)
+            # Попытки ещё есть, поэтому задача снова в очереди — но в конце.
+            assert failed.status == TaskStatus.QUEUED
+            assert failed.position > other.position

@@ -536,6 +536,7 @@ export const ru = {
   },
 
   queue: {
+    dragHint: 'Перетащить в очереди',
     requeueHint: 'В конец очереди',
     removeHint: 'Убрать из списка',
     clearFailed: 'Убрать ошибки',

@@ -536,6 +536,7 @@ export const ja: Dictionary = {
   },
 
   queue: {
+    dragHint: 'ドラッグして並べ替え',
     requeueHint: 'キューの最後へ',
     removeHint: '一覧から削除',
     clearFailed: 'エラーを消去',

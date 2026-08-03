@@ -14,10 +14,30 @@ import {
 } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
 import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import {
   IconAlertTriangle,
   IconPlayerPause,
   IconPlayerPlay,
   IconArrowDown,
+  IconGripVertical,
   IconRefresh,
   IconTrash,
   IconX,
@@ -129,6 +149,18 @@ export function QueuePage() {
     mutationFn: downloadsApi.clearFailed,
     onSuccess: (result) => {
       notifications.show({ color: 'teal', message: t('queue.cleared', { count: result.deleted }) })
+      refresh()
+    },
+  })
+
+  // Порядок применяем сразу и целиком: сервер перенумеровывает список, и
+  // присылать одну перестановку было бы гаданием о том, что у него сейчас.
+  const reorder = useMutation({
+    mutationFn: (ids: number[]) => downloadsApi.reorder(ids),
+    onSuccess: refresh,
+    onError: (error: Error) => {
+      // Список у клиента мог устареть — тогда перечитываем и показываем как есть.
+      notifications.show({ color: 'red', message: apiError(error) })
       refresh()
     },
   })
@@ -301,7 +333,14 @@ export function QueuePage() {
         <Alert color="gray">{t('queue.empty')}</Alert>
       )}
 
-      {active.length > 0 && <TaskTable title={t('queue.active')} tasks={active} action={action} />}
+      {active.length > 0 && (
+        <TaskTable
+          title={t('queue.active')}
+          tasks={active}
+          action={action}
+          onReorder={(ids) => reorder.mutate(ids)}
+        />
+      )}
       {finished.length > 0 && <TaskTable title={t('queue.finished')} tasks={finished} action={action} />}
     </Stack>
   )
@@ -311,11 +350,33 @@ interface TableProps {
   title: string
   tasks: DownloadTask[]
   action: ReturnType<typeof useMutation<unknown, Error, { fn: (id: number) => Promise<unknown>; id: number }>>
+  /** Задан только для очереди: историю перетаскивать незачем. */
+  onReorder?: (ids: number[]) => void
 }
 
-function TaskTable({ title, tasks, action }: TableProps) {
+function TaskTable({ title, tasks, action, onReorder }: TableProps) {
   const { t } = useT()
-  return (
+
+  // Датчики: мышь с порогом в 5 пикселей, чтобы клик по кнопке в строке не
+  // превращался в попытку перетаскивания, и касание с задержкой — иначе на
+  // телефоне не прокрутить список, каждое движение хватало бы строку.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 6 } }),
+    // Клавиатура: очередь должна двигаться и без мыши.
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active: dragged, over } = event
+    if (!over || dragged.id === over.id || !onReorder) return
+    const from = tasks.findIndex((task) => task.id === dragged.id)
+    const to = tasks.findIndex((task) => task.id === over.id)
+    if (from < 0 || to < 0) return
+    onReorder(arrayMove(tasks, from, to).map((task) => task.id))
+  }
+
+  const body = (
     <div>
       <Text size="sm" fw={600} mb={4}>
         {title} ({tasks.length})
@@ -332,17 +393,46 @@ function TaskTable({ title, tasks, action }: TableProps) {
           </Table.Thead>
           <Table.Tbody>
             {tasks.map((task) => (
-              <TaskRow key={task.id} task={task} action={action} />
+              <TaskRow key={task.id} task={task} action={action} draggable={!!onReorder} />
             ))}
           </Table.Tbody>
         </Table>
       </Table.ScrollContainer>
     </div>
   )
+
+  // Историю не перетаскиваем: порядок там ничего не решает.
+  if (!onReorder) return body
+
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      // Ограничиваем движение вертикалью: список одномерный, и горизонтальный
+      // сдвиг строки только мешает целиться. Ограничения родителем нет
+      // намеренно: у таблицы внутри Table.ScrollContainer им оказывается
+      // прокручиваемая обёртка, и строка упиралась в её край.
+      modifiers={[restrictToVerticalAxis]}
+      onDragEnd={handleDragEnd}
+    >
+      <SortableContext items={tasks.map((task) => task.id)} strategy={verticalListSortingStrategy}>
+        {body}
+      </SortableContext>
+    </DndContext>
+  )
 }
 
-function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['action'] }) {
+function TaskRow({
+  task,
+  action,
+  draggable = false,
+}: {
+  task: DownloadTask
+  action: TableProps['action']
+  draggable?: boolean
+}) {
   const { t } = useT()
+  const sortable = useSortable({ id: task.id, disabled: !draggable })
   const kindLabel = useKindLabel()
   const format = useFormat()
   const statusLabel = (key: string) => t(`status.${key}` as TranslationKey)
@@ -357,7 +447,20 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
   const canRequeue = !['done', 'already_exists', 'cancelled', 'failed'].includes(task.status)
 
   return (
-    <Table.Tr>
+    <Table.Tr
+      ref={sortable.setNodeRef}
+      style={{
+        // transform от dnd-kit — это сдвиг строки под курсором. CSS.Transform
+        // сериализует его так, чтобы не сломать масштаб таблицы.
+        transform: CSS.Transform.toString(sortable.transform),
+        transition: sortable.transition,
+        // Перетаскиваемая строка поднимается над остальными, иначе соседи
+        // перекрывают её при наложении.
+        zIndex: sortable.isDragging ? 2 : undefined,
+        position: sortable.isDragging ? 'relative' : undefined,
+        opacity: sortable.isDragging ? 0.85 : undefined,
+      }}
+    >
       <Table.Td style={{ wordBreak: 'break-word' }}>
         <Link to={`/series/${task.series_id}`}>{task.series_title || `#${task.series_id}`}</Link>
         <Text size="xs" c="dimmed">
@@ -420,6 +523,23 @@ function TaskRow({ task, action }: { task: DownloadTask; action: TableProps['act
 
       <Table.Td>
         <Group gap={2} wrap="nowrap">
+          {/* Ручка, а не вся строка: иначе не нажать ни одну кнопку внутри —
+              любое движение мышью по строке начинало бы перетаскивание. */}
+          {draggable && (
+            <Tooltip label={t('queue.dragHint')}>
+              <ActionIcon
+                size="sm"
+                variant="subtle"
+                color="gray"
+                style={{ cursor: 'grab', touchAction: 'none' }}
+                {...sortable.attributes}
+                {...sortable.listeners}
+                aria-label={t('queue.dragHint')}
+              >
+                <IconGripVertical size={14} />
+              </ActionIcon>
+            </Tooltip>
+          )}
           {canPause && (
             <Tooltip label={t('queue.pauseHint')}>
               <ActionIcon

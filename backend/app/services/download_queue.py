@@ -492,6 +492,9 @@ def enqueue(
             type_kind=translation.type_kind,
             created_by_user_id=user_id,
             active_key=ACTIVE_KEY,
+            # В конец очереди: новая задача не должна лезть вперёд того, что
+            # человек уже поставил и, возможно, успел упорядочить.
+            position=_next_position(session),
         )
 
         # Номер серии берём из кэша эпизодов.
@@ -522,6 +525,19 @@ def _finish(task_id: int, status: str, error: str | None = None) -> None:
     bus.publish("download.status", task_id=task_id, status=str(status), error=error)
 
 
+def _next_position(session) -> int:
+    """Номер за последней задачей в очереди.
+
+    Считается по всем задачам, а не только по ждущим: завершённые сохраняют
+    свою позицию, и переиспользовать её значило бы поставить новую задачу в
+    середину списка.
+    """
+    current = session.execute(
+        select(func.max(func.coalesce(DownloadTask.position, DownloadTask.id)))
+    ).scalar()
+    return int(current or 0) + 1
+
+
 def _fail_with_backoff(task_id: int, error: str) -> None:
     """Помечает падение и назначает время повтора."""
     max_attempts = settings.get_int("max_attempts")
@@ -544,6 +560,11 @@ def _fail_with_backoff(task_id: int, error: str) -> None:
         delay = base * (2 ** (task.attempts - 1))
         task.status = TaskStatus.QUEUED
         task.retry_after = datetime.utcnow() + timedelta(seconds=delay)
+        # Упавшая задача уходит в конец очереди. Иначе она осталась бы первой и
+        # упёрлась бы в ту же ошибку раньше всего остального — а причина у
+        # ошибок часто постоянная. Кому нужно быстрее, тот перетащит её обратно
+        # наверх.
+        task.position = _next_position(session)
         log.warning("Задача %s упала (%s), повтор через %d с", task_id, error, delay)
 
     bus.publish("download.status", task_id=task_id, status="retrying", error=error)
@@ -639,10 +660,10 @@ class DownloadQueue:
                     DownloadTask.status == TaskStatus.QUEUED,
                     (DownloadTask.retry_after.is_(None)) | (DownloadTask.retry_after <= now),
                 )
-                # Сдвинутые вручную идут по своему времени, остальные — по
-                # времени создания. Отдельное поле нужно, чтобы «в конец
-                # очереди» не переписывало дату постановки.
-                .order_by(func.coalesce(DownloadTask.queued_at, DownloadTask.created_at))
+                # Строго по позиции — тому порядку, который пользователь видит
+                # в списке и меняет перетаскиванием. У записей без позиции
+                # (заведены до появления поля) её роль играет id.
+                .order_by(func.coalesce(DownloadTask.position, DownloadTask.id))
                 .limit(1)
             ).scalar_one_or_none()
             if task is None:
