@@ -60,6 +60,11 @@ def season_label_from_premiered(year: int, month: int) -> str:
     return f"{name} {label_year}"
 
 
+#: Источники, приходящие из разметки Jellyfin. Отвергнутый источник из этого
+#: набора — повод пометить привязку: значит, мы разошлись с тем, что записано
+#: в `.nfo`, и человеку стоит на это взглянуть.
+ID_SOURCES = frozenset({MatchSource.ANILIST_ID, MatchSource.MAL_ID})
+
 #: Ниже этого сходства названия кандидат отвергается, если подтвердить нечем.
 #:
 #: 45 — не наугад: на живой библиотеке `Your Name` против рекламы воды даёт 35,
@@ -291,10 +296,13 @@ class Matcher:
             return None
 
         scored: list[tuple[float, MatchResult]] = []
+        refused: list[MatchResult] = []
         for proposal in proposals:
             verdict = self._verify(proposal, ctx)
             if verdict is not None:
                 scored.append(verdict)
+            else:
+                refused.append(proposal)
 
         if not scored:
             return None
@@ -309,6 +317,19 @@ class Matcher:
         if runner_up is not None and best_score - runner_up < AMBIGUITY_MARGIN:
             if scored[1][1].series_id != best.series_id:
                 best.needs_confirmation = True
+
+        # ⚠️ Мы отвергли идентификатор, который дала разметка, и взяли другого
+        # кандидата — то есть переголосовали Jellyfin. Делать это молча нельзя.
+        #
+        # Исправлять чужую ошибку идентификации не наша задача: если разметка
+        # называет папку рекламой воды, никакая эвристика с нашей стороны не
+        # должна «знать лучше» — так ломаются верные случаи. Но и повторять
+        # ошибку с уверенностью 100% нельзя: тогда её не видно, пока файлы не
+        # уедут не туда. Поэтому берём того, кто сходится с названием, и
+        # помечаем: пусть человек посмотрит и, если что, поправит **в
+        # Jellyfin** — там источник, а у нас лишь его отражение.
+        if any(item.source in ID_SOURCES for item in refused) and best.source not in ID_SOURCES:
+            best.needs_confirmation = True
 
         return best
 
