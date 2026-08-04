@@ -12,7 +12,7 @@ import {
 import { notifications } from '@mantine/notifications'
 import { IconSearch } from '@tabler/icons-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { libraryApi } from '../api/library'
 import { ErrorState } from './ErrorState'
@@ -41,18 +41,26 @@ export function BindFolderModal({ opened, seriesId, seriesTitle, onClose }: Prop
   const queryClient = useQueryClient()
   const [filter, setFilter] = useState('')
 
+  // ⚠️ Ищем по всем папкам библиотеки, а не по списку нераспознанных.
+  //
+  // Раньше окно спрашивало `/library/unmapped`, и получалось бессмысленно:
+  // папка, к которой человек хочет привязать тайтл, обычно уже к чему-то
+  // привязана — то есть в списке её нет вовсе. А фильтр работал на клиенте по
+  // загруженному куску, поэтому поиск ничего не находил и выглядел сломанным.
+  const [debounced, setDebounced] = useState('')
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(filter.trim()), 250)
+    return () => clearTimeout(timer)
+  }, [filter])
+
   const folders = useQuery({
-    queryKey: ['library-unmapped'],
-    queryFn: libraryApi.unmapped,
+    queryKey: ['library-folder-search', debounced],
+    queryFn: () => libraryApi.searchFolders(debounced),
     enabled: opened,
+    placeholderData: (previous) => previous,
   })
 
-  const visible = useMemo(() => {
-    const needle = filter.trim().toLowerCase()
-    const list = folders.data ?? []
-    if (!needle) return list.slice(0, 60)
-    return list.filter((f) => f.rel_path.toLowerCase().includes(needle)).slice(0, 60)
-  }, [folders.data, filter])
+  const visible = folders.data ?? []
 
   const bind = useMutation({
     mutationFn: (folderId: number) => libraryApi.createMapping(folderId, seriesId),

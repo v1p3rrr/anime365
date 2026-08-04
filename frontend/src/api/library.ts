@@ -194,6 +194,15 @@ export const libraryApi = {
   status: () => api.get<LibraryStatus>('/library/status'),
   scan: () => api.post<Record<string, unknown>>('/library/scan'),
   unmapped: () => api.get<UnmappedFolder[]>('/library/unmapped?only_with_video=false'),
+  /**
+   * Поиск по ВСЕМ папкам библиотеки.
+   *
+   * Для привязки тайтла к папке список нераспознанного не годится:
+   * нужная папка обычно уже к чему-то привязана и в него не попадает.
+   * Отбор идёт на сервере — папок тысячи.
+   */
+  searchFolders: (query: string) =>
+    api.get<UnmappedFolder[]>(`/library/folders?query=${encodeURIComponent(query)}`),
   unmatchedFiles: () => api.get<UnmatchedFile[]>('/library/unmatched-files'),
   mappingReport: () => api.get<MappingReport>('/library/mapping-report'),
   jellyfinAudit: () => api.get<JellyfinAuditResult>('/library/jellyfin-audit'),

@@ -903,6 +903,7 @@ export const ja: Dictionary = {
     folderPlaceholder: 'フォルダーを選択',
     noFolders: '該当するフォルダーがありません',
     noWritableFolders: '書き込み可能なフォルダーがありません。すべて読み取り専用でマウントされています',
+    noFoldersAtAll: 'このタイトルにはまだフォルダーが紐づいていません。先に紐づけると選択肢が出ます。',
     assign: '割り当て',
     assigned: 'フォルダーを割り当てました',
     assignFailed: 'フォルダーを割り当てられませんでした',

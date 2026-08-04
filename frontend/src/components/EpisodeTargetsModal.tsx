@@ -179,7 +179,15 @@ export function EpisodeTargetsModal({
           </Button>
         </Group>
 
-        {options.length === 0 && !folders.isLoading && (
+        {/* ⚠️ Пустой список и «все тома только для чтения» — разные беды, и
+            путать их нельзя. Раньше показывалось второе на любой пустой
+            выдаче, а чаще всего причина была первая: у тайтла просто нет
+            привязанных папок, и окрестность собирать не из чего. Человек шёл
+            проверять монтирования вместо того, чтобы привязать папку. */}
+        {!folders.isLoading && (folders.data ?? []).length === 0 && (
+          <Alert color="gray">{t('episodeTarget.noFoldersAtAll')}</Alert>
+        )}
+        {!folders.isLoading && (folders.data ?? []).length > 0 && options.length === 0 && (
           <Alert color="yellow">{t('episodeTarget.noWritableFolders')}</Alert>
         )}
 

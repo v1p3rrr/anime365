@@ -903,6 +903,7 @@ export const en: Dictionary = {
     folderPlaceholder: 'Pick a folder',
     noFolders: 'No suitable folders',
     noWritableFolders: 'No writable folders: every volume of this title is mounted read-only',
+    noFoldersAtAll: 'This title has no folders bound yet — bind one first and the choices will appear.',
     assign: 'Assign',
     assigned: 'Folder assigned',
     assignFailed: 'Could not assign the folder',

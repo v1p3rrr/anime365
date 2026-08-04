@@ -252,6 +252,60 @@ def unmapped_folders(
 
 
 @router.get(
+    "/folders",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
+def search_folders(
+    query: Annotated[str, Query(max_length=200, description="Часть пути папки")] = "",
+    limit: Annotated[int, Query(ge=1, le=200)] = 60,
+) -> list[dict[str, Any]]:
+    """Поиск по **всем** папкам библиотеки, а не только по нераспознанным.
+
+    ⚠️ Заведено по жалобе: «не даёт выбрать папку, в выборке несколько
+    случайных, поиск результатов не даёт». Причина была в том, что окно
+    привязки тайтла к папке спрашивало список нераспознанного, а нужная папка
+    обычно **уже** к чему-то привязана и в него не попадала вовсе. Фильтр при
+    этом работал на клиенте по загруженному куску, поэтому и поиск молчал.
+
+    Отбор идёт на сервере: папок тысячи, и отдавать их целиком ради подстроки
+    незачем. Пустой запрос даёт первые по числу видео — так в списке сразу
+    видны настоящие папки тайтлов, а не служебная мелочь.
+    """
+    with session_scope() as session:
+        stmt = select(LibraryFolder, LibraryRoot).join(
+            LibraryRoot, LibraryFolder.root_id == LibraryRoot.id
+        )
+        needle = query.strip()
+        if needle:
+            # `ilike` в SQLite регистронезависим только для латиницы, поэтому
+            # кириллицу приводим сами — так «зомби» находит «Зомбилэнд».
+            pattern = f"%{needle.lower()}%"
+            stmt = stmt.where(func.lower(LibraryFolder.rel_path).like(pattern))
+
+        rows = session.execute(
+            stmt.order_by(LibraryFolder.video_count.desc(), LibraryFolder.rel_path).limit(limit)
+        ).all()
+
+        return [
+            {
+                "folder_id": folder.id,
+                "name": folder.name,
+                "rel_path": folder.rel_path,
+                "root_kind": root.kind,
+                "season_number": folder.season_number,
+                "video_count": folder.video_count,
+                "size_bytes": folder.size_bytes,
+                "nfo_title": (folder.nfo or {}).get("title"),
+                "nfo_year": (folder.nfo or {}).get("year"),
+                "has_nfo": bool(folder.nfo),
+                "parent_name": None,
+                "search_hint": (folder.nfo or {}).get("title") or folder.name,
+            }
+            for folder, root in rows
+        ]
+
+
+@router.get(
     "/unmatched-files",
     dependencies=[Depends(require(Permission.CATALOG))],
 )
