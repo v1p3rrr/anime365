@@ -853,7 +853,20 @@ class DownloadQueue:
                         "У этого перевода субтитры вшиты в видео, отдельного файла нет",
                     )
                     return
-                height = None
+                # ⚠️ Разрешение субтитрам нужно, хотя своего у них нет.
+                #
+                # Имя субтитров обязано совпасть с именем видео целиком, иначе
+                # ни Jellyfin, ни плеер их не подхватят. У видео в имени стоит
+                # `WEBDL-1080p`, и если у субтитров оставить голое `WEBDL`,
+                # получается пара, которая рядом лежит, но не связана:
+                #
+                #     … [anime365_Japanese_(BD)] WEBDL-1080p.ja.mp4
+                #     … [anime365_Japanese_(BD)] WEBDL.ja.ass      ← мимо
+                #
+                # Поэтому берём ту же ступень, что взяло бы видео: обе задачи
+                # рождаются из одного перевода с одним `requested_height`, так
+                # что число совпадёт. Ссылка при этом не нужна — только высота.
+                _, height = pick_download_url(links, snapshot["requested_height"] or 1080)
                 extension = SUBTITLE_EXTENSION
             else:
                 url, height = pick_download_url(links, snapshot["requested_height"] or 1080)
