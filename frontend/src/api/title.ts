@@ -175,6 +175,14 @@ export interface TitlePageData {
   typical_duration: number | null
   summary: SummarySection[]
   quality: QualitySummary
+  /**
+   * Переводы догружаются прямо сейчас.
+   *
+   * Пустой список при этом флаге означает «ещё не приехали», а не «их
+   * нет» — разница для человека принципиальная. Страница больше не ждёт
+   * поход в Anime365: у популярного тайтла это было 13 секунд.
+   */
+  translations_pending?: boolean
 }
 
 /** Файл на диске, пригодный для просмотра. */

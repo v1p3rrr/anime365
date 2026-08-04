@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.core.db import session_scope
@@ -91,6 +92,61 @@ async def ensure_details(series_id: int) -> Series | None:
 
     with session_scope() as session:
         return session.get(Series, series_id)
+
+
+#: Тайтлы, переводы которых прямо сейчас догружаются фоном.
+#:
+#: Открыть один тайтл в двух вкладках — обычное дело, и без этого набора обе
+#: пошли бы в Anime365 за одним и тем же списком в две тысячи записей.
+_refreshing: set[int] = set()
+
+
+def translations_are_fresh(series_id: int) -> bool:
+    """Есть ли у тайтла непросроченные переводы в кэше."""
+    with session_scope() as session:
+        oldest = session.execute(
+            select(func.min(Translation.synced_at)).where(Translation.series_id == series_id)
+        ).scalar()
+    return oldest is not None and oldest > datetime.utcnow() - TRANSLATIONS_TTL
+
+
+def schedule_translation_refresh(series_id: int) -> bool:
+    """Ставит догрузку переводов фоном. True — если задача заведена.
+
+    ⚠️ Раньше страница тайтла **ждала** этот поход в Anime365. Замерено на
+    сервере пользователя: 3,3 с у Фрирен (2334 перевода), 4,1 с и **13,6 с** у
+    других тайтлов — при том что всё остальное на странице берётся из локальной
+    базы за десятки миллисекунд. Через шесть часов (`TRANSLATIONS_TTL`) история
+    повторялась, и любой тайтл снова открывался секунды.
+
+    Теперь страница отдаётся сразу с тем, что есть в кэше, а обновление идёт
+    фоном; клиент видит флаг `translations_pending` и перезапрашивает.
+    """
+    if series_id in _refreshing:
+        return False
+
+    _refreshing.add(series_id)
+
+    async def _run() -> None:
+        try:
+            await ensure_translations(series_id, force=True)
+        except Exception:
+            # Фоновая задача не имеет права ронять ничего: страница уже отдана.
+            log.exception("Фоновое обновление переводов тайтла %s не удалось", series_id)
+        finally:
+            _refreshing.discard(series_id)
+
+    try:
+        asyncio.get_running_loop().create_task(_run())
+    except RuntimeError:
+        # Вне цикла событий (тесты, CLI) фоновая задача не нужна.
+        _refreshing.discard(series_id)
+        return False
+    return True
+
+
+def translations_pending(series_id: int) -> bool:
+    return series_id in _refreshing
 
 
 async def ensure_translations(series_id: int, force: bool = False) -> list[dict[str, Any]]:
@@ -267,7 +323,23 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
     if series is None:
         return None
 
-    translations = await ensure_translations(series_id, force=force_refresh)
+    # ⚠️ Страница не ждёт сеть.
+    #
+    # Шапка, описание, список серий и локальное наличие лежат в нашей базе и
+    # отдаются за миллисекунды. Переводы приходят из Anime365, и их у
+    # популярного тайтла бывает больше двух тысяч — именно они превращали
+    # открытие в 13 секунд ожидания. Поэтому берём то, что есть в кэше, а
+    # просроченное обновляем фоном.
+    if force_refresh or not translations_are_fresh(series_id):
+        schedule_translation_refresh(series_id)
+
+    with session_scope() as session:
+        translations = [
+            _translation_dict(row)
+            for row in session.execute(
+                select(Translation).where(Translation.series_id == series_id)
+            ).scalars()
+        ]
 
     with session_scope() as session:
         episodes = (
@@ -477,6 +549,10 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
         # Точные ступени берём из кэша embed: если пользователь уже нажимал
         # «уточнить», сводка обязана показывать факт, а не прежнюю прикидку.
         "quality": build_quality_summary(normalized, total, exact_heights_for_series(series_id)),
+        # Переводы догружаются прямо сейчас: клиент перезапросит страницу и
+        # получит их. Пустой список при этом флаге означает «ещё не приехали»,
+        # а не «их нет» — разница для человека принципиальная.
+        "translations_pending": translations_pending(series_id),
     }
 
 

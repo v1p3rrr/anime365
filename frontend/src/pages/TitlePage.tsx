@@ -97,6 +97,11 @@ export function TitlePage() {
     queryKey: ['title', seriesId],
     queryFn: () => titleApi.page(seriesId),
     enabled: Number.isFinite(seriesId),
+    // Пока переводы догружаются фоном, перезапрашиваем страницу. Раньше она
+    // просто ждала ответа Anime365 — до тринадцати секунд на популярном
+    // тайтле; теперь шапка, серии и локальное наличие видны сразу, а сводка
+    // переводов появляется, когда приедет.
+    refetchInterval: (q) => (q.state.data?.translations_pending ? 1500 : false),
   })
 
   // Автоматически развести «фильм» и «сериал» нельзя: у тайтла с type=movie
@@ -543,9 +548,20 @@ export function TitlePage() {
       </Group>
 
       <div>
-        <Title order={5} mb="xs">
-          {t('title.translationsAll')}
-        </Title>
+        <Group gap="xs" mb="xs" align="center">
+          <Title order={5}>{t('title.translationsAll')}</Title>
+          {/* Переводы едут отдельно от страницы. Сказать об этом обязательно:
+              пустая сводка без объяснения читается как «переводов нет», а это
+              совсем другой смысл. */}
+          {data.translations_pending && (
+            <Group gap={6} align="center">
+              <Loader size="xs" />
+              <Text size="xs" c="dimmed">
+                {t('title.translationsLoading')}
+              </Text>
+            </Group>
+          )}
+        </Group>
         <TranslationGroups
           sections={data.summary}
           types={prefs.types}

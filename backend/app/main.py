@@ -108,8 +108,32 @@ app.include_router(maintenance.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 
 
+class ImmutableAssets(StaticFiles):
+    """Статика с хешем в имени кэшируется навсегда.
+
+    Vite кладёт в имя файла хеш содержимого (`index-DYUOLL7q.js`), поэтому
+    изменённый файл получает **другое** имя. Значит перепроверять старый смысла
+    нет никогда.
+
+    ⚠️ Без этого заголовка браузер спрашивал сервер о каждом ассете на каждом
+    заходе: `StaticFiles` отдаёт только `etag` и `last-modified`, то есть
+    условный запрос всё равно уходит и ждёт ответа. На локальной сети это
+    десятки миллисекунд, через VPN — заметно больше, и умножается на число
+    файлов.
+
+    `index.html` под это правило не попадает намеренно: он **не** хеширован, и
+    закэшировать его навсегда значило бы намертво прибить старую версию
+    приложения (мы на этом уже обжигались — см. 13-workflow.md).
+    """
+
+    def file_response(self, *args, **kwargs):  # type: ignore[override]
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
 if STATIC_DIR.is_dir():
-    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+    app.mount("/assets", ImmutableAssets(directory=STATIC_DIR / "assets"), name="assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str) -> FileResponse:

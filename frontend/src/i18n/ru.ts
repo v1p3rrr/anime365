@@ -426,6 +426,7 @@ export const ru = {
     translationTypes: 'Типы переводов:',
     noSectionsForTypes: 'Для включённых типов переводов нет. Включите нужные фишками выше или в настройках.',
     translationsAll: 'Переводы за весь тайтл',
+    translationsLoading: 'подгружаются с Anime365…',
     episodes: 'Серии',
     showNonContent: 'Показать трейлеры и рекламу ({count})',
     columnEpisode: 'Серия',
