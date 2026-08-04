@@ -25,11 +25,13 @@ import { api } from '../api/client'
 import { ErrorState } from '../components/ErrorState'
 import { useT, type TranslationKey } from '../i18n'
 import { useApiError } from '../i18n/apiError'
+import { useAuth } from '../hooks/useAuth'
 import { usePermissions } from '../hooks/usePermissions'
 import { useUnsavedGuard } from '../hooks/useUnsavedGuard'
 import scrollClasses from './ScrollPage.module.css'
 import settingsClasses from './SettingsPage.module.css'
 import { DisplaySettings } from '../components/DisplaySettings'
+import { OwnPasswordCard } from '../components/OwnPasswordCard'
 import { UsersPanel } from '../components/UsersPanel'
 
 interface SettingItem {
@@ -103,6 +105,7 @@ export function SettingsPage() {
   const apiError = useApiError()
   const settingText = useSettingText()
   const { can, isAdmin, ready } = usePermissions()
+  const auth = useAuth()
   const [draft, setDraft] = useState<Record<string, string>>({})
   // Черновик пользователей живёт в своей панели, но уход со страницы один на
   // всех — иначе правки по пользователям пропадали бы без предупреждения.
@@ -333,6 +336,11 @@ export function SettingsPage() {
           Панель только для администратора: `/api/users` требует именно его, и
           обычному пользователю она отвечала бы отказом на каждый рендер. */}
       {isAdmin && <UsersPanel onDirtyChange={setUsersDirty} />}
+
+      {/* Свой пароль — рядом с пользователями, но доступен всем и без прав:
+          это единственное, чем человек распоряжается сам. Карточка не
+          показывается, когда вход не требуется вовсе: менять нечего. */}
+      {auth.passwordRequired && <OwnPasswordCard />}
 
       {/* Серверные настройки — под правом. Личные (язык, отображение) выше
           и остаются всем: они хранятся в браузере и никого не касаются. */}

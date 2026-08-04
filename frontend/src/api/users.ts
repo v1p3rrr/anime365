@@ -47,6 +47,9 @@ export interface UserUpdate {
 
 export const usersApi = {
   me: () => api.get<Me>('/users/me'),
+  /** Свой пароль меняет любой вошедший, права для этого не нужны. */
+  changeOwnPassword: (current: string, next: string) =>
+    api.post<{ ok: boolean }>('/users/me/password', { current, new: next }),
   list: () => api.get<UsersResponse>('/users'),
   create: (payload: UserCreate) => api.post<AppUser>('/users', payload),
   update: (id: number, payload: UserUpdate) => api.put<AppUser>(`/users/${id}`, payload),

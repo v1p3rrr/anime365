@@ -19,11 +19,11 @@ from sqlalchemy import delete, select
 
 from app.api.auth import issue_session_after_password_change
 from app.core import settings_registry as reg
-from app.core.bootstrap import load_settings_from_db
+from app.core.bootstrap import ensure_admin_user, load_settings_from_db
 from app.core.config import settings
 from app.core.security import HASH_PREFIX, hash_password
 from app.core.settings_registry import ValidationError
-from app.core.permissions import Permission, require
+from app.core.permissions import CurrentUser, Permission, current_user, require
 from app.models.catalog import ScanRun
 from app.models.settings import AppSetting
 from app.services.anime365 import Anime365Client, Anime365Error
@@ -136,6 +136,7 @@ def update_settings(
     updates: Annotated[list[SettingUpdate], Body(embed=True)],
     request: Request,
     response: Response,
+    user: CurrentUser = Depends(current_user),
 ) -> dict[str, Any]:
     """Сохраняет переопределения из интерфейса.
 
@@ -222,7 +223,14 @@ def update_settings(
         download_queue.request_restart()
 
     if password_changed:
-        issue_session_after_password_change(response, request)
+        # ⚠️ Без этого смена пароля из интерфейса НЕ МЕНЯЛА ПАРОЛЬ. Вход
+        # проверяет хеш у самой учётной записи, а `ui_password` — это настройка;
+        # переносил её в запись только `ensure_admin_user()` при старте. То есть
+        # до перезапуска контейнера продолжал работать старый пароль, а новый не
+        # работал вовсе — ровно наоборот тому, чего ждёт человек, меняющий
+        # пароль после утечки.
+        ensure_admin_user()
+        issue_session_after_password_change(response, request, user.id)
 
     return {"applied": applied, "errors": errors}
 
@@ -231,7 +239,12 @@ def update_settings(
     "/reset/{key}",
     dependencies=[Depends(require(Permission.SETTINGS))],
 )
-def reset_setting(key: str, request: Request, response: Response) -> dict[str, Any]:
+def reset_setting(
+    key: str,
+    request: Request,
+    response: Response,
+    user: CurrentUser = Depends(current_user),
+) -> dict[str, Any]:
     """Убирает переопределение — значение возвращается к переменной окружения."""
     from app.core.db import session_scope
 
@@ -251,7 +264,10 @@ def reset_setting(key: str, request: Request, response: Response) -> dict[str, A
         jellyfin.forget()
 
     if setting.key == "ui_password":
-        issue_session_after_password_change(response, request)
+        # Сброс возвращает пароль к значению из окружения — учётную запись
+        # надо привести к нему по той же причине, что и при смене.
+        ensure_admin_user()
+        issue_session_after_password_change(response, request, user.id)
 
     resolved = settings.resolve(key)
     return {"key": key, "source": resolved.source}

@@ -35,9 +35,30 @@ class TestCurrentUser:
         assert not viewer.can(Permission.SETTINGS)
         assert not viewer.can(Permission.LIBRARY)
 
-    def test_empty_permissions_means_nothing(self):
+    def test_empty_permissions_leaves_only_reading(self):
+        """Пустой набор — это «может смотреть каталог и ничего больше».
+
+        Право на чтение выдаётся по факту входа: учётная запись, которая может
+        войти и не увидеть ничего, бессмысленна. Всё остальное при пустом
+        наборе недоступно.
+        """
         nobody = CurrentUser(3, "никто", is_admin=False, permissions=[])
-        assert not any(nobody.can(p) for p in Permission)
+        assert nobody.can(Permission.CATALOG)
+        assert not any(
+            nobody.can(p) for p in Permission if p is not Permission.CATALOG
+        )
+
+    def test_implicit_right_is_not_stored(self):
+        """Неявное право действует, но в записи его нет.
+
+        Иначе правд стало бы две: у одних записей право в списке лежит, у
+        других нет, а поведение одинаковое — и первое же расхождение выглядело
+        бы как потеря доступа.
+        """
+        from app.core.permissions import ASSIGNABLE_PERMISSIONS, IMPLICIT_PERMISSIONS
+
+        assert Permission.CATALOG.value in IMPLICIT_PERMISSIONS
+        assert Permission.CATALOG.value not in ASSIGNABLE_PERMISSIONS
 
 
 @pytest.fixture(autouse=True)

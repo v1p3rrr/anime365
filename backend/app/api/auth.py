@@ -117,14 +117,21 @@ def logout(request: Request, response: Response) -> dict[str, bool]:
     return {"ok": True}
 
 
-def issue_session_after_password_change(response: Response, request: Request) -> None:
+def issue_session_after_password_change(
+    response: Response, request: Request, user_id: int
+) -> None:
     """После смены пароля старые сессии убиваются, а текущему клиенту выдаётся новая.
 
     Иначе тот, кто только что задал пароль, немедленно получит 401 на следующем
     же запросе — выглядит как поломка.
+
+    ⚠️ `user_id` обязателен. Раньше здесь бралось значение по умолчанию, то есть
+    пользователь `id=1`, и администратор, не являющийся корневым, после смены
+    пароля продолжал работу **под чужой учётной записью**: права он при этом
+    получал не свои, а задачи создавались от чужого имени.
     """
     sessions.drop_all()
-    token = sessions.create()
+    token = sessions.create(user_id)
     _set_cookie(response, token, secure=request.url.scheme == "https")
 
 

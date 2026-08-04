@@ -364,3 +364,83 @@ def stream_local(
 
     media_type = LOCAL_VIDEO_TYPES.get(path.suffix.lower(), "application/octet-stream")
     return serve_file_with_range(path, media_type, range_header)
+
+
+# --------------------------------------------------------------------------- #
+# Субтитры к локальному видео
+# --------------------------------------------------------------------------- #
+
+
+@router.get(
+    "/local/{file_id}/subtitle-tracks",
+    dependencies=[Depends(require(Permission.WATCH))],
+)
+async def local_subtitle_tracks(file_id: int) -> dict[str, Any]:
+    """Что можно показать поверх этого файла: соседние файлы и дорожки внутри.
+
+    Спрашивается при открытии плеера, а не при построении страницы тайтла: у
+    тайтла бывает три сотни серий, и обходить ffprobe'ом их все ради списка,
+    который понадобится для одной, — это часы работы диска впустую.
+    """
+    from app.services.local_subtitles import tracks_for
+
+    return await tracks_for(file_id)
+
+
+@router.get(
+    # ⚠️ Точка между параметрами обязательна. Без разделителя
+    # (`{file_id}{ext}`) жадный `[^/]+` съедает почти всё: из «12.srt»
+    # получается file_id=«12.sr» и ext=«t», и запрос падает на разборе числа.
+    # Тот же приём уже стоит у логотипов студий.
+    "/local/subtitle/{file_id}.{ext}",
+    dependencies=[Depends(require(Permission.WATCH))],
+)
+def local_subtitle_file(file_id: int, ext: str) -> Response:
+    """Отдаёт соседний файл субтитров из библиотеки.
+
+    ⚠️ Расширение в адресе — не украшение. Плеер определяет формат субтитров по
+    расширению (`getExt(url) === 'ass'`), и на пути без него молча ничего не
+    грузит. Само значение `ext` при этом ни на что не влияет: файл берётся из
+    базы по идентификатору, а путь собирается на сервере.
+    """
+    from app.services.local_subtitles import subtitle_file_path
+
+    path = subtitle_file_path(file_id)
+    if path is None:
+        raise ApiError(404, errors.FILE_NOT_FOUND, "Файл субтитров не найден")
+
+    # Субтитры — текст, и разбирает их плеер в браузере. Отдаём как есть, не
+    # пытаясь угадать кодировку: перекодировать вслепую хуже, чем отдать байты.
+    return Response(
+        path.read_bytes(),
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+@router.get(
+    "/local/{file_id}/embedded/{index}.ass",
+    dependencies=[Depends(require(Permission.WATCH))],
+)
+async def local_embedded_subtitle(file_id: int, index: int) -> Response:
+    """Вытаскивает дорожку субтитров из контейнера.
+
+    Дорого: ffmpeg проходит файл целиком, собирая разбросанные по нему пакеты.
+    Поэтому результат кэшируется на диске, а запрос делается только когда
+    человек выбрал именно эту дорожку.
+    """
+    from app.services.audio import AudioError
+    from app.services.local_subtitles import embedded_subtitle
+
+    try:
+        data = await embedded_subtitle(file_id, index)
+    except AudioError as exc:
+        raise ApiError(
+            404, errors.SUBTITLES_UNAVAILABLE, str(exc), reason=str(exc)
+        ) from exc
+
+    return Response(
+        data,
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )

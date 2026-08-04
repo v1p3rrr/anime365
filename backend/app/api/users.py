@@ -1,20 +1,23 @@
 """Учётные записи и права.
 
-Многопользовательский режим ПОКА НЕ ВКЛЮЧЁН: вход идёт по одному общему паролю,
-и все, кто вошёл, работают от администратора `id=1`. Эти эндпоинты нужны, чтобы
-записи можно было завести заранее — и чтобы разграничение уже проверялось на
-сервере, а не появилось потом задним числом.
+Вход по логину и паролю; у каждой записи свой набор прав. Корневая учётная
+запись задаётся окружением (`A365_ADMIN_LOGIN` + `A365_UI_PASSWORD`), заводится
+при старте и всегда остаётся администратором — снятая галочка не должна
+запирать снаружи.
 
 Почему проверка именно здесь, а не в интерфейсе: спрятанная кнопка не защита.
 Тот же запрос отправляется из консоли браузера одной строкой, поэтому право
 проверяется зависимостью эндпоинта, а скрытие кнопок — только удобство поверх.
+
+Управление пользователями — только администратор, и отдельным правом это не
+выдаётся: право раздавать права и есть администратор.
 """
 
 from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
@@ -23,13 +26,16 @@ from app.core.db import session_scope
 from app.core.errors import ApiError
 from app.core.permissions import (
     ALL_PERMISSIONS,
+    ASSIGNABLE_PERMISSIONS,
     DEFAULT_PERMISSIONS,
+    IMPLICIT_PERMISSIONS,
     CurrentUser,
     Permission,
     current_user,
     require_admin,
 )
-from app.core.security import hash_password
+from app.api.auth import issue_session_after_password_change
+from app.core.security import hash_password, password_problem, sessions
 from app.models import AppUser
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -40,8 +46,8 @@ class UserCreate(BaseModel):
     is_admin: bool = False
     #: Игнорируется у администратора: ему права не урезают.
     permissions: list[str] = Field(default_factory=lambda: list(DEFAULT_PERMISSIONS))
-    #: Необязателен, пока вход общий. Заранее принимаем, чтобы не заводить
-    #: пароль вторым заходом, когда многопользовательский режим включат.
+    #: Без пароля под этим именем нельзя войти — запись останется владельцем
+    #: задач и привязок. Это законный случай, поэтому поле необязательное.
     password: str | None = None
 
 
@@ -73,9 +79,24 @@ def _validate(permissions: list[str]) -> list[str]:
             f"Неизвестное право: {', '.join(unknown)}",
             permission=", ".join(unknown),
         )
+    # Неявные права в запись не пишем: они действуют у всех и подставляются при
+    # проверке. Сохранив их здесь, мы получили бы две правды — у одних записей
+    # право в списке есть, у других нет, а поведение одинаковое.
     # Порядок канонический, а не порядок нажатий: иначе список в интерфейсе
     # перетасовывался бы при каждом сохранении.
-    return [p for p in ALL_PERMISSIONS if p in permissions]
+    return [p for p in ASSIGNABLE_PERMISSIONS if p in permissions]
+
+
+def _checked(password: str) -> str:
+    """Пароль, годный к сохранению. Иначе — понятный отказ.
+
+    Проверка стоит на сервере, а не только в форме: правка запроса из консоли
+    браузера обходит любую проверку на клиенте.
+    """
+    problem = password_problem(password)
+    if problem:
+        raise ApiError(400, errors.SETTINGS_INVALID, problem, reason=problem)
+    return password
 
 
 @router.get("/me")
@@ -89,7 +110,13 @@ def me(user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
         "id": user.id,
         "name": user.name,
         "is_admin": user.is_admin,
-        "permissions": ALL_PERMISSIONS if user.is_admin else user.permissions,
+        # Неявные права добавляем в ответ: интерфейс решает по нему, что
+        # показывать, и без них он спрятал бы каталог у каждого, кто вошёл.
+        "permissions": (
+            ALL_PERMISSIONS
+            if user.is_admin
+            else sorted(set(user.permissions) | IMPLICIT_PERMISSIONS)
+        ),
         # Пока режим не включён, интерфейс не должен прятать ничего. Флаг
         # отделяет «прав нет» от «разграничение ещё не действует».
         "multiuser_enabled": _multiuser_enabled(),
@@ -116,7 +143,9 @@ def list_users() -> dict[str, Any]:
         rows = session.execute(select(AppUser).order_by(AppUser.id)).scalars().all()
         return {
             "users": [_to_dict(r) for r in rows],
-            "all_permissions": ALL_PERMISSIONS,
+            # Только назначаемые: каталог есть у всех, кто вошёл, и галочка,
+            # которую нельзя снять, в форме только сбивала бы с толку.
+            "all_permissions": ASSIGNABLE_PERMISSIONS,
             "multiuser_enabled": any(not r.is_admin for r in rows),
         }
 
@@ -145,7 +174,7 @@ def create_user(payload: UserCreate) -> dict[str, Any]:
             name=name,
             is_admin=payload.is_admin,
             permissions=permissions,
-            password_hash=hash_password(payload.password) if payload.password else None,
+            password_hash=hash_password(_checked(payload.password)) if payload.password else None,
         )
         session.add(row)
         session.flush()
@@ -165,10 +194,68 @@ def update_user(user_id: int, payload: UserUpdate) -> dict[str, Any]:
         if payload.permissions is not None:
             row.permissions = _validate(payload.permissions)
         if payload.password:
-            row.password_hash = hash_password(payload.password)
+            row.password_hash = hash_password(_checked(payload.password))
+            # Чужой пароль меняют по одной причине: он скомпрометирован или
+            # человек потерял доступ. В обоих случаях оставлять живыми сессии,
+            # открытые старым паролём, — значит не сделать ровно того, ради чего
+            # пароль и меняли.
+            sessions.drop_for_user(user_id)
 
         session.flush()
         return _to_dict(row)
+
+
+class PasswordChange(BaseModel):
+    current: str
+    new: str
+
+
+@router.post("/me/password")
+def change_own_password(
+    payload: PasswordChange,
+    request: Request,
+    response: Response,
+    user: CurrentUser = Depends(current_user),
+) -> dict[str, bool]:
+    """Смена собственного пароля.
+
+    Доступна любому вошедшему и без всяких прав: свой пароль — единственное, чем
+    человек должен распоряжаться сам. Пока этого не было, сменить пароль мог
+    только администратор и только чужой — то есть обычный пользователь навсегда
+    оставался с тем паролём, который ему однажды продиктовали.
+
+    Старый пароль спрашиваем обязательно: без него оставленная без присмотра
+    вкладка превращается в захват учётной записи.
+    """
+    from app.core.security import login_limiter, verify_user
+
+    # Тот же счётчик, что у формы входа: иначе здесь появился бы способ
+    # перебирать пароль без ограничений, просто из-под живой сессии.
+    key = f"pwchange:{request.client.host if request.client else 'unknown'}"
+    if login_limiter.check(key) > 0:
+        raise ApiError(429, errors.RATE_LIMITED, "Слишком много попыток", limit=login_limiter.limit, window=int(login_limiter.window))
+
+    if verify_user(user.name, payload.current) != user.id:
+        login_limiter.register_failure(key)
+        raise ApiError(403, errors.PERMISSION_DENIED, "Текущий пароль неверен", permission="password")
+
+    problem = password_problem(payload.new)
+    if problem:
+        raise ApiError(400, errors.SETTINGS_INVALID, problem, reason=problem)
+
+    with session_scope() as session:
+        row = session.get(AppUser, user.id)
+        if row is None:
+            raise ApiError(404, errors.USER_NOT_FOUND, "Пользователь не найден")
+        row.password_hash = hash_password(payload.new)
+
+    login_limiter.reset(key)
+    # Остальные сессии закрываем: смена пароля обязана выкидывать того, кто
+    # вошёл со старым. Себе тут же выдаём новую, иначе человек сменил пароль и
+    # немедленно получил 401 — выглядит как поломка.
+    sessions.drop_for_user(user.id)
+    issue_session_after_password_change(response, request, user.id)
+    return {"ok": True}
 
 
 @router.delete("/{user_id}", dependencies=[Depends(require_admin())])
@@ -179,6 +266,10 @@ def delete_user(user_id: int) -> dict[str, int]:
             raise ApiError(404, errors.USER_NOT_FOUND, "Пользователь не найден")
         _guard_last_admin(session, row, becoming_admin=False)
         session.delete(row)
+    # Удалённый не должен доходить, куда ходил: без этого его кука жила бы до
+    # своего срока. Отказ он получил бы и так — но по факту пропажи записи, а
+    # это другое и ломается при первом же совпадении идентификаторов.
+    sessions.drop_for_user(user_id)
     return {"deleted": user_id}
 
 
