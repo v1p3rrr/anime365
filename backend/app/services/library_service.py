@@ -175,11 +175,37 @@ def _persist_root(result: RootScanResult) -> int:
     return root_id
 
 
+#: По сколько папок писать за одну транзакцию.
+#:
+#: Не про скорость, а про длительность writer-lock. Полсотни папок — доли
+#: секунды; всё остальное в это время (загрузки, интерфейс) продолжает жить.
+MAPPING_WRITE_BATCH = 50
+
+
 def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
     """Проставляет маппинг для всех папок корня.
 
     Сезонные подпапки мапятся отдельно от папки тайтла: в Anime365 каждый сезон
     это отдельный тайтл. Ручные привязки не трогаются.
+
+    ## Почему в три прохода, а не в один
+
+    Раньше всё это было в **одной** `session_scope()`, и нечёткое сопоставление
+    крутилось прямо под открытой пишущей транзакцией. Замерено в контейнере:
+    0,83 секунды на семи папках эталонной библиотеки, то есть около 0,12 с на
+    папку — на библиотеке из тысячи папок это **две минуты** удержания
+    writer-lock. SQLite допускает одного писателя, `busy_timeout` 10 секунд, и
+    всё остальное в это время получало «database is locked».
+
+    Теперь: короткое чтение → счёт без базы → короткие записи порциями.
+
+    **Целостность от этого не страдает.** Удаление старой автопривязки и
+    вставка новой для одной папки по-прежнему в одной транзакции, поэтому
+    «папка без привязки» снаружи не наблюдается никогда. Разные папки могут
+    какое-то время быть в разном состоянии — обе версии корректны, и ни одна
+    ни на что не ссылается. Обрыв посередине оставит часть папок с прежними
+    привязками; следующий скан доведёт дело до конца. Прежний вариант при
+    обрыве откатывал вообще всё, то есть тоже не давал завершённости.
     """
     matcher = Matcher(
         index,
@@ -188,6 +214,7 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
     )
     stats = {"auto": 0, "suggested": 0, "unmatched": 0, "manual_kept": 0}
 
+    # ---- 1. Читаем всё, что нужно для счёта, и отпускаем базу.
     with session_scope() as session:
         folders = (
             session.execute(select(LibraryFolder).where(LibraryFolder.root_id == root_id))
@@ -195,14 +222,21 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
             .all()
         )
         by_id = {f.id: f for f in folders}
-
-        for folder in folders:
-            manual = session.execute(
-                select(TitleMapping).where(
-                    TitleMapping.folder_id == folder.id, TitleMapping.is_manual.is_(True)
+        manual_ids = {
+            row[0]
+            for row in session.execute(
+                select(TitleMapping.folder_id).where(
+                    TitleMapping.folder_id.in_([f.id for f in folders]),
+                    TitleMapping.is_manual.is_(True),
                 )
-            ).scalars().all()
-            if manual:
+            ).all()
+        }
+
+        # Контексты собираем здесь же: дальше объекты будут отсоединены от
+        # сессии, и обращение к их полям стало бы неожиданным запросом.
+        contexts: list[tuple[int, MatchContext]] = []
+        for folder in folders:
+            if folder.id in manual_ids:
                 # Ручная привязка — решение пользователя, автоскан её не перетирает.
                 stats["manual_kept"] += 1
                 continue
@@ -215,39 +249,59 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
 
             # Папка тайтла без видео и без подпапок с видео — мапить нечего,
             # но сама привязка полезна (пустые папки в библиотеке встречаются).
-            ctx = MatchContext(
-                folder_name=folder_name,
-                scope=scope,
-                nfo=title_nfo,
-                season_nfo=season_nfo,
-                local_episode_count=folder.video_count,
+            contexts.append(
+                (
+                    folder.id,
+                    MatchContext(
+                        folder_name=folder_name,
+                        scope=scope,
+                        nfo=title_nfo,
+                        season_nfo=season_nfo,
+                        local_episode_count=folder.video_count,
+                    ),
+                )
             )
-            result = matcher.match(ctx)
 
+    # ---- 2. Считаем без единого обращения к базе. Самая долгая часть.
+    matched = [(folder_id, matcher.match(ctx)) for folder_id, ctx in contexts]
+
+    # ---- 3. Пишем порциями. Пара «удалить старое, вставить новое» для каждой
+    # папки остаётся внутри одной транзакции.
+    for start in range(0, len(matched), MAPPING_WRITE_BATCH):
+        batch = matched[start : start + MAPPING_WRITE_BATCH]
+        with session_scope() as session:
             session.execute(
                 delete(TitleMapping).where(
-                    TitleMapping.folder_id == folder.id, TitleMapping.is_manual.is_(False)
+                    TitleMapping.folder_id.in_([folder_id for folder_id, _ in batch]),
+                    TitleMapping.is_manual.is_(False),
                 )
             )
-
-            if result is None:
-                stats["unmatched"] += 1
-                continue
-
-            session.add(
-                TitleMapping(
-                    series_id=result.series_id,
-                    folder_id=folder.id,
-                    source=result.source.value,
-                    confidence=result.confidence,
-                    matched_on=result.matched_on,
-                    is_manual=False,
-                    needs_confirmation=result.needs_confirmation,
+            for folder_id, result in batch:
+                if result is None:
+                    stats["unmatched"] += 1
+                    continue
+                session.add(
+                    TitleMapping(
+                        series_id=result.series_id,
+                        folder_id=folder_id,
+                        source=result.source.value,
+                        confidence=result.confidence,
+                        matched_on=result.matched_on,
+                        is_manual=False,
+                        needs_confirmation=result.needs_confirmation,
+                    )
                 )
-            )
-            stats["suggested" if result.needs_confirmation else "auto"] += 1
+                stats["suggested" if result.needs_confirmation else "auto"] += 1
 
-        stats["dropped_container"] = _drop_container_duplicates(session, folders)
+    # ---- 4. Дубликаты «контейнер против подпапки» — по полной картине, когда
+    # все привязки уже записаны. Своей короткой транзакцией.
+    with session_scope() as session:
+        fresh = (
+            session.execute(select(LibraryFolder).where(LibraryFolder.root_id == root_id))
+            .scalars()
+            .all()
+        )
+        stats["dropped_container"] = _drop_container_duplicates(session, fresh)
 
     return stats
 

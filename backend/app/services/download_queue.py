@@ -21,6 +21,7 @@ from time import monotonic
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.db import session_scope
@@ -535,6 +536,30 @@ def enqueue(
         return {"id": task.id, "status": task.status, "created": True}
 
 
+def _write_progress(task_id: int, progress) -> None:
+    """Сохраняет прогресс — и никогда не роняет из-за этого загрузку.
+
+    ⚠️ Раньше исключение отсюда летело наружу и убивало задачу: в логах
+    пользователя лежит «Задача 69 упала (database is locked), повтор через
+    120 с» — при том что файл в этот момент качался нормально. Прогресс это
+    украшение: не записался — следующая попытка через секунду покажет то же
+    самое, а недокачанное продолжится с того же места.
+
+    Ошибку всё-таки логируем: молчать нельзя, по ней видно, что база под
+    нагрузкой. Уровень предупреждения, а не ошибки — сама по себе она ничего
+    не ломает.
+    """
+    try:
+        with session_scope() as session:
+            task = session.get(DownloadTask, task_id)
+            if task is not None:
+                task.bytes_done = progress.bytes_done
+                task.bytes_total = progress.bytes_total
+                task.speed_bps = progress.speed_bps
+    except SQLAlchemyError as exc:
+        log.warning("Прогресс задачи %s не записан: %s", task_id, str(exc).splitlines()[0])
+
+
 def _finish(task_id: int, status: str, error: str | None = None) -> None:
     with session_scope() as session:
         task = session.get(DownloadTask, task_id)
@@ -851,25 +876,27 @@ class DownloadQueue:
 
             def on_progress(progress) -> None:
                 nonlocal last_publish
-                with session_scope() as session:
-                    db_task = session.get(DownloadTask, task_id)
-                    if db_task is not None:
-                        db_task.bytes_done = progress.bytes_done
-                        db_task.bytes_total = progress.bytes_total
-                        db_task.speed_bps = progress.speed_bps
-
-                # Событие не на каждый чанк: при мегабайтных кусках это сотни
-                # сообщений на файл, а интерфейсу хватает пары раз в секунду.
+                # ⚠️ Раз в секунду, а не на каждый чанк. Чанк — мегабайт, и на
+                # быстром канале это были десятки транзакций в секунду на файл.
+                # Каждая берёт writer-lock, а SQLite допускает одного писателя:
+                # так загрузки конкурировали и друг с другом, и со сканами, и
+                # получали «database is locked».
+                #
+                # Событие в интерфейс шло раз в секунду и раньше — то есть
+                # тормозящую запись делали чаще, чем то, ради чего она нужна.
                 now = monotonic()
-                if now - last_publish >= 1.0:
-                    last_publish = now
-                    bus.publish(
-                        "download.progress",
-                        task_id=task_id,
-                        bytes_done=progress.bytes_done,
-                        bytes_total=progress.bytes_total,
-                        speed_bps=round(progress.speed_bps),
-                    )
+                if now - last_publish < 1.0:
+                    return
+                last_publish = now
+
+                _write_progress(task_id, progress)
+                bus.publish(
+                    "download.progress",
+                    task_id=task_id,
+                    bytes_done=progress.bytes_done,
+                    bytes_total=progress.bytes_total,
+                    speed_bps=round(progress.speed_bps),
+                )
 
             def should_stop() -> bool:
                 return task_id in self._cancelled or self._paused or self._stop.is_set()
@@ -1059,14 +1086,17 @@ class DownloadQueue:
                 return None
 
             tmp_video = tmp_dir / f"a365-src-{task_id}{VIDEO_EXTENSION}"
+            last_write = 0.0
 
             def on_progress(progress) -> None:
-                with session_scope() as session:
-                    db_task = session.get(DownloadTask, task_id)
-                    if db_task is not None:
-                        db_task.bytes_done = progress.bytes_done
-                        db_task.bytes_total = progress.bytes_total
-                        db_task.speed_bps = progress.speed_bps
+                # Та же причина, что и у обычной загрузки: чаще раза в секунду
+                # писать прогресс в базу незачем, а вред от этого реальный.
+                nonlocal last_write
+                now = monotonic()
+                if now - last_write < 1.0:
+                    return
+                last_write = now
+                _write_progress(task_id, progress)
 
             def should_stop() -> bool:
                 return task_id in self._cancelled or self._paused or self._stop.is_set()

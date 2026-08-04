@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 from sqlalchemy import text
 
@@ -20,6 +21,22 @@ from app.core.db import engine, session_scope
 from app.models.catalog import Series
 
 log = logging.getLogger(__name__)
+
+#: Сколько тайтлов пересобирать в одной транзакции.
+#:
+#: Не про производительность, а про то, надолго ли берётся writer-lock. Пятьсот
+#: записей — доли секунды; всё, что не влезло, подождёт следующей порции и не
+#: помешает ни загрузкам, ни интерфейсу.
+FTS_CHUNK = 500
+
+#: Пауза между порциями.
+#:
+#: Без неё разбиение помогает вдвое меньше, чем могло бы: освободив лок, поток
+#: тут же забирает его обратно, и сосед, ждущий своей очереди, всё равно стоит
+#: секундами. Замерено на 29 214 тайтлах — худшее ожидание короткой записи
+#: было 5,1 с без паузы и 0,2 с с ней. Десять миллисекунд на порцию добавляют к
+#: проходу меньше секунды, а проход этот фоновый, и его никто не ждёт.
+FTS_CHUNK_PAUSE = 0.01
 
 CREATE_FTS = """
 CREATE VIRTUAL TABLE IF NOT EXISTS series_fts USING fts5(
@@ -75,18 +92,30 @@ def search_ids(user_input: str, limit: int = 200) -> list[int]:
 
 
 def rebuild_fts_for(series_ids: list[int]) -> None:
-    """Пересобирает записи индекса для указанных тайтлов."""
+    """Пересобирает записи индекса для указанных тайтлов.
+
+    ⚠️ **Транзакция на порцию, а не на весь список.** Раньше здесь была одна
+    `session_scope()` на всё, и после полного синка она держала writer-lock
+    **36,5 секунды** на 29 214 тайтлах — замерено в контейнере. SQLite
+    допускает одного писателя, `busy_timeout` у нас 10 секунд, поэтому всё
+    остальное в это время получало «database is locked»: и запись прогресса
+    загрузки, и сохранение курсора синка. Ровно это и было в логах на сервере.
+
+    Порциями работа идёт те же 36 секунд, но лок отпускается 58 раз, и между
+    порциями успевают отработать и загрузки, и интерфейс. Атомарность целого
+    индекса нам не нужна: он полностью выводится из таблицы `series` и в худшем
+    случае пересобирается заново.
+    """
     if not series_ids:
         return
 
-    chunk_size = 500
-    with session_scope() as session:
-        for start in range(0, len(series_ids), chunk_size):
-            chunk = series_ids[start : start + chunk_size]
-            # Именованные параметры под каждый элемент: значения не попадают в текст SQL.
-            placeholders = ", ".join(f":id{n}" for n in range(len(chunk)))
-            params = {f"id{n}": int(sid) for n, sid in enumerate(chunk)}
+    for start in range(0, len(series_ids), FTS_CHUNK):
+        chunk = series_ids[start : start + FTS_CHUNK]
+        # Именованные параметры под каждый элемент: значения не попадают в текст SQL.
+        placeholders = ", ".join(f":id{n}" for n in range(len(chunk)))
+        params = {f"id{n}": int(sid) for n, sid in enumerate(chunk)}
 
+        with session_scope() as session:
             session.execute(
                 text(f"DELETE FROM series_fts WHERE series_id IN ({placeholders})"), params
             )
@@ -105,6 +134,10 @@ def rebuild_fts_for(series_ids: list[int]) -> None:
                     text("INSERT INTO series_fts (series_id, titles) VALUES (:sid, :titles)"),
                     payload,
                 )
+
+        # Отдаём лок соседям. Без этой паузы поток забирает его обратно
+        # мгновенно, и ждущая короткая запись стоит секундами (замер: 5,1 с).
+        time.sleep(FTS_CHUNK_PAUSE)
 
 
 def rebuild_all() -> int:
