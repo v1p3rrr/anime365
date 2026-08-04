@@ -991,6 +991,15 @@ export const ja: Dictionary = {
     offlineHint: 'アプリケーションが起動しているか確認してください。',
   },
 
+  errorPage: {
+    notFoundTitle: 'ページが見つかりません',
+    notFoundHint: 'このアドレスはアプリケーションにありません。リンクが古いか、入力に誤りがある可能性があります。',
+    crashTitle: 'ページを開けませんでした',
+    crashHint:
+      '画面側の不具合で、データに影響はありません。カタログに戻ってください。繰り返す場合はページを再読み込みしてください。',
+    toCatalog: 'カタログへ',
+  },
+
   errors: {
     title: '問題が発生しました',
     unauthorized: 'ログインが必要です',

@@ -3,6 +3,7 @@ import { createBrowserRouter } from 'react-router-dom'
 import { App } from './App'
 import { RequirePermission } from './components/RequirePermission'
 import { CatalogPage } from './pages/CatalogPage'
+import { ErrorPage } from './pages/ErrorPage'
 import { LibraryPage } from './pages/LibraryPage'
 import { QueuePage } from './pages/QueuePage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -23,11 +24,18 @@ import { TitlePage } from './pages/TitlePage'
  * права уже спрятан, но закладку это не отменяет. Страница настроек не обёрнута
  * намеренно: там же живут личные настройки отображения и язык интерфейса,
  * нужные любому, — серверную часть она прячет сама.
+ *
+ * `errorElement` на корне, а не отдельным маршрутом `path: '*'`: так один экран
+ * ловит и несовпавший адрес, и исключение из любой страницы, и рисуется вместо
+ * всего дерева — без шапки и без запросов, которые до входа всё равно отдали бы
+ * 401. Без него на опечатку в адресе показывалась отладочная страница роутера
+ * («Hey developer 👋»), выглядящая как поломка приложения.
  */
 export const router = createBrowserRouter([
   {
     path: '/',
     element: <App />,
+    errorElement: <ErrorPage />,
     children: [
       {
         index: true,

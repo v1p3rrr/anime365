@@ -991,6 +991,15 @@ export const en: Dictionary = {
     offlineHint: 'Check whether the application is running.',
   },
 
+  errorPage: {
+    notFoundTitle: 'Page not found',
+    notFoundHint: 'There is no such address in the application — the link may be outdated or mistyped.',
+    crashTitle: 'The page did not open',
+    crashHint:
+      'The interface itself failed; your data is untouched. Go back to the catalog, and reload the page if it happens again.',
+    toCatalog: 'Go to catalog',
+  },
+
   errors: {
     title: 'Something went wrong',
     unauthorized: 'Sign-in required',
