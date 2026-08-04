@@ -65,7 +65,8 @@ backend/app/
 │  ├─ shikimori.py                Связи между тайтлами — порядок просмотра.
 │  ├─ stream_probe.py             Определение звуковых дорожек через ffprobe — фоновой джобой.
 │  ├─ title_service.py            Сборка данных для страницы тайтла.
-│  └─ translation_scan.py         Фоновый сбор сведений о том, какие переводы есть у тайтла на сайте.
+│  ├─ translation_scan.py         Фоновый сбор сведений о том, какие переводы есть у тайтла на сайте.
+│  └─ translation_types.py        Виды перевода: что за ними стоит и что из этого следует.
 ├─ workers/                      # фоновые задачи
 │  └─ scheduler.py                Фоновые задачи.
 ```
@@ -114,6 +115,7 @@ frontend/src/
 │  └─ UsersPanel.tsx
 ├─ hooks/          # хуки
 │  ├─ useAuth.ts
+│  ├─ usePermissions.ts
 │  ├─ useCatalogIds.ts
 │  ├─ useCatalogUrlState.ts
 │  ├─ useServerEvents.ts
@@ -253,9 +255,52 @@ scan_run(id, kind[catalog_full|catalog_incr|catalog_airing|library|ffprobe],
          status, started_at, finished_at, stats_json, error)
 ```
 
-Индексы: `translation(series_id)`, `translation(episode_id)`, `episode(series_id)`,
-`series(year)`, `series(type)`, `series(is_airing)`, `title_mapping(series_id)`,
-`title_mapping(folder_id)`, `download_task(status)`.
+### Индексы
+
+Обычные, по одной колонке: `translation(series_id)`, `translation(episode_id)`,
+`episode(series_id)`, `series(year)`, `series(type)`, `series(is_airing)`,
+`title_mapping(series_id)`, `title_mapping(folder_id)`, `download_task(status)`.
+
+**Составные покрывающие — для каталога.** Это не микрооптимизация, а разница между
+секундой и долей миллисекунды, и вот почему.
+
+Таблица `series` **широкая**: в каждой строке лежат `titles`, `all_titles`, `descriptions`
+и `links` — вместе около 25 МБ на 29 тысяч строк. SQLite хранит строку целиком на страницах
+таблицы, поэтому любой полный скан читает всю эту массу, даже когда из строки нужен один `id`.
+Замерено: `SELECT COUNT(*) FROM series WHERE is_hentai = 0` — **1229 мс**, тогда как
+`COUNT(*)` без условий — 0,2 мс.
+
+Запрос каталога делает два таких скана: `COUNT` для полосы прокрутки и окно с сортировкой.
+
+```
+ix_series_catalog_id      (is_hentai, id)
+ix_series_catalog_score   (is_hentai, mal_score, id)     ← сортировка по умолчанию
+ix_series_catalog_year    (is_hentai, year, id)
+ix_series_catalog_title   (is_hentai, title, id)
+ix_series_catalog_airing  (is_hentai, is_airing, mal_score, id)   ← вкладка онгоингов
+ix_series_catalog_type    (is_hentai, type, mal_score, id)        ← фильтр по типу
+```
+
+Все шесть начинаются с `is_hentai`, потому что это условие есть почти в каждом запросе
+каталога, а ведущая колонка индекса обязана совпадать с условием — иначе индекс не применится.
+Дальше идёт колонка сортировки, последним `id`: так индекс закрывает и фильтр, и порядок, и
+единственное выбираемое поле. До строк таблицы дело не доходит вовсе — это и означает
+«покрывающий».
+
+Цена: 4,7 МБ индексов на базе в 69 МБ и +4 % к стоимости записи.
+
+⚠️ **Две ловушки, обе проверены замером** ([D-81](09-decisions.md)):
+
+* **неполный набор уводит планировщик.** С двумя индексами вместо шести сортировка по году
+  деградировала с 0,3 мс до 3,3 с: SQLite выбрал новый индекс и перестал использовать
+  существующий `ix_series_year`. Добавляя индекс, прогоняйте `EXPLAIN QUERY PLAN` по всей
+  батарее запросов, а не только по своему;
+* **`ANALYZE` сделал хуже.** С собранной статистикой «жанр плюс сортировка по оценке» ушёл
+  в скан: 2,1 мс → 377 мс. Поэтому не запускаем.
+
+Индексы, добавленные в модели после создания таблиц, дописывает `add_missing_indexes()` при
+старте: `create_all` создаёт их только вместе с новой таблицей и на существующей базе не делает
+ничего. План запросов закреплён тестом `tests/test_catalog_indexes.py`.
 
 ---
 
