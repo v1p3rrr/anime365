@@ -1,66 +1,87 @@
 /**
- * Загрузка карточек окнами поверх полного списка id.
+ * Загрузка карточек каталога окнами.
  *
- * Полный список id приходит одним запросом (29 тысяч чисел — примерно 200 КБ), поэтому
- * виртуальный список сразу знает точную длину: полоса прокрутки правильная, можно прыгнуть
- * в любое место, а позиция при возврате со страницы тайтла восстанавливается по индексу.
- * Бесконечная догрузка этого не даёт и приносит дубли на границах страниц.
+ * ## Почему это лежит в кеше запросов, а не в состоянии компонента
+ *
+ * Раньше карточки копились в `useState<Map>`. Работало это ровно до ухода со
+ * страницы: компонент размонтировался, и **все загруженные карточки исчезали**.
+ * Возврат в каталог означал повторную загрузку каждого видимого окна с пустой
+ * сеткой на это время. Пользователь так и описал: «перешёл на другую вкладку,
+ * вернулся — опять долго грузится, а не кеш какой-нибудь».
+ *
+ * Это был не «нет кеша в браузере», а наша ошибка: половина данных каталога
+ * просто не попадала в кеш, который у нас и так есть.
+ *
+ * Теперь каждое окно — обычный запрос. Ключ — **сами идентификаторы окна**, а не
+ * его номер и не фильтры. Так выходит точнее: два разных набора фильтров,
+ * давшие один и тот же кусок списка, делят кеш, а сдвиг выборки на одну позицию
+ * честно считается другими данными.
+ *
+ * ## Почему окна накапливаются, а не пересоздаются
+ *
+ * Прокрутка добавляет окна в список; при смене выборки список сбрасывается.
+ * Кеш при этом остаётся: вернувшись к прежним фильтрам, сетка получит карточки
+ * из него мгновенно, без единого запроса.
  */
 
+import { useQueries } from '@tanstack/react-query'
 import { useCallback, useRef, useState } from 'react'
 
 import { catalogApi, type CatalogCard } from '../api/client'
 
 const WINDOW_SIZE = 100
 
+/** Карточки меняются редко: правит их только синхронизация и наши же загрузки. */
+const CARDS_STALE_TIME = 5 * 60 * 1000
+
 export function useVirtualCatalog(ids: number[]) {
-  const [cards, setCards] = useState<Map<number, CatalogCard>>(new Map())
-  // Окна, которые уже запрошены: иначе быстрый скролл выстрелит десяток одинаковых запросов.
-  const requested = useRef<Set<number>>(new Set())
+  const [windows, setWindows] = useState<number[]>([])
   const currentIds = useRef<number[]>(ids)
 
   // ⚠️ Сброс делается во время рендера, а НЕ в эффекте.
   // Эффекты дочерних компонентов выполняются раньше родительских, поэтому сетка
-  // успевала запросить окно по новому списку, а эффект очистки затирал и пометку
-  // «окно запрошено», и пришедший результат. Карточки оставались пустыми до тех
-  // пор, пока прокрутка не вызывала запрос заново.
+  // успевала запросить окно по новому списку, а эффект очистки затирал пометку
+  // «окно запрошено». Карточки оставались пустыми до следующей прокрутки.
   if (currentIds.current !== ids) {
     currentIds.current = ids
-    requested.current = new Set()
-    // Синхронный сброс: к моменту работы ensureRange состояние уже чистое.
-    setCards(new Map())
+    setWindows([])
   }
 
-  const ensureRange = useCallback(
-    (startIndex: number, endIndex: number) => {
-      const firstWindow = Math.floor(startIndex / WINDOW_SIZE)
-      const lastWindow = Math.floor(endIndex / WINDOW_SIZE)
-
-      for (let w = firstWindow; w <= lastWindow; w++) {
-        if (requested.current.has(w)) continue
-        const slice = ids.slice(w * WINDOW_SIZE, (w + 1) * WINDOW_SIZE)
-        if (slice.length === 0) continue
-
-        requested.current.add(w)
-        catalogApi
-          .cards(slice)
-          .then((loaded) => {
-            // Пока запрос летел, фильтры могли смениться — результат уже не нужен.
-            if (currentIds.current !== ids) return
-            setCards((prev) => {
-              const next = new Map(prev)
-              for (const card of loaded) next.set(card.id, card)
-              return next
-            })
-          })
-          .catch(() => {
-            // Разрешаем повторную попытку при следующем заходе в это окно.
-            requested.current.delete(w)
-          })
+  const results = useQueries({
+    queries: windows.map((index) => {
+      const slice = ids.slice(index * WINDOW_SIZE, (index + 1) * WINDOW_SIZE)
+      return {
+        queryKey: ['catalog-cards', slice],
+        queryFn: () => catalogApi.cards(slice),
+        enabled: slice.length > 0,
+        staleTime: CARDS_STALE_TIME,
       }
+    }),
+    // `combine` пересчитывается только при изменении результатов — без него
+    // Map собиралась бы заново на каждый кадр прокрутки.
+    combine: (queries) => {
+      const cards = new Map<number, CatalogCard>()
+      for (const query of queries) {
+        for (const card of query.data ?? []) cards.set(card.id, card)
+      }
+      return { cards, isFetching: queries.some((query) => query.isFetching) }
     },
-    [ids],
-  )
+  })
 
-  return { cards, ensureRange }
+  const ensureRange = useCallback((startIndex: number, endIndex: number) => {
+    const first = Math.floor(startIndex / WINDOW_SIZE)
+    const last = Math.floor(endIndex / WINDOW_SIZE)
+
+    setWindows((prev) => {
+      const missing: number[] = []
+      for (let index = first; index <= last; index++) {
+        if (!prev.includes(index)) missing.push(index)
+      }
+      // Возвращаем прежний массив, когда добавлять нечего: новый вызвал бы
+      // перерисовку на каждом кадре прокрутки.
+      return missing.length === 0 ? prev : [...prev, ...missing]
+    })
+  }, [])
+
+  return { cards: results.cards, isFetching: results.isFetching, ensureRange }
 }
