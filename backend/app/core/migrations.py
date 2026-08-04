@@ -72,3 +72,36 @@ def add_missing_columns() -> int:
                 added += 1
 
     return added
+
+
+def add_missing_indexes() -> int:
+    """Создаёт индексы, появившиеся в моделях после создания таблиц.
+
+    ⚠️ Без этого новый индекс получали бы только чистые установки: `create_all`
+    делает индексы вместе с таблицей, а на существующей базе не делает ничего.
+    Ровно та же ловушка, что была с колонками, — и цена у неё тут выше: не
+    «поле пустое», а «каталог открывается секунду вместо миллисекунды», и
+    заметить это без замера нельзя.
+
+    Индексы создаются по одному: `CREATE INDEX` на 29 тысячах строк — это доли
+    секунды, но каждый берёт writer-lock, и делать это одной транзакцией на все
+    сразу незачем.
+    """
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    created = 0
+
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+
+        present = {idx["name"] for idx in inspector.get_indexes(table.name)}
+        for index in table.indexes:
+            if index.name in present:
+                continue
+            with engine.begin() as conn:
+                index.create(bind=conn, checkfirst=True)
+            log.info("Создан индекс %s", index.name)
+            created += 1
+
+    return created

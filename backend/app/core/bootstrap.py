@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.db import Base, engine, session_scope
-from app.core.migrations import add_missing_columns
+from app.core.migrations import add_missing_columns, add_missing_indexes
 from app.core.settings_registry import PATH_KEYS, check_path_layout
 from app.models import DEFAULT_USER_ID, AppSetting, AppUser
 from app.services.fts import init_fts
@@ -25,6 +25,13 @@ def bootstrap() -> None:
     added = add_missing_columns()
     if added:
         log.info("Схема дополнена: добавлено колонок %d", added)
+    # Индексы — тоже: `create_all` делает их только вместе с новой таблицей, а
+    # на уже существующей базе не делает ничего. Без этого составные индексы
+    # каталога появились бы только у тех, кто ставит с нуля, и запрос списка
+    # так и стоил бы секунду вместо миллисекунды.
+    indexes = add_missing_indexes()
+    if indexes:
+        log.info("Схема дополнена: создано индексов %d", indexes)
     init_fts()
 
     with session_scope() as session:
