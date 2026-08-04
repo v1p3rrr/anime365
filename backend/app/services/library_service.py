@@ -243,6 +243,12 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
 
             parent = by_id.get(folder.parent_id) if folder.parent_id else None
             # Папка сезона берёт название и внешние ID у родителя.
+            #
+            # ⚠️ Но только сезона. Подпапка без номера сезона — это фильм,
+            # спешлы, бонусы или служебная папка вроде `subtitles`, и данные
+            # родителя ей чужие. Поэтому рядом всегда передаём и собственные
+            # имя с `.nfo`, а решает матчер
+            # ([14-mapping-audit.md](../../../claude/14-mapping-audit.md)).
             title_nfo = _nfo_of(parent) if parent is not None else _nfo_of(folder)
             season_nfo = _nfo_of(folder) if parent is not None else None
             folder_name = parent.name if parent is not None else folder.name
@@ -258,6 +264,10 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
                         nfo=title_nfo,
                         season_nfo=season_nfo,
                         local_episode_count=folder.video_count,
+                        own_name=folder.name,
+                        own_nfo=_nfo_of(folder),
+                        is_child=parent is not None,
+                        video_count=folder.video_count,
                     ),
                 )
             )

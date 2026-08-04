@@ -60,6 +60,41 @@ def season_label_from_premiered(year: int, month: int) -> str:
     return f"{name} {label_year}"
 
 
+#: Ниже этого сходства названия кандидат отвергается, если подтвердить нечем.
+#:
+#: 45 — не наугад: на живой библиотеке `Your Name` против рекламы воды даёт 35,
+#: а верный, но иначе романизированный `Genshiken` против «Gendai Shikaku Bunka
+#: Kenkyuu Kai» — 100, потому что сверяемся со **всеми** написаниями каталога,
+#: включая `allTitles`.
+TITLE_FLOOR = 45.0
+
+#: Ниже этого — привязку ставим, но с пометкой «ждёт подтверждения».
+SUGGEST_TITLE_FLOOR = 70.0
+
+#: Вклад похожести названия в итоговую оценку.
+TITLE_WEIGHT = 0.35
+
+#: Насколько кандидаты должны отличаться, чтобы выбор считался однозначным.
+#: У «Golden Time» оба идентификатора дают по 100 похожести — развести их
+#: нечем, и такую пару надо показывать человеку, а не решать за него.
+AMBIGUITY_MARGIN = 8.0
+
+#: Оба плагина Jellyfin независимо сошлись на одном тайтле.
+BOTH_IDS_BONUS = 12.0
+
+YEAR_BONUS = 6.0
+YEAR_PENALTY = 5.0
+EPISODE_BONUS = 4.0
+#: Скачано может быть не всё, поэтому небольшое превышение допустимо.
+EPISODE_SLACK = 2
+
+#: Начиная со скольких файлов папка заведомо не «тайтл с одним эпизодом».
+IMPLAUSIBLE_VIDEO_COUNT = 3
+
+#: Сколько серий допустимо у тайтла, лежащего в корне фильмов.
+MOVIE_EPISODE_LIMIT = 6
+
+
 @dataclass
 class SeriesCandidate:
     """Минимум данных о тайтле, нужный для сопоставления."""
@@ -178,19 +213,50 @@ class TitleIndex:
 
 @dataclass
 class MatchContext:
-    """Всё, что известно о локальной папке."""
+    """Всё, что известно о локальной папке.
+
+    ⚠️ `nfo` у дочерней папки — это `.nfo` **родителя**, а `folder_name` — имя
+    родителя. Так задумано для сезонов: у `Season 2` своих названий и ID нет,
+    они есть только у сериала. Но у дочерней папки, которая **не сезон**
+    (фильм, спешлы, `EXTRA`, `subtitles`), родительские данные — чужие, и
+    принимать их за свои нельзя: именно так 20 папок получили `anilistid`
+    родителя со стопроцентной уверенностью
+    ([14-mapping-audit.md](../../../claude/14-mapping-audit.md)).
+
+    Поэтому рядом лежат `own_nfo` и `own_name` — то, что принадлежит самой
+    папке, — и `is_child`, по которому видно, унаследованы ли `nfo`/`folder_name`.
+    """
 
     folder_name: str
     scope: str  # series | movie
     nfo: NfoData | None = None
     season_nfo: NfoData | None = None
     local_episode_count: int = 0
+    #: Собственные имя и `.nfo` папки — в отличие от унаследованных выше.
+    own_name: str = ""
+    own_nfo: NfoData | None = None
+    #: Есть ли родитель. Без этого «нет номера сезона» у папки верхнего уровня
+    #: и у служебной подпапки выглядят одинаково, а означают противоположное.
+    is_child: bool = False
+    #: Сколько видеофайлов лежит в папке. Нужен для проверки правдоподобия:
+    #: тайтл с одним эпизодом не может занимать папку с 26 файлами.
+    video_count: int = 0
 
     @property
     def season_number(self) -> int | None:
         if self.season_nfo is not None and self.season_nfo.season is not None:
             return self.season_nfo.season
         return None
+
+    @property
+    def inherits_parent(self) -> bool:
+        """Пользуемся ли мы данными родителя как своими.
+
+        Только сезоны: у подпапки с номером сезона родительские название и ID
+        осмысленны. Всё остальное — фильм, спешлы, бонусы, служебные папки —
+        обязано опираться на себя.
+        """
+        return self.is_child and self.season_number is not None
 
 
 class Matcher:
@@ -205,55 +271,263 @@ class Matcher:
         self.suggest_threshold = suggest_threshold
 
     def match(self, ctx: MatchContext) -> MatchResult | None:
-        for step in (self._cascade_a, self._cascade_c, self._cascade_b):
-            result = step(ctx)
+        """Каскады предлагают кандидатов, решает сверка.
+
+        ⚠️ Раньше побеждал **первый сработавший каскад**, и его уверенность
+        была константой: нашёлся `anilistid` — 100%, и перебить это было нечем.
+        Проверка на живой библиотеке показала, чем это кончается: папка
+        `Your Name` села на рекламу минеральной воды, `Evangelion/Season 1`
+        с 26 сериями — на показ к 30-летию с одним эпизодом, а папка
+        `subtitles` — на тайтл родителя. Всё это со стопроцентной уверенностью
+        ([14-mapping-audit.md](../../../claude/14-mapping-audit.md)).
+
+        Причина не в каскадах, а в том, что источник совпадения решал всё, а
+        данные — ничего. Теперь наоборот: каскады только **предлагают**, а
+        каждое предложение сверяется с тем, что мы про папку знаем (название,
+        год, тип, число файлов). Источник задаёт лишь стартовый вес.
+        """
+        proposals = self._propose(ctx)
+        if not proposals:
+            return None
+
+        scored: list[tuple[float, MatchResult]] = []
+        for proposal in proposals:
+            verdict = self._verify(proposal, ctx)
+            if verdict is not None:
+                scored.append(verdict)
+
+        if not scored:
+            return None
+
+        scored.sort(key=lambda item: -item[0])
+        best_score, best = scored[0]
+
+        # Второй кандидат вплотную — значит признаки не развели их, и молча
+        # выбирать первого нельзя. Разница в один балл здесь ничего не значит:
+        # у «Golden Time» оба кандидата дают одинаковую похожесть названия.
+        runner_up = scored[1][0] if len(scored) > 1 else None
+        if runner_up is not None and best_score - runner_up < AMBIGUITY_MARGIN:
+            if scored[1][1].series_id != best.series_id:
+                best.needs_confirmation = True
+
+        return best
+
+    # ------------------------------------------------------------------ #
+    # Сбор кандидатов и их сверка
+    # ------------------------------------------------------------------ #
+
+    def _propose(self, ctx: MatchContext) -> list[MatchResult]:
+        """Все правдоподобные кандидаты, а не первый попавшийся."""
+        out: list[MatchResult] = []
+        out.extend(self._propose_ids(ctx))
+        for cascade in (self._cascade_c, self._cascade_b):
+            result = cascade(ctx)
             if result is not None:
-                return result
-        return None
+                out.append(result)
 
-    # ------------------------------------------------------------------ #
-    # Каскад A — точные совпадения по ID и японскому названию
-    # ------------------------------------------------------------------ #
+        # Один и тот же тайтл мог прийти из нескольких источников. Дубли не
+        # выбрасываем молча: совпадение источников — сильный сигнал, и его
+        # учитывает сверка.
+        seen: dict[tuple[int, MatchSource], MatchResult] = {}
+        for item in out:
+            seen.setdefault((item.series_id, item.source), item)
+        return list(seen.values())
 
-    def _cascade_a(self, ctx: MatchContext) -> MatchResult | None:
+    def _propose_ids(self, ctx: MatchContext) -> list[MatchResult]:
+        """Кандидаты по внешним идентификаторам — **оба**, а не первый.
+
+        ⚠️ Прежде `anilistid` выигрывал молча, а `shikimoriid` даже не
+        рассматривался, если первый сработал. Замер на 236 папках показал, что
+        так нельзя: у 66 из них идентификаторы указывают на **разные** тайтлы,
+        и ближе к правде оказывается то один, то другой (anilist 20 раз,
+        mal — 12). Поэтому предлагаем обоих и даём решить сверке.
+
+        Порядок плагинов Jellyfin (AniList первым, затем TMDB, Shikimori,
+        Kitsu, AniDB) означает, что `title` и `anilistid` пишет один плагин и
+        они согласованы между собой, а `shikimoriid` матчил другой, независимо.
+        Отсюда чуть больший стартовый вес у anilist — но именно вес, а не
+        безусловная победа.
+        """
         nfo = ctx.nfo
         if nfo is None:
-            return None
+            return []
 
-        # Сезонные папки обрабатывает каскад C: anilist_id из tvshow.nfo
-        # указывает на первый сезон, и для Season 2 он даст неверный тайтл.
+        # Данные родителя годятся только сезонам. У папки без номера сезона
+        # (фильм, спешлы, `EXTRA`, `subtitles`) это чужие идентификаторы.
+        if ctx.is_child and not ctx.inherits_parent:
+            nfo = ctx.own_nfo
+            if nfo is None:
+                return []
+
+        # Сезон со вторым и дальше номером обрабатывает каскад C: ID из
+        # tvshow.nfo указывает на первый сезон.
         if ctx.season_number not in (None, 1):
-            return None
+            return []
 
+        out: list[MatchResult] = []
         if nfo.anilist_id:
             series_id = self.index.by_anilist.get(nfo.anilist_id)
             if series_id is not None:
-                return MatchResult(
-                    series_id, MatchSource.ANILIST_ID, 100.0, f"anilistid={nfo.anilist_id}"
+                out.append(
+                    MatchResult(
+                        series_id, MatchSource.ANILIST_ID, 100.0, f"anilistid={nfo.anilist_id}"
+                    )
                 )
 
-        # shikimoriid бывает неверным, поэтому принимаем только с проверкой названия.
         if nfo.shikimori_id:
             series_id = self.index.by_mal.get(nfo.shikimori_id)
-            if series_id is not None and self._title_agrees(ctx, series_id):
-                return MatchResult(
-                    series_id, MatchSource.MAL_ID, 95.0, f"shikimoriid={nfo.shikimori_id}"
-                )
-
-        if nfo.original_title:
-            ids = self.index.by_japanese.get(normalize_title(nfo.original_title)) or []
-            if len(ids) == 1:
-                return MatchResult(
-                    ids[0], MatchSource.ORIGINAL_TITLE, 97.0, nfo.original_title
-                )
-            if ids:
-                narrowed = self._disambiguate(ctx, ids)
-                if narrowed is not None:
-                    return MatchResult(
-                        narrowed, MatchSource.ORIGINAL_TITLE, 92.0, nfo.original_title
+            if series_id is not None:
+                out.append(
+                    MatchResult(
+                        series_id, MatchSource.MAL_ID, 95.0, f"shikimoriid={nfo.shikimori_id}"
                     )
+                )
 
+        out.extend(self._propose_japanese(ctx, nfo))
+        return out
+
+    def _propose_japanese(self, ctx: MatchContext, nfo: NfoData) -> list[MatchResult]:
+        """Кандидат по японскому названию — оно совпадает точно или никак."""
+        if not nfo.original_title:
+            return []
+
+        ids = self.index.by_japanese.get(normalize_title(nfo.original_title)) or []
+        if len(ids) == 1:
+            return [MatchResult(ids[0], MatchSource.ORIGINAL_TITLE, 97.0, nfo.original_title)]
+        if ids:
+            narrowed = self._disambiguate(ctx, ids)
+            if narrowed is not None:
+                return [
+                    MatchResult(narrowed, MatchSource.ORIGINAL_TITLE, 92.0, nfo.original_title)
+                ]
+        return []
+
+    def _verify(
+        self, proposal: MatchResult, ctx: MatchContext
+    ) -> tuple[float, MatchResult] | None:
+        """Сверяет кандидата с тем, что мы знаем о папке.
+
+        Возвращает оценку и поправленный результат либо None, если кандидат
+        отвергнут. Отвергать важнее, чем оценивать: неверная привязка не видна,
+        пока файл не уедет не в ту папку.
+        """
+        candidate = self.index.by_id.get(proposal.series_id)
+        if candidate is None:
+            return None
+
+        title = self._title_score(ctx, candidate)
+        episodes = candidate.number_of_episodes or 0
+
+        # Правдоподобие по числу файлов. Тайтл с одним эпизодом не может
+        # занимать папку с двумя десятками серий — именно так `Evangelion/Season 1`
+        # (26 файлов) сел на показ к 30-летию с единственным эпизодом.
+        if episodes == 1 and ctx.video_count >= IMPLAUSIBLE_VIDEO_COUNT:
+            return None
+
+        # Папка в корне фильмов не может быть сериалом на дюжину серий.
+        if ctx.scope == "movie" and episodes > MOVIE_EPISODE_LIMIT:
+            return None
+
+        # Название не сошлось и подтвердить нечем — отказ. Так отсеивается
+        # `Your Name` → реклама минеральной воды: идентификатор в .nfo верный,
+        # а вот у Anime365 он проставлен чужому тайтлу.
+        if title < TITLE_FLOOR and not self._ids_agree(ctx, proposal.series_id):
+            return None
+
+        score = proposal.confidence + (title - TITLE_FLOOR) * TITLE_WEIGHT
+
+        if self._ids_agree(ctx, proposal.series_id):
+            # Оба плагина Jellyfin независимо пришли к одному тайтлу.
+            score += BOTH_IDS_BONUS
+
+        year = self._expected_year(ctx)
+
+        # У сезона есть собственная дата премьеры, и она — самый надёжный
+        # признак: кандидат, вышедший в другом году, это не он. Без этой
+        # проверки строковый каскад для `Season 2` уверенно предлагает первый
+        # сезон — название-то совпадает лучше некуда.
+        if ctx.season_number and ctx.season_number > 1 and year and candidate.year:
+            if abs(candidate.year - year) > 1:
+                return None
+
+        if year and candidate.year:
+            drift = abs(candidate.year - year)
+            score += YEAR_BONUS if drift <= 1 else -YEAR_PENALTY * min(drift, 4)
+
+        if episodes and ctx.video_count:
+            # Точного равенства не требуем: скачано может быть не всё.
+            if ctx.video_count <= episodes + EPISODE_SLACK:
+                score += EPISODE_BONUS
+
+        result = MatchResult(
+            proposal.series_id,
+            proposal.source,
+            min(proposal.confidence, max(score, 0.0)),
+            proposal.matched_on,
+            proposal.needs_confirmation,
+        )
+        # Слабое совпадение по названию оставляем, но с пометкой: пусть человек
+        # посмотрит, а не узнаёт об ошибке по уехавшим файлам.
+        if title < SUGGEST_TITLE_FLOOR:
+            result.needs_confirmation = True
+        return score, result
+
+    @staticmethod
+    def _expected_year(ctx: MatchContext) -> int | None:
+        """Год, которому должен соответствовать тайтл.
+
+        У сезонной папки берётся её собственный год — он и разводит сезоны. Год
+        из `<premiered>` считается наравне с `<year>`: в `season.nfo` бывает
+        только дата.
+        """
+        for source in (ctx.season_nfo, ctx.own_nfo, ctx.nfo):
+            if source is None:
+                continue
+            if source.year:
+                return source.year
+            quarter = source.season_quarter
+            if quarter:
+                return quarter[0]
         return None
+
+    def _ids_agree(self, ctx: MatchContext, series_id: int) -> bool:
+        """Оба идентификатора из `.nfo` указывают на этот же тайтл."""
+        nfo = ctx.own_nfo if (ctx.is_child and not ctx.inherits_parent) else ctx.nfo
+        if nfo is None or not nfo.anilist_id or not nfo.shikimori_id:
+            return False
+        return (
+            self.index.by_anilist.get(nfo.anilist_id) == series_id
+            and self.index.by_mal.get(nfo.shikimori_id) == series_id
+        )
+
+    def _title_score(self, ctx: MatchContext, candidate: SeriesCandidate) -> float:
+        """Насколько название кандидата похоже на то, что видно у папки."""
+        variants = [normalize_title(t) for t in TitleIndex._all_variants(candidate)]
+        variants = [v for v in variants if v]
+        if not variants:
+            return 0.0
+
+        best = 0.0
+        for raw in self._probe_titles(ctx):
+            norm, _ = normalize_for_match(raw)
+            if not norm:
+                continue
+            best = max(best, max(fuzz.token_sort_ratio(norm, v) for v in variants))
+        return best
+
+    def _probe_titles(self, ctx: MatchContext) -> list[str]:
+        """Строки, которыми папка сама себя называет."""
+        out: list[str] = []
+        if ctx.is_child and not ctx.inherits_parent:
+            # Своё имя и свой `.nfo`: родительские данные к такой папке не относятся.
+            out.append(ctx.own_name or ctx.folder_name)
+            out.extend(candidate_titles(ctx.own_nfo, ctx.own_name or ctx.folder_name))
+        else:
+            out.append(ctx.folder_name)
+            out.extend(candidate_titles(ctx.nfo, ctx.folder_name))
+            if ctx.own_name:
+                out.append(ctx.own_name)
+        return [t for t in dict.fromkeys(out) if t]
 
     def _title_agrees(self, ctx: MatchContext, series_id: int) -> bool:
         """Проверка, что найденный по ID тайтл хотя бы похож по названию."""
