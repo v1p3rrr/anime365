@@ -365,7 +365,24 @@ def ensure_target_folder(
 def _existing_video_for_episode(folder_id: int, episode: float) -> str | None:
     """Имя уже лежащего видеофайла этой серии.
 
-    Нужно для субтитров: их имя обязано совпасть с basename видео.
+    Нужно для субтитров: плеер связывает их с видео по началу имени. Всё, что
+    идёт после basename видео, может быть любым — язык, автор, флаги, — но сам
+    basename обязан совпадать.
+
+    ⚠️ **У фильма номера серии нет, и поиск по нему не находил ничего.** Тогда
+    имя собиралось по канонической схеме, и получалась пара, которая лежит
+    рядом, но не связана (случай с сервера, 2026-08-05):
+
+        Chainsaw Man - The Movie - Reze Arc (2025) - [WEBDL-1080p] [h265]….mkv
+        Chainsaw Man Movie Reze-hen S01E01 [anime365_Crunchyroll]….ass  ← мимо
+
+    У сериала та же логика срабатывала (номера серий есть у всех файлов), и
+    субтитры подхватывались — поэтому беда выглядела выборочной.
+
+    Поэтому если по номеру не нашлось, а видео в папке **ровно одно**, берём
+    его: это либо фильм, либо папка с единственной серией, и ошибиться не в
+    чем. При нескольких файлах без номеров гадать не станем — лучше
+    каноническое имя, чем субтитры, приклеенные к чужой серии.
     """
     with session_scope() as session:
         row = session.execute(
@@ -377,7 +394,16 @@ def _existing_video_for_episode(folder_id: int, episode: float) -> str | None:
             )
             .limit(1)
         ).scalar_one_or_none()
-    return row
+        if row is not None:
+            return row
+
+        alone = session.execute(
+            select(LibraryFile.filename)
+            .where(LibraryFile.folder_id == folder_id, LibraryFile.kind == "video")
+            .limit(2)
+        ).scalars().all()
+
+    return alone[0] if len(alone) == 1 else None
 
 
 def _folder_filenames(folder_id: int) -> list[str]:
