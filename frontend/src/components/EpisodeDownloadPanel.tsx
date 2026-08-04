@@ -32,7 +32,9 @@ import {
   typeRank,
   type TranslationType,
 } from '../stores/preferences'
+import { usePermissions } from '../hooks/usePermissions'
 import { DownloadButton, type Emphasis } from './DownloadButton'
+import { SaveToComputer } from './SaveToComputer'
 
 interface Props {
   episode: EpisodeItem
@@ -90,6 +92,9 @@ const COVERED_HINT: Record<Exclude<Covered, null>, TranslationKey> = {
 export function EpisodeDownloadPanel({ episode, types }: Props) {
   const { t } = useT()
   const kindLabel = useKindLabel()
+  // Скачивание себе идёт через тот же прокси, что и просмотр, и требует того
+  // же права: премиум-токен подставляет сервер в обоих случаях.
+  const canWatch = usePermissions().can('watch')
   const apiError = useApiError()
   const queryClient = useQueryClient()
   const [showCovered, setShowCovered] = useState(false)
@@ -285,6 +290,28 @@ export function EpisodeDownloadPanel({ episode, types }: Props) {
                   </Group>
 
                   <Group gap={4} wrap="nowrap">
+                    {/* Себе на компьютер, а не в библиотеку сервера. Стоит
+                        первой в ряду и отделена: остальные кнопки ставят
+                        задачу в очередь, эта просто отдаёт файл — видео едет
+                        прямо с CDN, минуя наш сервер. */}
+                    {canWatch && (
+                      <SaveToComputer
+                        size="xs"
+                        href={
+                          section.kind === 'sub'
+                            ? `/api/stream/${item.id}/subtitles.ass?download=1`
+                            : `/api/stream/${item.id}/download`
+                        }
+                        disabled={section.kind === 'sub' && hardsub.has(item.id)}
+                        label={
+                          section.kind === 'sub'
+                            ? hardsub.has(item.id)
+                              ? t('episode.hardsubReason')
+                              : t('save.subtitles')
+                            : t('save.video')
+                        }
+                      />
+                    )}
                     {section.kind === 'sub' ? (
                       subActions(section.lang, hardsub.has(item.id)).map((action) => (
                         <DownloadButton

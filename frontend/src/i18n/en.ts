@@ -991,6 +991,15 @@ export const en: Dictionary = {
     offlineHint: 'Check whether the application is running.',
   },
 
+  save: {
+    title: 'To your computer:',
+    video: 'Save the video — straight from Anime365, bypassing this server',
+    subtitles: 'Save the subtitles',
+    localVideo: 'Save this file',
+    localSubtitles: 'Save the selected subtitles',
+    audio: 'Save the track',
+  },
+
   errorPage: {
     notFoundTitle: 'Page not found',
     notFoundHint: 'There is no such address in the application — the link may be outdated or mistyped.',

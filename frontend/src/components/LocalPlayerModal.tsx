@@ -1,4 +1,4 @@
-import { Alert, Modal, Select, SimpleGrid, Stack, Text } from '@mantine/core'
+import { Alert, Group, Modal, Select, SimpleGrid, Stack, Text } from '@mantine/core'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 
@@ -7,6 +7,7 @@ import { type LocalVideo } from '../api/title'
 import { useT } from '../i18n'
 import { useFormat } from '../i18n/format'
 import { langCode } from '../i18n/flags'
+import { SaveToComputer } from './SaveToComputer'
 
 interface Props {
   opened: boolean
@@ -266,6 +267,28 @@ export function LocalPlayerModal({ opened, onClose, videos, episodeLabel }: Prop
             clearable
           />
         </SimpleGrid>
+
+        {/* Сохранить себе — то же, что играет прямо сейчас: и файл, и
+            выбранную дорожку субтитров. Отдельной кнопки «скачать всё» нет
+            намеренно: видео и субтитры кладутся разными файлами, и заворачивать
+            их в архив ради двух ссылок незачем. */}
+        {fileId && (
+          <Group gap="xs">
+            <Text size="xs" c="dimmed">
+              {t('save.title')}
+            </Text>
+            <SaveToComputer
+              href={`/api/stream/local/${fileId}?download=1`}
+              label={t('save.localVideo')}
+            />
+            {selected && (
+              <SaveToComputer
+                href={`${selected.url}${selected.url.includes('?') ? '&' : '?'}download=1`}
+                label={t('save.localSubtitles')}
+              />
+            )}
+          </Group>
+        )}
 
         {/* Вшитые дорожки без ffmpeg не достать — сказать об этом надо там же,
             где их ждут, а не оставлять список загадочно коротким. */}

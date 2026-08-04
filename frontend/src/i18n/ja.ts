@@ -991,6 +991,15 @@ export const ja: Dictionary = {
     offlineHint: 'アプリケーションが起動しているか確認してください。',
   },
 
+  save: {
+    title: 'パソコンに保存:',
+    video: '動画を保存（Anime365 から直接、サーバーを経由しません）',
+    subtitles: '字幕を保存',
+    localVideo: 'このファイルを保存',
+    localSubtitles: '選択中の字幕を保存',
+    audio: '音声を保存',
+  },
+
   errorPage: {
     notFoundTitle: 'ページが見つかりません',
     notFoundHint: 'このアドレスはアプリケーションにありません。リンクが古いか、入力に誤りがある可能性があります。',

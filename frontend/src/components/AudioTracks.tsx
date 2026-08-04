@@ -2,6 +2,7 @@ import { Alert, Badge, Group, Stack, Table, Text, Tooltip } from '@mantine/core'
 
 import { type AudioTrack } from '../api/library'
 import { usePermissions } from '../hooks/usePermissions'
+import { SaveToComputer } from './SaveToComputer'
 import { useT } from '../i18n'
 import { useFormat } from '../i18n/format'
 import { langCode } from '../i18n/flags'
@@ -51,6 +52,7 @@ export function AudioTracks({ tracks, showTitle = false, emptyText }: Props) {
             <Table.Th w={200}>{t('audio.columnAuthor')}</Table.Th>
             <Table.Th>{t('audio.columnPlayer')}</Table.Th>
             <Table.Th w={90}>{t('audio.columnSize')}</Table.Th>
+            <Table.Th w={44} />
           </Table.Tr>
         </Table.Thead>
         <Table.Tbody>
@@ -102,6 +104,14 @@ export function AudioTracks({ tracks, showTitle = false, emptyText }: Props) {
                 <Text size="xs" c="dimmed">
                   {format.size(track.size_bytes)}
                 </Text>
+              </Table.Td>
+              <Table.Td>
+                {canWatch && (
+                  <SaveToComputer
+                    href={`/api/stream/audio/${track.task_id}?download=1`}
+                    label={t('save.audio')}
+                  />
+                )}
               </Table.Td>
             </Table.Tr>
           ))}

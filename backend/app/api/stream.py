@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from typing import Annotated, Any
+from urllib.parse import quote
 
 import httpx
 from pathlib import Path
@@ -24,13 +25,13 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 
 from app.core import errors
 from app.core.errors import ApiError
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 
 from app.api.deps import rate_limit
 from app.core.config import settings
 from app.core.permissions import Permission, require
 from app.services.anime365 import Anime365Client, Anime365Error, SubscriptionRequired
-from app.services.downloader import is_allowed_target
+from app.services.downloader import is_allowed_target, pick_download_url
 from app.services.title_service import get_embed
 
 log = logging.getLogger(__name__)
@@ -57,6 +58,20 @@ FORWARDED_RESPONSE_HEADERS = (
 )
 
 CHUNK_SIZE = 1 << 18  # 256 КБ — достаточно для плавной отдачи, не раздувает память
+
+
+def attachment_headers(filename: str) -> dict[str, str]:
+    """Заголовок «сохрани это файлом с таким именем».
+
+    Имя кодируется дважды: голое `filename=` для старых клиентов и
+    `filename*=UTF-8''…` по RFC 5987 — без второго кириллица и японские
+    названия превращаются в мусор. В голом варианте не-ASCII вырезается, а не
+    транслитерируется: гадать не наше дело, а RFC-вариант поймёт любой
+    современный браузер.
+    """
+    ascii_name = "".join(ch if 32 < ord(ch) < 127 and ch != '"' else "_" for ch in filename)
+    quoted = quote(filename, safe="")
+    return {"Content-Disposition": f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quoted}'}
 
 
 def _pick_stream_url(embed_stream: list[dict[str, Any]], height: int | None) -> str | None:
@@ -160,6 +175,82 @@ async def stream_video(
     return StreamingResponse(body(), status_code=upstream.status_code, headers=passthrough)
 
 
+@router.get(
+    "/{translation_id}/download",
+    dependencies=[
+        Depends(require(Permission.WATCH)),
+        Depends(rate_limit("download-link", limit=30, window=60)),
+    ],
+)
+async def download_video(
+    translation_id: int,
+    height: Annotated[int | None, Query(description="Желаемая высота, максимум из доступных ниже")] = None,
+) -> RedirectResponse:
+    """Отправляет браузер качать видео **прямо у CDN**, минуя наш сервер.
+
+    Зачем не через себя. Серия в 1080p весит около 230 МБ; проксировать её ради
+    того, чтобы человек положил файл себе на диск, — это гонять те же байты
+    дважды через домашний сервер, у которого канал один на всё.
+
+    ⚠️ Почему это можно, хотя токен в браузер отдавать нельзя ([D-39](../../../claude/09-decisions.md)).
+    Проверено на живом API: ссылка `translations/mp4/{id}` с токеном отвечает
+    **302**, и в `Location` стоит подписанный адрес CDN
+    (`…b-cdn.net/route/?m=…&r=…`), где токена нет вовсе. Мы забираем этот адрес
+    сами — не выкачивая тело, только заголовок редиректа, — и отдаём браузеру.
+    Токен остаётся на сервере, а человек получает файл напрямую.
+
+    Заодно CDN сам присылает `content-disposition` с именем, которым Anime365
+    называет свои файлы (`[Anime365] Sousou no Frieren - 06 (t4505262).mp4`),
+    и `accept-ranges` — то есть докачка обрыва работает средствами браузера.
+
+    Подпись у ссылки короткоживущая, поэтому эндпоинт возвращает именно
+    редирект, а не сохранённый заранее адрес: браузер идёт по нему сразу.
+    """
+    try:
+        async with Anime365Client() as client:
+            info = await client.embed(translation_id)
+    except SubscriptionRequired as exc:
+        raise ApiError(403, errors.SUBSCRIPTION_REQUIRED, str(exc), reason=str(exc)) from exc
+    except Anime365Error as exc:
+        raise errors.upstream_unavailable(exc) from exc
+
+    url, _resolved = pick_download_url({"download": info.download}, height or 1080)
+    if not url or not is_allowed_target(url):
+        raise ApiError(404, errors.FILE_NOT_FOUND, "Ссылка на скачивание недоступна")
+
+    async with httpx.AsyncClient(follow_redirects=False, timeout=30.0) as http:
+        try:
+            response = await http.get(url, headers={"User-Agent": settings.get_str("user_agent")})
+        except httpx.HTTPError as exc:
+            detail = str(exc) or type(exc).__name__
+            raise ApiError(
+                502, errors.UPSTREAM_UNAVAILABLE, f"Не удалось получить ссылку: {detail}", reason=detail
+            ) from exc
+
+    location = response.headers.get("location")
+    if response.status_code not in (301, 302, 303, 307, 308) or not location:
+        # Без редиректа отдавать нечего: сама ссылка несёт токен.
+        raise ApiError(
+            502,
+            errors.UPSTREAM_UNAVAILABLE,
+            f"Anime365 не выдал ссылку на файл (ответ {response.status_code})",
+            reason=str(response.status_code),
+        )
+
+    if not is_allowed_target(location):
+        # Подменённый ответ не должен уводить человека на посторонний хост.
+        raise ApiError(502, errors.UPSTREAM_UNAVAILABLE, "Anime365 увёл ссылку на неизвестный хост")
+
+    token = settings.get_str("access_token")
+    if token and token in location:
+        # Страховка на случай, если сайт однажды начнёт прокидывать токен
+        # дальше: лучше отказать, чем показать его браузеру.
+        log.error("В ссылке CDN оказался токен — редирект не отдан")
+        raise ApiError(502, errors.UPSTREAM_UNAVAILABLE, "Ссылка на файл пришла в небезопасном виде")
+
+    return RedirectResponse(location, status_code=302)
+
+
 # Второй адрес с расширением — не косметика. Плагин субтитров плеера
 # определяет формат по РАСШИРЕНИЮ адреса (`getExt(url) === "ass"`), и на пути
 # без него молча ничего не грузит. Оставляем оба: старый уже мог где-то
@@ -172,11 +263,20 @@ async def stream_video(
     "/{translation_id}/subtitles",
     dependencies=[Depends(require(Permission.WATCH))],
 )
-async def stream_subtitles(translation_id: int) -> Response:
+async def stream_subtitles(
+    translation_id: int,
+    download: Annotated[bool, Query(description="Отдать файлом, а не текстом для плеера")] = False,
+) -> Response:
     """Файл субтитров перевода.
 
     Токен для субтитров не нужен, но проксируем их всё равно: иначе браузер
     пошёл бы на сторонний домен, что запрещено нашей же CSP (`connect-src 'self'`).
+
+    ⚠️ Здесь, в отличие от видео, редирект на Anime365 не годится, хотя ссылка и
+    открыта. Причин две: `content-disposition` у неё нет, поэтому браузер показал
+    бы текст субтитров вместо сохранения файла, а атрибут `download` у ссылки на
+    чужой домен игнорируется. Цена проксирования при этом копеечная — файл весит
+    десятки килобайт, а не сотни мегабайт, как видео.
     """
     try:
         embed = await get_embed(translation_id)
@@ -207,12 +307,58 @@ async def stream_subtitles(translation_id: int) -> Response:
     if response.status_code >= 400:
         raise ApiError(502, errors.SUBTITLES_SERVER_ERROR, f"Сервер субтитров ответил {response.status_code}", status=response.status_code)
 
+    headers = {"Cache-Control": "private, max-age=3600"}
+    if download:
+        headers |= attachment_headers(anime365_style_name(translation_id, ".ass"))
+
     # ASS отдаём как текст: разбирать его будет плеер на стороне браузера.
     return Response(
         response.content,
         media_type="text/plain; charset=utf-8",
-        headers={"Cache-Control": "private, max-age=3600"},
+        headers=headers,
     )
+
+
+def anime365_style_name(translation_id: int, suffix: str) -> str:
+    """Имя файла в том же виде, в каком его называет сам Anime365.
+
+    `[Anime365] Sousou no Frieren - 06 (t4505262).ass` — ровно так подписан
+    видеофайл, который CDN отдаёт по соседней кнопке. Совпадение не случайное:
+    человек качает видео и субтитры к нему, и приятно, когда рядом в папке
+    «Загрузки» они лежат с одинаковым именем и разными расширениями.
+
+    Правилами именования библиотеки (`services/naming.py`) здесь не пользуемся
+    намеренно: они существуют, чтобы Jellyfin связал файл с соседями в своей
+    папке, а тут файл едет на чужой компьютер, где никаких соседей нет.
+    """
+    from app.core.db import session_scope
+    from app.models.catalog import Episode, Series, Translation
+    from app.services.naming import sanitize_component
+
+    with session_scope() as session:
+        translation = session.get(Translation, translation_id)
+        if translation is None:
+            return f"anime365_{translation_id}{suffix}"
+        series = session.get(Series, translation.series_id)
+        episode = session.get(Episode, translation.episode_id) if translation.episode_id else None
+
+        titles = (series.titles if series else None) or {}
+        name = titles.get("romaji") or titles.get("en") or titles.get("ru") or f"series-{translation.series_id}"
+        number = (episode.episode_int if episode else None) or ""
+
+    # ⚠️ Санитизируем только название, а скобки дописываем после. Общая
+    # `sanitize_component` вырезает `[` и `]` — и правильно делает: в библиотеке
+    # по ним разбирается релиз-группа при следующем скане. Но здесь файл едет на
+    # чужой компьютер, никакой библиотеки рядом нет, а совпадение с именем
+    # видеофайла от самого Anime365 дороже.
+    stem = f"[Anime365] {sanitize_component(name)}"
+    if number:
+        # Двузначный номер — как у самого сайта: «- 06», а не «- 6».
+        try:
+            stem += f" - {int(float(number)):02d}"
+        except (TypeError, ValueError):
+            stem += f" - {sanitize_component(str(number))}"
+    return f"{stem} (t{translation_id}){suffix}"
 
 
 # --------------------------------------------------------------------------- #
@@ -226,7 +372,12 @@ AUDIO_CHUNK = 256 * 1024
 
 
 
-def serve_file_with_range(path: Path, media_type: str, range_header: str | None) -> Response:
+def serve_file_with_range(
+    path: Path,
+    media_type: str,
+    range_header: str | None,
+    filename: str | None = None,
+) -> Response:
     """Отдаёт файл с диска, поддерживая перемотку.
 
     Range обязателен для медиа: без него браузер не даёт перемотку вовсе — он
@@ -281,6 +432,9 @@ def serve_file_with_range(path: Path, media_type: str, range_header: str | None)
     }
     if status_code == 206:
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    if filename:
+        # Range остаётся и при сохранении: браузер докачает оборванное сам.
+        headers |= attachment_headers(filename)
 
     return StreamingResponse(
         body(), status_code=status_code, media_type=media_type, headers=headers
@@ -293,6 +447,7 @@ def serve_file_with_range(path: Path, media_type: str, range_header: str | None)
 )
 def stream_audio(
     task_id: int,
+    download: Annotated[bool, Query(description="Сохранить файлом, а не играть в браузере")] = False,
     range_header: Annotated[str | None, Header(alias="Range")] = None,
 ) -> Response:
     """Отдаёт извлечённую звуковую дорожку.
@@ -311,7 +466,9 @@ def stream_audio(
     if path is None:
         raise ApiError(404, errors.FILE_NOT_FOUND, "Дорожка не найдена или файл удалён")
 
-    return serve_file_with_range(path, content_type_for(path), range_header)
+    return serve_file_with_range(
+        path, content_type_for(path), range_header, path.name if download else None
+    )
 
 
 # Расширение → тип содержимого для локальных видеофайлов. Список короткий
@@ -332,6 +489,7 @@ LOCAL_VIDEO_TYPES = {
 )
 def stream_local(
     file_id: int,
+    download: Annotated[bool, Query(description="Сохранить файлом, а не играть в браузере")] = False,
     range_header: Annotated[str | None, Header(alias="Range")] = None,
 ) -> Response:
     """Отдаёт уже скачанный файл библиотеки.
@@ -363,7 +521,9 @@ def stream_local(
         raise ApiError(404, errors.FILE_NOT_FOUND, "Файл удалён с диска")
 
     media_type = LOCAL_VIDEO_TYPES.get(path.suffix.lower(), "application/octet-stream")
-    return serve_file_with_range(path, media_type, range_header)
+    # Имя берём то, что лежит на диске: оно построено по правилам библиотеки и
+    # человеку понятнее любого выдуманного здесь заново.
+    return serve_file_with_range(path, media_type, range_header, path.name if download else None)
 
 
 # --------------------------------------------------------------------------- #
@@ -395,7 +555,11 @@ async def local_subtitle_tracks(file_id: int) -> dict[str, Any]:
     "/local/subtitle/{file_id}.{ext}",
     dependencies=[Depends(require(Permission.WATCH))],
 )
-def local_subtitle_file(file_id: int, ext: str) -> Response:
+def local_subtitle_file(
+    file_id: int,
+    ext: str,
+    download: Annotated[bool, Query(description="Сохранить файлом, а не отдать плееру")] = False,
+) -> Response:
     """Отдаёт соседний файл субтитров из библиотеки.
 
     ⚠️ Расширение в адресе — не украшение. Плеер определяет формат субтитров по
@@ -409,12 +573,16 @@ def local_subtitle_file(file_id: int, ext: str) -> Response:
     if path is None:
         raise ApiError(404, errors.FILE_NOT_FOUND, "Файл субтитров не найден")
 
+    headers = {"Cache-Control": "private, max-age=3600"}
+    if download:
+        headers |= attachment_headers(path.name)
+
     # Субтитры — текст, и разбирает их плеер в браузере. Отдаём как есть, не
     # пытаясь угадать кодировку: перекодировать вслепую хуже, чем отдать байты.
     return Response(
         path.read_bytes(),
         media_type="text/plain; charset=utf-8",
-        headers={"Cache-Control": "private, max-age=3600"},
+        headers=headers,
     )
 
 
@@ -422,12 +590,20 @@ def local_subtitle_file(file_id: int, ext: str) -> Response:
     "/local/{file_id}/embedded/{index}.ass",
     dependencies=[Depends(require(Permission.WATCH))],
 )
-async def local_embedded_subtitle(file_id: int, index: int) -> Response:
+async def local_embedded_subtitle(
+    file_id: int,
+    index: int,
+    download: Annotated[bool, Query(description="Сохранить файлом, а не отдать плееру")] = False,
+) -> Response:
     """Вытаскивает дорожку субтитров из контейнера.
 
     Дорого: ffmpeg проходит файл целиком, собирая разбросанные по нему пакеты.
     Поэтому результат кэшируется на диске, а запрос делается только когда
     человек выбрал именно эту дорожку.
+
+    Сохранить её себе тоже можно, и это тот же самый вырезанный файл: второй
+    раз ffmpeg не запускается — ответ уже в кэше после того, как дорожку
+    показали в плеере.
     """
     from app.services.audio import AudioError
     from app.services.local_subtitles import embedded_subtitle
@@ -439,8 +615,12 @@ async def local_embedded_subtitle(file_id: int, index: int) -> Response:
             404, errors.SUBTITLES_UNAVAILABLE, str(exc), reason=str(exc)
         ) from exc
 
+    headers = {"Cache-Control": "private, max-age=3600"}
+    if download:
+        headers |= attachment_headers(f"subtitles-{file_id}-{index}.ass")
+
     return Response(
         data,
         media_type="text/plain; charset=utf-8",
-        headers={"Cache-Control": "private, max-age=3600"},
+        headers=headers,
     )
