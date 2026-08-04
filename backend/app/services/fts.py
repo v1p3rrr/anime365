@@ -38,6 +38,21 @@ FTS_CHUNK = 500
 #: проходу меньше секунды, а проход этот фоновый, и его никто не ждёт.
 FTS_CHUNK_PAUSE = 0.01
 
+#: ⚠️ `rowid` записи — это и есть `series.id`, и на этом держится скорость.
+#:
+#: Колонка `series_id` осталась, но читать её дорого: у FTS5 неиндексируемая
+#: колонка лежит в содержимом записи, и достать её можно, только развернув саму
+#: запись. Замерено на частом слове (7525 совпадений в контейнере):
+#:
+#: | что выбираем | цена |
+#: |---|---|
+#: | `COUNT(*)` | 1,5 мс |
+#: | `rowid` | **2,4 мс** |
+#: | `series_id` | **243 мс** |
+#: | `series_id ORDER BY rank LIMIT 5000` | **459 мс** |
+#:
+#: Поэтому идентификаторы берутся из `rowid`, а сама колонка нужна только для
+#: того, чтобы понять, что база собрана по-старому, и пересобрать её.
 CREATE_FTS = """
 CREATE VIRTUAL TABLE IF NOT EXISTS series_fts USING fts5(
     titles,
@@ -75,20 +90,58 @@ def build_query(user_input: str) -> str | None:
     return " AND ".join(parts)
 
 
-def search_ids(user_input: str, limit: int = 200) -> list[int]:
+def matching_ids(user_input: str) -> list[int] | None:
+    """Все совпадения — без ранжирования и без ограничения.
+
+    ⚠️ **Ни того, ни другого здесь быть не должно, и это замерено.**
+
+    Прежняя редакция брала пять тысяч лучших по релевантности
+    (`ORDER BY rank LIMIT 5000`). Но выдачу каталога сортирует сам пользователь
+    — по оценке, году или названию, — то есть ранг решал единственное: какие
+    совпадения молча выбросить. А стоил он дорого: FTS5 считает BM25 по **всем**
+    совпадениям, а не по первым `limit`. На частом слове (7525 совпадений):
+    просто найти их — 2 мс, отсортировать по релевантности — **459 мс**.
+
+    Возвращает None, если искать нечего (пустая строка, одни знаки препинания).
+    """
     query = build_query(user_input)
     if query is None:
-        return []
+        return None
 
     with session_scope() as session:
         rows = session.execute(
-            text(
-                "SELECT series_id FROM series_fts WHERE series_fts MATCH :q "
-                "ORDER BY rank LIMIT :limit"
-            ),
-            {"q": query, "limit": limit},
+            text("SELECT rowid FROM series_fts WHERE series_fts MATCH :q"),
+            {"q": query},
         ).all()
     return [r[0] for r in rows]
+
+
+def match_condition(user_input: str):
+    """Условие «идентификатор нашёлся поиском», готовое к подстановке в фильтры.
+
+    Возвращает None, когда искать нечего или ничего не нашлось, — вызывающий
+    решает сам, что это значит (для каталога — пустая выдача).
+
+    ⚠️ Числа подставляются в текст запроса, а не передаются параметрами, и это
+    осознанно. Замерено на частом слове (7525 совпадений):
+
+    | как передаём совпадения | цена |
+    |---|---|
+    | параметрами через `IN (…)` у SQLAlchemy | **900 мс** на сборку выражения |
+    | подзапросом `id IN (SELECT … MATCH …)` | 180–390 мс, SQLite прогоняет поиск заново на каждый из двух запросов |
+    | готовыми числами в тексте | **0,6 мс** |
+
+    Первый вариант дорог мимо базы: тысячи параметров собираются дважды, потому
+    что рядом с окном идёт `COUNT`.
+
+    Инъекции здесь нет: в текст попадают только значения `series_id`, взятые из
+    нашей же таблицы и приведённые к `int`. Строка пользователя в SQL не
+    склеивается никогда — она уходит связанным параметром после `build_query()`.
+    """
+    ids = matching_ids(user_input)
+    if not ids:
+        return None
+    return text("series.id IN (" + ",".join(str(int(i)) for i in ids) + ")")
 
 
 def rebuild_fts_for(series_ids: list[int]) -> None:
@@ -116,8 +169,16 @@ def rebuild_fts_for(series_ids: list[int]) -> None:
         params = {f"id{n}": int(sid) for n, sid in enumerate(chunk)}
 
         with session_scope() as session:
+            # По `rowid` — потому что он и есть идентификатор тайтла. Условие по
+            # `series_id` оставлено на случай базы, собранной до этого правила:
+            # там `rowid` произвольный, и без второго условия старая запись
+            # осталась бы рядом с новой.
             session.execute(
-                text(f"DELETE FROM series_fts WHERE series_id IN ({placeholders})"), params
+                text(
+                    f"DELETE FROM series_fts WHERE rowid IN ({placeholders}) "
+                    f"OR series_id IN ({placeholders})"
+                ),
+                params,
             )
 
             rows = session.execute(
@@ -131,7 +192,10 @@ def rebuild_fts_for(series_ids: list[int]) -> None:
             ]
             if payload:
                 session.execute(
-                    text("INSERT INTO series_fts (series_id, titles) VALUES (:sid, :titles)"),
+                    text(
+                        "INSERT INTO series_fts (rowid, series_id, titles) "
+                        "VALUES (:sid, :sid, :titles)"
+                    ),
                     payload,
                 )
 
@@ -147,6 +211,20 @@ def rebuild_all() -> int:
         conn.execute(text("DELETE FROM series_fts"))
     rebuild_fts_for(ids)
     return len(ids)
+
+
+def needs_rowid_rebuild() -> bool:
+    """Собран ли индекс до правила «rowid — это series_id».
+
+    У таких баз `rowid` раздавался автоинкрементом, и поиск по нему вернул бы
+    чужие тайтлы. Проверка стоит один запрос: достаточно найти одну строку с
+    расхождением, а не пересчитывать все.
+    """
+    with session_scope() as session:
+        mismatched = session.execute(
+            text("SELECT 1 FROM series_fts WHERE rowid <> series_id LIMIT 1")
+        ).first()
+    return mismatched is not None
 
 
 def _flatten_titles(titles_json: str | dict | None, all_titles_json: str | list | None) -> str:

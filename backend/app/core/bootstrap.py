@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.db import Base, engine, session_scope
-from app.core.migrations import add_missing_columns, add_missing_indexes
+from app.core.migrations import add_missing_columns, drop_obsolete_indexes, sync_indexes
 from app.core.settings_registry import PATH_KEYS, check_path_layout
 from app.models import DEFAULT_USER_ID, AppSetting, AppUser
 from app.services.fts import init_fts
@@ -28,10 +28,16 @@ def bootstrap() -> None:
     # Индексы — тоже: `create_all` делает их только вместе с новой таблицей, а
     # на уже существующей базе не делает ничего. Без этого составные индексы
     # каталога появились бы только у тех, кто ставит с нуля, и запрос списка
-    # так и стоил бы секунду вместо миллисекунды.
-    indexes = add_missing_indexes()
+    # так и стоил бы секунду вместо миллисекунды. Индекс, у которого поменялся
+    # набор колонок, пересоздаётся: имя занято, а определение старое.
+    indexes = sync_indexes()
     if indexes:
-        log.info("Схема дополнена: создано индексов %d", indexes)
+        log.info("Схема дополнена: индексов создано или пересоздано %d", indexes)
+    # Лишний индекс не просто занимает место: он участвует в выборе плана, и
+    # запрос может уйти по нему вместо покрывающего.
+    obsolete = drop_obsolete_indexes()
+    if obsolete:
+        log.info("Удалено устаревших индексов: %d", obsolete)
     init_fts()
 
     with session_scope() as session:

@@ -12,10 +12,11 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -136,10 +137,61 @@ def _upsert_series(session: Session, items: list[dict[str, Any]]) -> tuple[int, 
         for c in rows[0]
         if c not in ("id", "descriptions", "links", "has_details")
     }
-    session.execute(stmt.on_conflict_do_update(index_elements=[Series.id], set_=update_cols))
+    # Строку трогаем, только если она правда изменилась.
+    #
+    # Суточный рескан перечитывает весь каталог целиком, но меняются в нём
+    # единицы записей: у тайтлов нет `updatedDateTime`, поэтому иначе правки не
+    # поймать. Без этого условия SQLite переписывал все 29 тысяч строк и все их
+    # индексы — 63 секунды удержания writer-lock на ровном месте. Со сторожем
+    # неизменившаяся пачка в тысячу тайтлов стоит 5 мс.
+    #
+    # `IS NOT`, а не `!=`: в SQLite сравнение с NULL через `!=` даёт NULL, то
+    # есть «не изменилось», и тайтл, у которого впервые появилась оценка, не
+    # записался бы вовсе. `IS NOT` сравнивает с учётом NULL.
+    #
+    # `synced_at` из сторожа исключён намеренно: он меняется всегда, и с ним
+    # условие было бы истинным для каждой строки. Цена — поле означает «когда
+    # запись последний раз менялась», а не «когда мы её последний раз видели»;
+    # в логике оно не участвует.
+    watched = [name for name in update_cols if name != "synced_at"]
+    changed = or_(*[getattr(Series, name).is_not(getattr(stmt.excluded, name)) for name in watched])
+    session.execute(
+        stmt.on_conflict_do_update(index_elements=[Series.id], set_=update_cols, where=changed)
+    )
 
     _sync_genres(session, items)
     return len(rows), skipped
+
+
+#: Сколько тайтлов писать в одной транзакции.
+#:
+#: Та же причина, что у `FTS_CHUNK`: дело не в скорости, а в том, надолго ли
+#: берётся writer-lock. Пачка API — тысяча тайтлов, и запись такой пачки целиком
+#: занимала базу на 2,4 с; при первом наполнении каталога это 29 таких пауз
+#: подряд, во время которых у загрузок не проходит ни одна запись прогресса.
+SERIES_WRITE_CHUNK = 250
+
+#: Пауза между порциями — чтобы поток не забирал лок обратно мгновенно.
+SERIES_WRITE_PAUSE = 0.01
+
+
+def upsert_series(items: list[dict[str, Any]]) -> tuple[int, int]:
+    """Пишет тайтлы порциями, каждая — своя короткая транзакция.
+
+    Разные порции какое-то время находятся в разном состоянии, и это допустимо:
+    записи каталога независимы, ни одна не ссылается на другую. Обрыв посередине
+    оставит часть непереписанной — следующий проход её доберёт.
+    """
+    saved = skipped = 0
+    for start in range(0, len(items), SERIES_WRITE_CHUNK):
+        chunk = items[start : start + SERIES_WRITE_CHUNK]
+        with session_scope() as session:
+            part, junk = _upsert_series(session, chunk)
+        saved += part
+        skipped += junk
+        if start + SERIES_WRITE_CHUNK < len(items):
+            time.sleep(SERIES_WRITE_PAUSE)
+    return saved, skipped
 
 
 def _sync_genres(session: Session, items: list[dict[str, Any]]) -> None:
@@ -290,8 +342,7 @@ class CatalogSync:
         cursor = after_id
         async with Anime365Client() as client:
             async for batch in client.iter_catalog(after_id=after_id):
-                with session_scope() as session:
-                    saved, junk = _upsert_series(session, batch)
+                saved, junk = upsert_series(batch)
                 total += saved
                 skipped += junk
                 touched.extend(i["id"] for i in batch if not is_junk(i))
@@ -320,8 +371,7 @@ class CatalogSync:
         async with Anime365Client() as client:
             items = await client.airing()
 
-        with session_scope() as session:
-            count, skipped = _upsert_series(session, items)
+        count, skipped = upsert_series(items)
 
         rebuild_fts_for([i["id"] for i in items if not is_junk(i)])
         return {"airing": count, "skipped_junk": skipped}
@@ -348,7 +398,8 @@ def cache_series(items: list[dict[str, Any]]) -> set[int]:
         known = {
             row[0] for row in session.execute(select(Series.id).where(Series.id.in_(ids))).all()
         }
-        _upsert_series(session, items)
+
+    upsert_series(items)
 
     rebuild_fts_for([i["id"] for i in items if not is_junk(i)])
     return known

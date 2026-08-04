@@ -74,8 +74,43 @@ def add_missing_columns() -> int:
     return added
 
 
-def add_missing_indexes() -> int:
-    """Создаёт индексы, появившиеся в моделях после создания таблиц.
+#: Индексы, которые были в прежних версиях и больше не нужны.
+#:
+#: Сами по себе они не ломают ничего, но и не бесплатны: каждый удорожает
+#: запись, а главное — участвует в выборе плана. Оба перечисленных покрывали
+#: фильтр, но не сортировку, и планировщик, выбрав такой, дочитывал недостающую
+#: колонку из широкой таблицы ([D-84](../../../claude/09-decisions.md)).
+#:
+#: Список явный, а не «всё, чего нет в моделях»: под таким правилом снесло бы и
+#: служебные индексы FTS5, и автоиндексы SQLite.
+OBSOLETE_INDEXES = {
+    "series": ("ix_series_catalog_airing", "ix_series_catalog_type"),
+}
+
+
+def drop_obsolete_indexes() -> int:
+    """Убирает индексы, которые остались от прежних версий."""
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    dropped = 0
+
+    for table, names in OBSOLETE_INDEXES.items():
+        if table not in existing_tables:
+            continue
+        present = {idx["name"] for idx in inspector.get_indexes(table)}
+        for name in names:
+            if name not in present:
+                continue
+            with engine.begin() as conn:
+                conn.execute(text(f'DROP INDEX "{name}"'))
+            log.info("Удалён устаревший индекс %s", name)
+            dropped += 1
+
+    return dropped
+
+
+def sync_indexes() -> int:
+    """Приводит индексы базы к тому, что объявлено в моделях.
 
     ⚠️ Без этого новый индекс получали бы только чистые установки: `create_all`
     делает индексы вместе с таблицей, а на существующей базе не делает ничего.
@@ -83,25 +118,45 @@ def add_missing_indexes() -> int:
     «поле пустое», а «каталог открывается секунду вместо миллисекунды», и
     заметить это без замера нельзя.
 
+    ⚠️ Второй случай той же ловушки, на который наступили позже: индекс с уже
+    занятым именем, но другим набором колонок. Проверка «есть индекс с таким
+    именем» пропустила бы его, и база осталась бы со старым определением —
+    навсегда и молча. Поэтому сверяется список колонок, а расхождение чинится
+    пересозданием.
+
     Индексы создаются по одному: `CREATE INDEX` на 29 тысячах строк — это доли
     секунды, но каждый берёт writer-lock, и делать это одной транзакцией на все
     сразу незачем.
     """
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
-    created = 0
+    changed = 0
 
     for table in Base.metadata.sorted_tables:
         if table.name not in existing_tables:
             continue
 
-        present = {idx["name"] for idx in inspector.get_indexes(table.name)}
+        present = {idx["name"]: idx for idx in inspector.get_indexes(table.name)}
         for index in table.indexes:
-            if index.name in present:
-                continue
+            wanted = [c.name for c in index.columns]
+            current = present.get(index.name)
+
+            if current is not None:
+                if list(current.get("column_names") or []) == wanted:
+                    continue
+                with engine.begin() as conn:
+                    conn.execute(text(f'DROP INDEX "{index.name}"'))
+                log.info(
+                    "Индекс %s пересоздаётся: было %s, стало %s",
+                    index.name,
+                    current.get("column_names"),
+                    wanted,
+                )
+
             with engine.begin() as conn:
                 index.create(bind=conn, checkfirst=True)
-            log.info("Создан индекс %s", index.name)
-            created += 1
+            if current is None:
+                log.info("Создан индекс %s", index.name)
+            changed += 1
 
-    return created
+    return changed

@@ -56,14 +56,27 @@ class Series(Base):
         # сортировка по оценке» деградировал с 2 мс до 377 мс. Проверено —
         # без статистики планировщик выбирает покрывающий индекс, со статистикой
         # уходит в скан.
-        Index("ix_series_catalog_id", "is_hentai", "id"),
-        Index("ix_series_catalog_score", "is_hentai", "mal_score", "id"),
-        Index("ix_series_catalog_year", "is_hentai", "year", "id"),
-        Index("ix_series_catalog_title", "is_hentai", "title", "id"),
-        # Вкладка онгоингов — отдельный пункт меню, то есть частый запрос.
-        Index("ix_series_catalog_airing", "is_hentai", "is_airing", "mal_score", "id"),
-        # Фильтр по типу («только ТВ») тоже ходовой.
-        Index("ix_series_catalog_type", "is_hentai", "type", "mal_score", "id"),
+        #
+        # Устройство: ведущая колонка — `is_hentai` (условие есть почти в каждом
+        # запросе), вторая — колонка сортировки, дальше `id` и **все остальные
+        # фильтруемые колонки**. Последнее — не запас на будущее, а главное:
+        # человек фильтрует по одному полю, а сортирует по другому, и если
+        # фильтруемой колонки в индексе нет, SQLite дочитывает её из широкой
+        # таблицы. Замерено: фильтр по сезону с сортировкой по оценке стоил
+        # 3,7 с ровно поэтому ([D-84](../../../claude/09-decisions.md)).
+        #
+        # `title` лежит только в своём индексе: это самая тяжёлая колонка, а
+        # фильтра по названию нет вовсе — поиск идёт через FTS и приходит
+        # списком идентификаторов.
+        # Индексов ровно столько, сколько порядков сортировки в интерфейсе.
+        # Отдельные узкие индексы под частые фильтры (тип, онгоинги) отсюда
+        # убраны намеренно: они не содержат колонку сортировки, и планировщик,
+        # выбрав такой при равной оценке стоимости, снова уходит читать таблицу.
+        # Замерено — с ними батарея стоит 211 мс, без них 145 мс.
+        Index("ix_series_catalog_id", "is_hentai", "id", "mal_score", "year", "type", "season_name", "is_airing"),
+        Index("ix_series_catalog_score", "is_hentai", "mal_score", "id", "year", "type", "season_name", "is_airing"),
+        Index("ix_series_catalog_year", "is_hentai", "year", "id", "mal_score", "type", "season_name", "is_airing"),
+        Index("ix_series_catalog_title", "is_hentai", "title", "id", "mal_score", "year", "type", "season_name", "is_airing"),
     )
 
     # id из Anime365, не автоинкремент.
@@ -140,6 +153,13 @@ class Genre(Base):
 
 class SeriesGenre(Base):
     __tablename__ = "series_genre"
+
+    # Первичный ключ идёт (series_id, genre_id), поэтому отбор «все тайтлы
+    # такого-то жанра» по нему не ищется, а просматривает таблицу целиком.
+    # Обратный порядок даёт покрывающий поиск. Замерено на 29 214 тайтлах:
+    # фильтр по жанру 2,3 → 1,1 мс, `COUNT` по нему 63 → 3,6 мс, а список
+    # жанров с числами (он строится на каждое открытие фильтров) 29 → 3,5 мс.
+    __table_args__ = (Index("ix_series_genre_genre", "genre_id", "series_id"),)
 
     series_id: Mapped[int] = mapped_column(
         ForeignKey("series.id", ondelete="CASCADE"), primary_key=True

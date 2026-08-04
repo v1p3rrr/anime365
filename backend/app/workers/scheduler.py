@@ -9,12 +9,15 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from app.core.config import settings
 from app.services.catalog_sync import catalog_sync
+from app.services.fts import needs_rowid_rebuild, rebuild_all
 from app.services.library_service import library_scanner
 from app.services.library_watcher import WatcherState, library_watcher
 from app.services.stream_probe import stream_probe
@@ -112,12 +115,42 @@ def _library_job() -> None:
         log.exception("Сканирование библиотеки не удалось")
 
 
+def _fts_rowid_job() -> None:
+    """Одноразовая пересборка поискового индекса под новое правило.
+
+    Индекс, собранный прежними версиями, раздавал `rowid` автоинкрементом, а
+    теперь по нему берутся идентификаторы тайтлов — иначе поиск стоит 243 мс
+    вместо 2 мс. Такую базу надо пересобрать один раз.
+
+    Не в `bootstrap()`, а фоном: пересборка 29 тысяч тайтлов занимает около
+    минуты, и задерживать на неё старт сервиса незачем. До её завершения поиск
+    работает по-старому — записи со старым `rowid` просто не находятся, а
+    каталог и всё остальное не затронуты.
+    """
+    try:
+        if not needs_rowid_rebuild():
+            return
+        log.info("Поисковый индекс собран по старому правилу, пересобираю")
+        count = rebuild_all()
+        log.info("Поисковый индекс пересобран: %d тайтлов", count)
+    except Exception:
+        log.exception("Пересборка поискового индекса не удалась")
+
+
 def start_scheduler() -> AsyncIOScheduler:
     global _scheduler
     if _scheduler is not None:
         return _scheduler
 
     scheduler = AsyncIOScheduler(timezone="UTC")
+
+    # Через полминуты после старта: пусть сервис сначала поднимется и ответит
+    # на healthcheck.
+    scheduler.add_job(
+        _fts_rowid_job,
+        DateTrigger(run_date=datetime.now(UTC) + timedelta(seconds=30)),
+        id="fts_rowid_rebuild",
+    )
 
     scheduler.add_job(
         _incremental_job,

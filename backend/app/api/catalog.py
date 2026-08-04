@@ -32,7 +32,7 @@ from app.models.catalog import (
 from app.models.library import TitleMapping
 from app.services.anime365 import Anime365Client, Anime365Error
 from app.services.catalog_sync import cache_series, catalog_sync
-from app.services.fts import search_ids
+from app.services.fts import match_condition
 from app.services.coverage import NON_CONTENT_EPISODE_TYPES, is_announced
 from app.services.mapping_info import series_badges
 
@@ -51,6 +51,36 @@ MAX_IDS_PER_REQUEST = 500
 # Те же шесть, что и в настройках отображения на клиенте. Держатся списком, а не
 # выводятся из колонок, чтобы случайное поле модели не стало фильтром.
 TRANSLATION_TYPES = ("sub_ja", "sub_ru", "sub_en", "raw_ja", "voice_ru", "voice_en")
+
+#: Какой индекс обслуживает какой порядок сортировки.
+#:
+#: Индекс называется явно (`INDEXED BY`), а не выбирается планировщиком. Причина
+#: не в недоверии, а в замере: у всех четырёх индексов есть колонка сортировки и
+#: **все** фильтруемые колонки, поэтому любой запрос каталога отвечается, не
+#: доходя до строк широкой таблицы. Но при равной оценке стоимости планировщик
+#: иногда предпочитает индекс, покрывающий фильтр и не покрывающий сортировку, —
+#: и тогда недостающую колонку он дочитывает из таблицы. Локальная SQLite 3.49 и
+#: контейнерная 3.46 на одних и тех же запросах выбирают разное, то есть цена
+#: вопроса — обновление системного пакета ([D-84](../../../claude/09-decisions.md)).
+SORT_INDEX = {
+    "id": "ix_series_catalog_id",
+    "score": "ix_series_catalog_score",
+    "year": "ix_series_catalog_year",
+    "title": "ix_series_catalog_title",
+}
+
+#: Индекс для `COUNT`, которому сортировка не нужна.
+#:
+#: Взят самый лёгкий: `ix_series_catalog_title` несёт названия и потому втрое
+#: толще остальных, а `COUNT` читает выборку целиком, без ограничения окном.
+#: Замерено на 29 214 тайтлах: по индексу с названиями — 120–180 мс, по любому
+#: другому — около миллисекунды.
+COUNT_INDEX = "ix_series_catalog_score"
+
+
+def _catalog_select(index: str):
+    """Выборка идентификаторов с явно названным индексом."""
+    return select(Series.id).with_hint(Series, f"INDEXED BY {index}", "sqlite")
 
 
 class LocalBadges(BaseModel):
@@ -173,18 +203,18 @@ def catalog_ids(
     полоса прокрутки, и номера страниц. Без него подгрузка не знала бы, когда
     остановиться, а нумерация — сколько всего страниц.
     """
-    stmt = select(Series.id)
+    conditions: list[Any] = []
 
     if local is not None:
         # Множество смапленных тайтлов небольшое (сотни-тысячи), поэтому
         # подставляем его как подзапрос, а не тянем в память.
         mapped = select(func.distinct(TitleMapping.series_id))
-        stmt = stmt.where(Series.id.in_(mapped) if local == "only" else Series.id.not_in(mapped))
+        conditions.append(Series.id.in_(mapped) if local == "only" else Series.id.not_in(mapped))
 
     if mapping_problem:
         # Нечёткие привязки, которые пользователь ещё не подтвердил. Их важно
         # уметь показать отдельным списком: это очередь на ручную проверку.
-        stmt = stmt.where(
+        conditions.append(
             Series.id.in_(
                 select(func.distinct(TitleMapping.series_id)).where(
                     TitleMapping.needs_confirmation.is_(True)
@@ -210,24 +240,25 @@ def catalog_ids(
         # Непроверенные тайтлы не подходят под фильтр: строки в таблице у них нет,
         # и утверждать, что японских субтитров у них нет, мы не можем — мы просто
         # не смотрели. Показать их значило бы выдать незнание за факт.
-        stmt = stmt.where(Series.id.in_(select(SeriesTranslations.series_id).where(condition)))
+        conditions.append(Series.id.in_(select(SeriesTranslations.series_id).where(condition)))
 
     if not include_hentai:
-        stmt = stmt.where(Series.is_hentai.is_(False))
+        conditions.append(Series.is_hentai.is_(False))
     if type:
-        stmt = stmt.where(Series.type == type)
+        conditions.append(Series.type == type)
     if year_from is not None:
-        stmt = stmt.where(Series.year >= year_from)
+        conditions.append(Series.year >= year_from)
     if year_to is not None:
-        stmt = stmt.where(Series.year <= year_to)
+        conditions.append(Series.year <= year_to)
     if season:
-        stmt = stmt.where(Series.season_name == season)
+        conditions.append(Series.season_name == season)
     if is_airing is not None:
-        stmt = stmt.where(Series.is_airing.is_(is_airing))
+        conditions.append(Series.is_airing.is_(is_airing))
     if score_from is not None:
         # Тайтлы без оценки при фильтре по минимальному баллу не показываем:
         # «оценка от 7» не должно означать «и ещё десять тысяч неоценённых».
-        stmt = stmt.where(Series.mal_score.is_not(None), Series.mal_score >= score_from)
+        conditions.append(Series.mal_score.is_not(None))
+        conditions.append(Series.mal_score >= score_from)
 
     if genres:
         if genres_and:
@@ -240,13 +271,18 @@ def catalog_ids(
             )
         else:
             sub = select(SeriesGenre.series_id).where(SeriesGenre.genre_id.in_(genres))
-        stmt = stmt.where(Series.id.in_(sub))
+        conditions.append(Series.id.in_(sub))
 
     if query:
-        matched = search_ids(query, limit=5000)
-        if not matched:
+        # Совпадения остаются подзапросом внутри SQLite. Список из пяти тысяч
+        # идентификаторов, подставленный параметрами, стоил 900 мс на сборке
+        # выражения при 0,6 мс на самом запросе ([D-84](../../../claude/09-decisions.md)).
+        matched = match_condition(query)
+        if matched is None:
             return {"ids": [], "total": 0}
-        stmt = stmt.where(Series.id.in_(matched))
+        conditions.append(matched)
+
+    stmt = _catalog_select(SORT_INDEX[sort]).where(*conditions)
 
     # Пустые значения всегда в конце, независимо от направления: тайтлы без года
     # или без оценки не должны занимать первый экран ни при какой сортировке.
@@ -261,12 +297,14 @@ def catalog_ids(
         # id вторым ключом даёт стабильный порядок при равных значениях.
         stmt = stmt.order_by(order.nullslast(), Series.id.desc())
 
+    counting = select(func.count()).select_from(
+        _catalog_select(COUNT_INDEX).where(*conditions).subquery()
+    )
+
     with session_scope() as session:
         # Считаем по той же выборке, но без сортировки и окна: сортировка на
         # количество не влияет, а тащить её в COUNT незачем.
-        total = (
-            session.execute(select(func.count()).select_from(stmt.order_by(None).subquery()))
-        ).scalar() or 0
+        total = session.execute(counting).scalar() or 0
         ids = [row[0] for row in session.execute(stmt.offset(offset).limit(limit)).all()]
 
     return {"ids": ids, "total": total, "offset": offset, "limit": limit}
