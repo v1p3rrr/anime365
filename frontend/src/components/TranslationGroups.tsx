@@ -14,6 +14,7 @@ import {
 import { BatchDownload } from './BatchDownload'
 import { ErrorState } from './ErrorState'
 import { useT, type TranslationKey } from '../i18n'
+import { useKindLabel } from '../i18n/kind'
 import { isTypeVisible, translationType, typeRank, type TranslationType } from '../stores/preferences'
 
 interface Props {
@@ -42,6 +43,7 @@ export function TranslationGroups({
   contentEpisodes,
 }: Props) {
   const { t } = useT()
+  const kindLabel = useKindLabel()
   // Тот же порядок, что и в панели загрузки серии: субтитры раньше видео,
   // озвучка последней. Разными их держать нельзя — это один и тот же выбор,
   // сделанный в двух местах страницы.
@@ -88,7 +90,7 @@ export function TranslationGroups({
                   {t(`lang.${section.lang}` as TranslationKey)}
                 </Badge>
                 <Text size="sm" fw={500}>
-                  {KIND_ICONS[section.kind] ?? ''} {t(`kind.${section.kind}` as TranslationKey)}
+                  {KIND_ICONS[section.kind] ?? ''} {kindLabel(section.kind)}
                 </Text>
                 <Text size="xs" c="dimmed">
                   {t('groups.summaryLine', { authors: section.groups.length, total: section.total_translations })}

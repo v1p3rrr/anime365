@@ -23,6 +23,7 @@ import {
   type EpisodeTranslation,
 } from '../api/title'
 import { useT, type TranslationKey } from '../i18n'
+import { useKindLabel } from '../i18n/kind'
 import { LangTag } from './Flag'
 import { useApiError } from '../i18n/apiError'
 import {
@@ -88,6 +89,7 @@ const COVERED_HINT: Record<Exclude<Covered, null>, TranslationKey> = {
 
 export function EpisodeDownloadPanel({ episode, types }: Props) {
   const { t } = useT()
+  const kindLabel = useKindLabel()
   const apiError = useApiError()
   const queryClient = useQueryClient()
   const [showCovered, setShowCovered] = useState(false)
@@ -219,7 +221,7 @@ export function EpisodeDownloadPanel({ episode, types }: Props) {
           <Group gap="xs" wrap="nowrap">
             <SectionIcon kind={section.kind} lang={section.lang} />
             <Text size="sm">
-              {t(`kind.${section.kind}` as TranslationKey)} · <LangTag lang={section.lang} />
+              {kindLabel(section.kind)} · <LangTag lang={section.lang} />
             </Text>
             <Text size="xs" c="dimmed">
               {t('episode.variants', { count: section.items.length })}

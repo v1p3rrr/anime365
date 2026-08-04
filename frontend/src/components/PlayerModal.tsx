@@ -4,7 +4,8 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 
 import { LANG_COLORS, titleApi, type EpisodeTranslation } from '../api/title'
-import { useT, type TranslationKey } from '../i18n'
+import { useT } from '../i18n'
+import { useKindLabel } from '../i18n/kind'
 // Подписи вариантов в Select — строки, флаг-компонент туда не вставить.
 import { langCode } from '../i18n/flags'
 
@@ -57,6 +58,7 @@ const LIBASS_LEGACY_WORKER = '/libass/subtitles-octopus-worker-legacy.js'
 
 export function PlayerModal({ opened, onClose, translations, episodeLabel }: Props) {
   const { t } = useT()
+  const kindLabel = useKindLabel()
   const containerRef = useRef<HTMLDivElement>(null)
   const artRef = useRef<{ destroy: (removeHtml?: boolean) => void } | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -261,7 +263,7 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
   const grouped = (items: EpisodeTranslation[]) => {
     const groups = new Map<string, EpisodeTranslation[]>()
     for (const item of items) {
-      const key = `${t(`kind.${item.kind}` as TranslationKey)} · ${langCode(item.lang)}`
+      const key = `${kindLabel(item.kind)} · ${langCode(item.lang)}`
       groups.set(key, [...(groups.get(key) ?? []), item])
     }
     return [...groups.entries()].map(([group, list]) => ({

@@ -23,6 +23,8 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from app.services.translation_types import is_subtitle_kind
+
 log = logging.getLogger(__name__)
 
 # Всё, что скачано с Anime365, помечается WEBDL, даже если соседние эпизоды
@@ -117,7 +119,7 @@ class NamingContext:
     authors: str
     height: int
     lang: str
-    kind: str  # voice | sub | raw
+    kind: str  # voice | sub | subv | raw
     extension: str
     year: int | None = None
     is_movie: bool = False
@@ -137,7 +139,11 @@ def _source_tag(height: int) -> str:
 
 
 def _lang_suffix(ctx: NamingContext) -> str:
-    if ctx.kind == "sub":
+    # ⚠️ Проверяем набор видов, а не `== "sub"`. Субтитровых видов в API
+    # два: обычный `sub` и `subv` — надписи и песни. Со сравнением по одному
+    # значению файл `subv` уезжал в библиотеку без `.ru`, и Jellyfin не понимал,
+    # на каком он языке.
+    if is_subtitle_kind(ctx.kind):
         return SUB_LANG_SUFFIX.get(ctx.lang, "")
     if ctx.kind == "voice":
         return VIDEO_LANG_SUFFIX.get(ctx.lang, "")
@@ -288,7 +294,7 @@ def build_target_name(
     `existing_video` задаётся, когда качаем субтитры к уже лежащему видео —
     этот случай имеет приоритет, потому что имя обязано совпасть.
     """
-    if existing_video and ctx.kind == "sub":
+    if existing_video and is_subtitle_kind(ctx.kind):
         return subtitle_name_for_video(existing_video, ctx.authors, ctx.lang, ctx.extension)
 
     if neighbour:

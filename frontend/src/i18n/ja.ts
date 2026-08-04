@@ -856,6 +856,7 @@ export const ja: Dictionary = {
     voice: '吹き替え',
     sub: '字幕',
     raw: 'オリジナル（RAW）',
+    subv: '看板・歌のみ',
   },
 
   display: {

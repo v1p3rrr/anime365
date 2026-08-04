@@ -856,6 +856,7 @@ export const en: Dictionary = {
     voice: 'Dub',
     sub: 'Subtitles',
     raw: 'Original (RAW)',
+    subv: 'Signs and songs',
   },
 
   display: {
