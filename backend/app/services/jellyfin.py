@@ -134,7 +134,7 @@ class JellyfinClient:
     def __init__(self) -> None:
         self._pending: asyncio.Task | None = None
         # (время загрузки, {хвост пути: {"id", "type"}})
-        self._index: dict[str, dict[str, str]] = {}
+        self._index: dict[str, dict[str, Any]] = {}
         self._index_at: float = 0.0
         self._server_id: str | None = None
         self._user_id: str | None = None
@@ -281,7 +281,7 @@ class JellyfinClient:
             self._server_id = str(data["Id"])
         return self._server_id
 
-    async def _ensure_index(self) -> dict[str, dict[str, str]]:
+    async def _ensure_index(self) -> dict[str, dict[str, Any]]:
         """Список элементов Jellyfin с путями, разложенный по хвостам путей."""
         fresh = self._index and (time.monotonic() - self._index_at) < INDEX_TTL_SECONDS
         if fresh:
@@ -298,14 +298,18 @@ class JellyfinClient:
                 {
                     "includeItemTypes": ITEM_TYPES,
                     "recursive": "true",
-                    "fields": "Path",
+                    # ProviderIds — ради подсказки о расхождении разметки.
+                    # У Series и Movie их по 4-6 (AniList, TMDB, Shikimori,
+                    # Kitsu, AniDB, TVDB), и противоречат они друг другу прямо
+                    # внутри одной записи: каждый плагин каскада писал своё.
+                    "fields": "Path,ProviderIds",
                     "enableImages": "false",
                     "enableUserData": "false",
                     "enableTotalRecordCount": "false",
                 },
             )
             items = (data or {}).get("Items") or []
-            index: dict[str, dict[str, str]] = {}
+            index: dict[str, dict[str, Any]] = {}
             for item in items:
                 path = item.get("Path")
                 item_id = item.get("Id")
@@ -315,6 +319,16 @@ class JellyfinClient:
                     continue
                 normalized = _normalize(path)
                 meta = {"id": str(item_id), "type": str(item.get("Type") or "")}
+                # Ключи приходят как «AniList», «Shikimori», «Tmdb» — приводим
+                # к нижнему регистру, иначе сравнение зависело бы от того, как
+                # плагин их записал.
+                providers = item.get("ProviderIds") or {}
+                if isinstance(providers, dict):
+                    meta["providers"] = {
+                        str(name).lower(): str(value)
+                        for name, value in providers.items()
+                        if value not in (None, "")
+                    }
                 index[normalized] = meta
 
                 # ⚠️ У фильмов Jellyfin держит в Path сам ВИДЕОФАЙЛ, а у
@@ -343,7 +357,7 @@ class JellyfinClient:
     # Сопоставление
     # ------------------------------------------------------------------ #
 
-    async def find_item(self, rel_paths: list[str]) -> dict[str, str] | None:
+    async def find_item(self, rel_paths: list[str]) -> dict[str, Any] | None:
         """Ищет элемент Jellyfin по относительным путям папок тайтла.
 
         `rel_paths` — пути папок относительно наших корней, в порядке
@@ -375,7 +389,12 @@ class JellyfinClient:
             # «Show» совпало бы и с «Other Show», если бы мы не требовали
             # границу компонента, а требуем: сравнение идёт по «/» + хвост.
             full, meta = max(hits, key=lambda pair: len(pair[0]))
-            return {"id": meta["id"], "type": meta["type"], "path": full}
+            return {
+                "id": meta["id"],
+                "type": meta["type"],
+                "path": full,
+                "providers": meta.get("providers") or {},
+            }
         return None
 
     async def known_file_paths(self) -> set[str] | None:

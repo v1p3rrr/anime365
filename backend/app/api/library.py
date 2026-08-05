@@ -360,6 +360,95 @@ async def jellyfin_audit() -> dict[str, Any]:
     return await audit()
 
 
+#: Как идентификаторы Jellyfin ложатся на наши поля каталога.
+PROVIDER_FIELDS = {
+    "anilist": "anilist_id",
+    "shikimori": "mal_id",
+    "myanimelist": "mal_id",
+    "mal": "mal_id",
+}
+
+#: Чьё расхождение считается расхождением.
+#:
+#: Только AniList. Это единственное сравнение «яблок с яблоками»: у нас есть
+#: `anilist_id`, у Jellyfin — `AniList`, нумерация одна.
+#:
+#: Shikimori в счёт не идёт, хотя показывается. Замерено на живой библиотеке
+#: (200 элементов): `Shikimori` стоит у 197 из них, но его нумерация совпадает с
+#: MyAnimeList не всегда — у `[Oshi no Ko]` это 39972 против AniList 150672, у
+#: `Amagami SS` оба по 8676. Плюс ещё при разборе `.nfo` выяснилось, что тег
+#: `<shikimoriid>` **бывает просто неверным** (у YuruYuri он указывал на другое
+#: аниме). Считать такие расхождения спором значит показывать значок почти
+#: везде — а подсказка, которая горит всегда, не подсказывает ничего.
+CONFLICT_PROVIDERS = frozenset({"anilist"})
+
+
+@router.get(
+    "/jellyfin/verdict/{series_id}",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
+async def jellyfin_verdict(series_id: int) -> dict[str, Any]:
+    """Что о папке этого тайтла думает Jellyfin — для подсказки, не для решения.
+
+    ⚠️ Это **информация, а не голос**. Решение пользователя: разметку не
+    переголосовывать, а показывать значок с подсказкой при наведении. Основание
+    простое — исправлять чужую ошибку идентификации не наша задача, а вот
+    молчать о расхождении нельзя: пока файлы не уехали не туда, его не видно.
+
+    Почему отдельным запросом, а не в составе страницы тайтла: Jellyfin бывает
+    выключен, недоступен или медленен, и страница не должна его ждать.
+    """
+    from app.services.jellyfin import jellyfin
+    from app.services.mapping_info import title_folder_paths
+
+    if not jellyfin.turned_on or not jellyfin.configured:
+        return {"available": False, "reason": "disabled"}
+
+    with session_scope() as session:
+        series = session.get(Series, series_id)
+        if series is None:
+            raise ApiError(404, errors.SERIES_NOT_FOUND, "Тайтл не найден")
+        ours = {"anilist_id": series.anilist_id, "mal_id": series.mal_id}
+
+    rel_paths = title_folder_paths(series_id)
+    if not rel_paths:
+        return {"available": False, "reason": "not_mapped"}
+
+    item = await jellyfin.find_item(rel_paths)
+    if item is None:
+        return {"available": False, "reason": "not_found"}
+
+    providers: dict[str, str] = item.get("providers") or {}
+    conflicts: list[dict[str, Any]] = []
+    for name, value in sorted(providers.items()):
+        field = PROVIDER_FIELDS.get(name)
+        if field is None:
+            # Про TVDB, TMDB, AniDB и Kitsu нам сравнивать нечего: в каталоге
+            # Anime365 таких полей нет. Показывать их всё равно полезно — по ним
+            # человек и опознаёт, какой тайтл Jellyfin имел в виду.
+            conflicts.append({"provider": name, "theirs": value, "ours": None, "differs": False})
+            continue
+        our_value = ours.get(field)
+        differs = (
+            name in CONFLICT_PROVIDERS
+            and our_value is not None
+            and str(our_value) != str(value)
+        )
+        conflicts.append(
+            {"provider": name, "theirs": value, "ours": our_value, "differs": differs}
+        )
+
+    return {
+        "available": True,
+        "item_id": item["id"],
+        "path": item["path"],
+        "ids": conflicts,
+        # Отдельным полем, чтобы интерфейс не пересчитывал это сам и не разошёлся
+        # с сервером в трактовке.
+        "disagrees": any(row["differs"] for row in conflicts),
+    }
+
+
 @router.get(
     "/audio",
     dependencies=[Depends(require(Permission.CATALOG))],

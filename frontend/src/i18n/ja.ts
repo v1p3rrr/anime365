@@ -769,6 +769,12 @@ export const ja: Dictionary = {
     probeFailed: 'ファイルを解析できませんでした',
   },
 
+  jellyfinVerdict: {
+    badge: 'Jellyfin の判定は別',
+    hint: 'Jellyfin のメタデータは、こちらの紐付けとは別の作品を指しています。左が識別子、中央が Jellyfin の値、右がこちらの値です。',
+    whereToFix: '誤っているのが Jellyfin 側なら、修正はあちらで行ってください。こちらはその反映にすぎません。',
+  },
+
   bindEpisode: {
     title: '第 {episode} 話にファイルを紐付ける',
     hint: '未入力ならこの作品のフォルダー内のファイル。入力を始めるとライブラリ全体を検索します。作品の一部が、紐付いていない別のフォルダーに置かれていることがあるためです。手動の紐付けは印が付き、スキャンでも上書きされません。',

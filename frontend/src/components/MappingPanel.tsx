@@ -28,6 +28,7 @@ import {
   type ProposedFolder,
   type TitleMappingInfo,
 } from '../api/title'
+import { JellyfinVerdictBadge } from './JellyfinVerdictBadge'
 import pathClasses from './PathLine.module.css'
 import { usePermissions } from '../hooks/usePermissions'
 import { useT, type TranslationKey } from '../i18n'
@@ -228,6 +229,9 @@ export function MappingPanel({
                       {t('mapping.needsConfirmation')}
                     </Badge>
                   )}
+                  {/* Что об этой папке думает Jellyfin. Молчит, пока
+                      расхождения нет, и не переголосовывает разметку. */}
+                  {mapping.is_primary && <JellyfinVerdictBadge seriesId={seriesId} />}
                   <Text size="xs" c="dimmed">
                     {t('mapping.videosAndSize', {
                       count: mapping.video_count,

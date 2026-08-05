@@ -770,6 +770,12 @@ export const en: Dictionary = {
     probeFailed: 'Could not probe the file',
   },
 
+  jellyfinVerdict: {
+    badge: 'Jellyfin disagrees',
+    hint: 'Jellyfin’s metadata points at a different title than our binding. Left — the provider, middle — Jellyfin’s value, right — ours.',
+    whereToFix: 'If Jellyfin is the one that’s wrong, fix it there: on our side this is only a reflection of its metadata.',
+  },
+
   bindEpisode: {
     title: 'Link a file to episode {episode}',
     hint: 'With no query — files from this title’s folders. Start typing and the search covers the whole library: part of a title may sit in a separate folder that is not linked to it. A manual link is marked as such and survives scanning.',
