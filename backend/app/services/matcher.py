@@ -137,6 +137,26 @@ IMPLAUSIBLE_VIDEO_COUNT = 3
 #: Сколько серий допустимо у тайтла, лежащего в корне фильмов.
 MOVIE_EPISODE_LIMIT = 6
 
+#: Уверенность сиквела, найденного по объявленному в заголовке номеру сезона.
+#:
+#: Высокая: номер написан в самом названии тайтла, гадать не о чем. Но не сотня
+#: — сверка по году, типу и кварталу премьеры всё равно должна иметь право
+#: отвергнуть кандидата.
+SEQUEL_CONFIDENCE = 94.0
+
+#: Перевес кандидата, чей заголовок объявляет тот же номер сезона.
+#:
+#: Величина посчитана, а не подобрана. У папки второго сезона имя дословно
+#: совпадает с **первым** сезоном («Kagerou Days» против «Kagerou Days 2nd
+#: Season»), и первый выигрывает дважды: точным совпадением названия
+#: (99 против 94 стартовых) и похожестью — до `(100 - TITLE_FLOOR) *
+#: TITLE_WEIGHT` ≈ 19 баллов против примерно девяти у сиквела.
+#:
+#: Худший случай, который надо перекрыть, — это 5 + 19 ≈ 24. Берём 30: с
+#: запасом, но не настолько, чтобы подменить собой год, тип и квартал премьеры —
+#: они по-прежнему могут отвергнуть кандидата вовсе.
+SEASON_CLAIM_BONUS = 30.0
+
 #: На сколько лет год фильма может разойтись с каталогом.
 #:
 #: Единица, а не ноль: у фильмов с зимней премьерой год выхода и год каталога
@@ -549,6 +569,7 @@ class Matcher:
             return self._propose_specials(ctx)
         if not self.nfo_disagrees_with_folder(ctx):
             out.extend(self._propose_ids(ctx))
+        out.extend(self._propose_sequels(ctx))
         for cascade in (self._cascade_c, self._cascade_b):
             result = cascade(ctx)
             if result is not None:
@@ -561,6 +582,46 @@ class Matcher:
         for item in out:
             seen.setdefault((item.series_id, item.source), item)
         return list(seen.values())
+
+    def _propose_sequels(self, ctx: MatchContext) -> list[MatchResult]:
+        """Сиквелы, объявившие в заголовке тот самый номер сезона.
+
+        Нужны там, где сезон известен, а `season.nfo` нет: каскад сезонов
+        опирается на дату премьеры и без него молчит, а строковый каскад
+        предлагает **точное** совпадение — то есть первый сезон, чьё название
+        дословно совпадает с именем папки.
+
+        Так папка `Kagerou Days` с файлами `S02E01…` и получала первый сезон:
+        второго ей никто не предлагал. Ищем по префиксу названия франшизы и
+        берём только тех, кто сам объявил нужный номер, — вольностей здесь нет.
+        """
+        if ctx.is_specials or ctx.season_number is None or ctx.season_number <= 1:
+            return []
+
+        out: list[MatchResult] = []
+        seen: set[int] = set()
+        for raw in self._match_titles(ctx):
+            norm, _ = normalize_for_match(raw)
+            if not norm:
+                continue
+            for series_id in self.index.by_prefix(norm):
+                if series_id in seen:
+                    continue
+                candidate = self.index.by_id.get(series_id)
+                if candidate is None:
+                    continue
+                if self._season_claimed_by(candidate) != ctx.season_number:
+                    continue
+                seen.add(series_id)
+                out.append(
+                    MatchResult(
+                        series_id,
+                        MatchSource.EXACT_TITLE,
+                        SEQUEL_CONFIDENCE,
+                        f"сезон {ctx.season_number} назван в заголовке",
+                    )
+                )
+        return out
 
     def _propose_specials(self, ctx: MatchContext) -> list[MatchResult]:
         """Кандидаты для папки спешлов — только вхождения спешл-типов.
@@ -768,10 +829,21 @@ class Matcher:
         # Сравнение по количеству серий тут бессильно принципиально: скачано
         # может быть десять из двенадцати, а у чиби-сериала рядом их двадцать
         # четыре. Поэтому решает не счёт, а совпадение явных номеров.
+        season_claim_bonus = 0.0
         if not ctx.is_specials and ctx.season_number is not None:
             claimed = self._season_claimed_by(candidate)
             if claimed is not None and claimed != ctx.season_number:
                 return None
+            # Совпал — это сильнее похожести названия, и надбавка нужна именно
+            # поэтому. У папки со вторым сезоном имя обычно совпадает с
+            # **первым** сезоном дословно («Kagerou Days» против «Kagerou Days
+            # 2nd Season»), так что по строке первый выигрывает всегда.
+            #
+            # Отвергать кандидата без номера нельзя: сиквелы сплошь называются
+            # без него — «Yuru Yuri♪♪», «Yuru Yuri San☆Hai!». Поэтому не вето,
+            # а перевес.
+            if claimed is not None and claimed == ctx.season_number:
+                season_claim_bonus = SEASON_CLAIM_BONUS
 
         title = self._title_score(ctx, candidate)
         episodes = candidate.number_of_episodes or 0
@@ -810,7 +882,7 @@ class Matcher:
             if not self._ids_agree(ctx, proposal.series_id):
                 return None
 
-        score = proposal.confidence + (title - TITLE_FLOOR) * TITLE_WEIGHT
+        score = proposal.confidence + (title - TITLE_FLOOR) * TITLE_WEIGHT + season_claim_bonus
         if ctx.is_specials:
             # Похожесть здесь только упорядочивает своих: чем длиннее лишний
             # хвост, тем ниже. Штрафовать за него ещё и в общем зачёте незачем.
