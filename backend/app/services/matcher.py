@@ -99,6 +99,21 @@ IMPLAUSIBLE_VIDEO_COUNT = 3
 #: Сколько серий допустимо у тайтла, лежащего в корне фильмов.
 MOVIE_EPISODE_LIMIT = 6
 
+#: Типы каталога, которыми бывают спешлы. Папке `Specials` подходят только они.
+#:
+#: `ona` сюда не входит намеренно: так помечают полноценные веб-сериалы
+#: (у Yuru Yuri это `Mini Yuri` из четырёх серий), и пускать их в спешлы —
+#: значит вернуть ровно ту ошибку, от которой правило заводилось.
+SPECIAL_TYPES = frozenset({"special", "tv_special", "ova"})
+
+#: Уверенность привязки папки спешлов.
+#:
+#: Заметно ниже точного совпадения: название папки («Specials») в выборе не
+#: участвует вовсе, решает только принадлежность франшизе и тип. Это разумная
+#: догадка, а не установленный факт, и плашка на странице тайтла обязана
+#: показывать её именно так.
+SPECIALS_CONFIDENCE = 70.0
+
 
 @dataclass
 class SeriesCandidate:
@@ -280,14 +295,30 @@ class MatchContext:
         return self.season_from_files is not None
 
     @property
+    def is_specials(self) -> bool:
+        """Папка спешлов: `Specials`, `Extras`, `OVA` — нулевой номер сезона.
+
+        В Anime365 спешлы — **самостоятельные вхождения**, а не часть сериала.
+        Проверено запросами: у K-On! их четыре (`Keikaku!`, `Live House!`,
+        `Ura-On!!`, `Ura-On!`), у Toradora! — `Bentou no Gokui`, `Recap`, `SOS!`
+        и ещё одно. Поэтому такую папку нельзя ни привязывать к сериалу, ни
+        считать его сезоном.
+        """
+        return self.season_number == 0
+
+    @property
     def inherits_parent(self) -> bool:
         """Пользуемся ли мы данными родителя как своими.
 
         Только сезоны: у подпапки с номером сезона родительские название и ID
         осмысленны. Всё остальное — фильм, спешлы, бонусы, служебные папки —
         обязано опираться на себя.
+
+        ⚠️ Спешлы исключены явно. Формально у них номер сезона есть (ноль), и
+        без этой оговорки они выглядели бы обычным сезоном: взяли бы у сериала
+        и название, и идентификаторы, и сели бы прямо на него.
         """
-        return self.is_child and self.season_number is not None
+        return self.is_child and self.season_number is not None and not self.is_specials
 
 
 class Matcher:
@@ -436,6 +467,8 @@ class Matcher:
     def _propose(self, ctx: MatchContext) -> list[MatchResult]:
         """Все правдоподобные кандидаты, а не первый попавшийся."""
         out: list[MatchResult] = []
+        if ctx.is_specials:
+            return self._propose_specials(ctx)
         if not self.nfo_disagrees_with_folder(ctx):
             out.extend(self._propose_ids(ctx))
         for cascade in (self._cascade_c, self._cascade_b):
@@ -450,6 +483,49 @@ class Matcher:
         for item in out:
             seen.setdefault((item.series_id, item.source), item)
         return list(seen.values())
+
+    def _propose_specials(self, ctx: MatchContext) -> list[MatchResult]:
+        """Кандидаты для папки спешлов — только вхождения спешл-типов.
+
+        Идентификаторы родителя сюда не идут вовсе: `anilistid` из `tvshow.nfo`
+        указывает на сериал, а спешл — самостоятельная запись.
+
+        Ищем по **префиксу** названия франшизы, а не нечётким сравнением:
+        спешл называется длиннее сериала («Toradora!» против «Toradora!: SOS!
+        Kuishinbou Banbanzai»), и порог похожести его не берёт. Ровно для этого
+        `by_prefix` и заведён — он же ловит сиквелы.
+
+        Когда подходящих вхождений несколько (у K-On! их четыре), выбрать по
+        имени папки нечего: она называется «Specials». Тогда предложение
+        помечается требующим подтверждения — пусть человек посмотрит, а не
+        узнаёт об ошибке по уехавшим файлам. Сами файлы при этом не пропадут:
+        скачанные нами несут `t{id}` и находят свой тайтл сами.
+        """
+        found: dict[int, float] = {}
+        for raw in self._match_titles(ctx):
+            norm, _ = normalize_for_match(raw)
+            if not norm:
+                continue
+            for series_id in self.index.by_prefix(norm):
+                candidate = self.index.by_id.get(series_id)
+                if candidate is None or candidate.type not in SPECIAL_TYPES:
+                    continue
+                found.setdefault(series_id, self._title_score(ctx, candidate))
+
+        if not found:
+            return []
+
+        ambiguous = len(found) > 1
+        return [
+            MatchResult(
+                series_id,
+                MatchSource.FUZZY,
+                SPECIALS_CONFIDENCE,
+                f"спешлы франшизы «{ctx.folder_name}»",
+                needs_confirmation=ambiguous,
+            )
+            for series_id in found
+        ]
 
     def _propose_ids(self, ctx: MatchContext) -> list[MatchResult]:
         """Кандидаты по внешним идентификаторам — **оба**, а не первый.
@@ -533,6 +609,12 @@ class Matcher:
         if candidate is None:
             return None
 
+        # Папке спешлов подходят только вхождения спешл-типов. Название у них
+        # совпадает с сериалом почти дословно («Toradora!» и «Toradora!: SOS!»),
+        # поэтому строка сама по себе выбор не делает — делает тип.
+        if ctx.is_specials and candidate.type not in SPECIAL_TYPES:
+            return None
+
         title = self._title_score(ctx, candidate)
         episodes = candidate.number_of_episodes or 0
 
@@ -549,10 +631,21 @@ class Matcher:
         # Название не сошлось и подтвердить нечем — отказ. Так отсеивается
         # `Your Name` → реклама минеральной воды: идентификатор в .nfo верный,
         # а вот у Anime365 он проставлен чужому тайтлу.
-        if title < TITLE_FLOOR and not self._ids_agree(ctx, proposal.series_id):
-            return None
+        #
+        # ⚠️ К спешлам этот порог неприменим. Их название длиннее названия
+        # франшизы на целый хвост («Toradora!» против «Toradora!: SOS!
+        # Kuishinbou Banbanzai»), и похожесть выходит 15–27 при пороге 45 —
+        # то есть верный кандидат отсеивался бы всегда. Проверка у них другая
+        # и уже пройдена: попадание в префикс франшизы плюс спешл-тип.
+        if not ctx.is_specials and title < TITLE_FLOOR:
+            if not self._ids_agree(ctx, proposal.series_id):
+                return None
 
         score = proposal.confidence + (title - TITLE_FLOOR) * TITLE_WEIGHT
+        if ctx.is_specials:
+            # Похожесть здесь только упорядочивает своих: чем длиннее лишний
+            # хвост, тем ниже. Штрафовать за него ещё и в общем зачёте незачем.
+            score = proposal.confidence + title * TITLE_WEIGHT
 
         if self._ids_agree(ctx, proposal.series_id):
             # Оба плагина Jellyfin независимо пришли к одному тайтлу.
@@ -757,6 +850,12 @@ class Matcher:
         Magic File 2»: в её `tvshow.nfo` записано именно это название, и
         совпадение вышло **точным**.
         """
+        # У папки спешлов собственное имя — «Specials», «Extras», «OVA», — и
+        # искать по нему нечего. Опознаётся она по названию франшизы, то есть
+        # родителя; отсекает лишнее не строка, а тип кандидата (см. `_verify`).
+        if ctx.is_specials:
+            return candidate_titles(ctx.nfo, ctx.folder_name)
+
         if self.nfo_disagrees_with_folder(ctx):
             name = ctx.own_name or ctx.folder_name
             return [name] if name else []
