@@ -18,6 +18,7 @@ import {
   IconAlertTriangle,
   IconChartBar,
   IconDeviceTv,
+  IconDownload,
   IconMusic,
   IconClock,
   IconEye,
@@ -38,6 +39,7 @@ import {
   type UnmappedFolder,
 } from '../api/library'
 import { AudioLibraryTab } from '../components/AudioLibraryTab'
+import { AutoDownloadTab } from '../components/AutoDownloadTab'
 import { JellyfinAudit } from '../components/JellyfinAudit'
 import { ErrorState } from '../components/ErrorState'
 import { MapFolderModal } from '../components/MapFolderModal'
@@ -102,7 +104,8 @@ export function LibraryPage() {
   const sourceLabel = (key: string) => t(`source.${key}` as TranslationKey)
   // Состояние библиотеки — чтение (`catalog`). Сканирование и правка привязок
   // меняют то, куда лягут файлы, и требуют `library`.
-  const canEdit = usePermissions().can('library')
+  const { can } = usePermissions()
+  const canEdit = can('library')
   const [mappingFolder, setMappingFolder] = useState<UnmappedFolder | null>(null)
 
   const status = useQuery({
@@ -327,6 +330,13 @@ export function LibraryPage() {
           <Tabs.Tab value="audio" leftSection={<IconMusic size={14} />}>
             {t('audio.tab')}
           </Tabs.Tab>
+          {/* Настройка автозагрузки ставит задачи в общую очередь, поэтому
+              вкладка живёт под тем же правом, что и сами загрузки. */}
+          {can('downloads') && (
+            <Tabs.Tab value="autodownload" leftSection={<IconDownload size={14} />}>
+              {t('autodownload.title')}
+            </Tabs.Tab>
+          )}
         </Tabs.List>
 
         <Tabs.Panel value="unmapped" pt="sm">
@@ -504,6 +514,12 @@ export function LibraryPage() {
         <Tabs.Panel value="audio" pt="sm">
           <AudioLibraryTab />
         </Tabs.Panel>
+
+        {can('downloads') && (
+          <Tabs.Panel value="autodownload" pt="sm">
+            <AutoDownloadTab />
+          </Tabs.Panel>
+        )}
 
       </Tabs>
 

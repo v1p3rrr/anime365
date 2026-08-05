@@ -26,6 +26,7 @@ import {
   IconDeviceTv,
   IconExternalLink,
   IconMovie,
+  IconDownload,
   IconWand,
 } from '@tabler/icons-react'
 import { notifications } from '@mantine/notifications'
@@ -54,6 +55,9 @@ import { TitleDetails } from '../components/TitleDetails'
 import { useSeriesTypeLabel } from '../i18n/seriesType'
 import { useT, type TranslationKey } from '../i18n'
 import { useSeasonLabel } from '../i18n/season'
+import { TitleAutoDownloadModal } from '../components/TitleAutoDownloadModal'
+import { LANG_BY_TYPE } from '../components/AutoDownloadTab'
+import type { AutoLang } from '../api/autodownload'
 import { LangTag } from '../components/Flag'
 import { useApiError } from '../i18n/apiError'
 import { useTitleName } from '../i18n/titles'
@@ -99,6 +103,12 @@ export function TitlePage() {
   const queryClient = useQueryClient()
   const { t } = useT()
   const seasonLabel = useSeasonLabel()
+  const [autoDownloadOpen, setAutoDownloadOpen] = useState(false)
+  // Вкладки языков в окне автозагрузки — только те, что человек
+  // не выключил у себя в настройках субтитров.
+  const autoLangs = (['ru', 'en', 'ja'] as AutoLang[]).filter((lang) =>
+    prefs.types.some((type) => LANG_BY_TYPE[type] === lang),
+  )
   const seriesTypeLabel = useSeriesTypeLabel()
   const apiError = useApiError()
   const titleName = useTitleName()
@@ -466,6 +476,29 @@ export function TitlePage() {
       {/* Переходы наружу — до справочного списка ссылок: это действия
           («посмотреть у себя», «открыть исходную страницу»), а не сноски. */}
       <TitleQuickLinks seriesId={series.id} title={primary} anime365Url={series.url} />
+
+      {/* Автозагрузка ставит задачи в общую очередь, поэтому кнопка живёт под
+          тем же правом, что и сами загрузки. */}
+      {can('downloads') && (
+        <Group>
+          <Button
+            variant="light"
+            size="compact-sm"
+            leftSection={<IconDownload size={14} />}
+            onClick={() => setAutoDownloadOpen(true)}
+          >
+            {t('autodownload.title')}
+          </Button>
+        </Group>
+      )}
+
+      <TitleAutoDownloadModal
+        seriesId={series.id}
+        title={primary}
+        opened={autoDownloadOpen}
+        onClose={() => setAutoDownloadOpen(false)}
+        langs={autoLangs}
+      />
 
       {data.links.length > 0 && (
         <Group gap="xs">
