@@ -198,3 +198,60 @@ class TestBracketedTitleSurvives:
         from app.services.filename_rules import normalize_for_match
 
         assert normalize_for_match("[Ohys-Raws] Yuru Camp Season 2") == ("yuru camp", 2)
+
+
+class TestEmphasisMarks:
+    """«K-On!» и «K-On!!» после нормализации неразличимы — различает хвост.
+
+    ⚠️ Правило «`!!` значит второй сезон» здесь намеренно **не** сделано:
+    `Haikyuu!!` — первый сезон, у которого две восклицательные в самом
+    названии. Считается не толкование, а совпадение числа знаков.
+    """
+
+    INDEX = TitleIndex(
+        [
+            series(30, "K-On!", year=2009, episodes=13),
+            series(31, "K-On!!", year=2010, episodes=26),
+            series(32, "Haikyuu!!", year=2014, episodes=25),
+        ]
+    )
+
+    def _match(self, folder_name: str):
+        from app.services.nfo_parser import NfoData
+
+        nfo = NfoData(kind="tvshow", path="tvshow.nfo")
+        nfo.title = folder_name
+        ctx = MatchContext(
+            folder_name=folder_name,
+            scope="series",
+            nfo=nfo,
+            own_name=folder_name,
+            is_child=False,
+            video_count=13,
+        )
+        return Matcher(self.INDEX).match(ctx)
+
+    def test_counts_the_tail(self) -> None:
+        from app.services.matcher import emphasis
+
+        assert emphasis("K-On!") == 1
+        assert emphasis("K-On!!") == 2
+        assert emphasis("K-ON！！") == 2, "японская полноширинная форма — та же роль"
+        assert emphasis("Yuru Yuri♪♪") == 2
+        assert emphasis("Toradora") == 0
+
+    def test_single_mark_picks_the_first_season(self) -> None:
+        result = self._match("K-On!")
+
+        assert result is not None and result.series_id == 30
+
+    def test_double_mark_picks_the_sequel(self) -> None:
+        result = self._match("K-On!!")
+
+        assert result is not None and result.series_id == 31
+
+    def test_title_that_simply_ends_with_marks(self) -> None:
+        """`Haikyuu!!` не должен превратиться во «второй сезон» чего-либо."""
+        result = self._match("Haikyuu!!")
+
+        assert result is not None and result.series_id == 32

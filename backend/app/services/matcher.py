@@ -90,6 +90,25 @@ def season_in_title(title: str) -> int | None:
     return None
 
 
+#: Знаки, повтором которых обозначают продолжение: «K-On!» → «K-On!!»,
+#: «Yuru Yuri» → «Yuru Yuri♪♪». Японская полноширинная форма — та же роль.
+_EMPHASIS_MARKS = "!！♪?？"
+
+
+def emphasis(value: str) -> int:
+    """Сколько «усилительных» знаков в хвосте названия.
+
+    ⚠️ Считаем, а не толкуем. Соблазнительно объявить `!!` вторым сезоном, но
+    `Haikyuu!!` — это **первый** сезон, у которого две восклицательные в самом
+    названии. Слепое правило испортило бы такие тайтлы.
+
+    Смысл появляется только при сравнении: если у папки `K-On!!` два знака, то
+    из кандидатов «K-On!» и «K-On!!» верен второй. После нормализации оба дают
+    «k on», то есть иначе они неразличимы вовсе.
+    """
+    return len(value) - len(value.rstrip(_EMPHASIS_MARKS + " "))
+
+
 def _without(value: str, words: set[str]) -> str:
     """Строка без слов, общих у всей франшизы.
 
@@ -165,6 +184,13 @@ SEQUEL_CONFIDENCE = 94.0
 #: запасом, но не настолько, чтобы подменить собой год, тип и квартал премьеры —
 #: они по-прежнему могут отвергнуть кандидата вовсе.
 SEASON_CLAIM_BONUS = 30.0
+
+#: Вес совпадения хвостовых знаков («K-On!» против «K-On!!»).
+#:
+#: Небольшой намеренно: имя папки на диске часто теряет пунктуацию при
+#: санитизации, и отсутствие знака само по себе ничего не доказывает. Это
+#: доводка при прочих равных, а не признак уровня года или типа.
+EMPHASIS_BONUS = 6.0
 
 #: На сколько лет год фильма может разойтись с каталогом.
 #:
@@ -913,6 +939,20 @@ class Matcher:
                 return None
 
         score = proposal.confidence + (title - TITLE_FLOOR) * TITLE_WEIGHT + season_claim_bonus
+
+        # Хвостовые знаки различают продолжение там, где нормализация всё
+        # сравняла: «K-On!» и «K-On!!» обе дают «k on». Считается только при
+        # высокой похожести — то есть когда строки и так почти одинаковы и
+        # решает именно хвост.
+        if title >= SUGGEST_TITLE_FLOOR:
+            folder_marks = max(
+                (emphasis(raw) for raw in self._match_titles(ctx)), default=0
+            )
+            candidate_marks = max(
+                (emphasis(v) for v in TitleIndex._all_variants(candidate)), default=0
+            )
+            if folder_marks or candidate_marks:
+                score += EMPHASIS_BONUS if folder_marks == candidate_marks else -EMPHASIS_BONUS
         if ctx.is_specials:
             # Похожесть здесь только упорядочивает своих: чем длиннее лишний
             # хвост, тем ниже. Штрафовать за него ещё и в общем зачёте незачем.
@@ -1256,5 +1296,27 @@ class Matcher:
             second_delta = abs((second.number_of_episodes or 0) - ctx.local_episode_count)
             if best_delta < second_delta:
                 return best.id
+
+        # Хвостовые знаки — **последними**, и это исправление собственной
+        # ошибки. Сначала я поставил их первыми, рассудив, что «K-On!» и
+        # «K-On!!» иначе не развести. Прогон показал, что так ломается
+        # `Yuru Yuri♪♪`: у папки `YuruYuri - Happy Go Lily` знаков нет вовсе, и
+        # правило уводило её на первый сезон, перебивая дату премьеры.
+        #
+        # Признак и правда слабый: имя папки на диске часто теряет пунктуацию.
+        # Он годится только там, где всё остальное уже промолчало.
+        if len(candidates) > 1:
+            folder_marks = max(
+                (emphasis(raw) for raw in self._match_titles(ctx)), default=0
+            )
+            if folder_marks:
+                by_marks = [
+                    c
+                    for c in candidates
+                    if max((emphasis(v) for v in TitleIndex._all_variants(c)), default=0)
+                    == folder_marks
+                ]
+                if len(by_marks) == 1:
+                    return by_marks[0].id
 
         return candidates[0].id if len(candidates) == 1 else None
