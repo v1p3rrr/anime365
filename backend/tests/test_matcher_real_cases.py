@@ -235,7 +235,10 @@ class TestSeasonsDoNotCollapse:
                 local_episode_count=12,
             )
         )
-        assert result is None or result.series_id != 1032, "первый сезон 2009 года — не четвёртый"
+        # ⚠️ Положительно: «`None` или не первый сезон» прошло бы и при
+        # матчере, не находящем вообще ничего.
+        assert result is not None, "четвёртый сезон остался без привязки"
+        assert result.series_id != 1032, "первый сезон 2009 года — не четвёртый"
 
 
 class TestNfoAboutAnotherTitle:
@@ -283,7 +286,8 @@ class TestNfoAboutAnotherTitle:
             "A Silent Voice - The Movie",
             "Meitantei Conan Magic File 2: Kudou Shinichi Nazo no Kabe to Kuro Lab Jiken",
         )
-        assert result is None or result.series_id != 2, "Конан не должен победить"
+        assert result is not None, "папка осталась без привязки вовсе"
+        assert result.series_id != 2, "Конан не должен победить"
 
     def test_folder_name_is_used_instead(self) -> None:
         # Полное название, как в настоящем `.nfo`: по нему тайтл находится

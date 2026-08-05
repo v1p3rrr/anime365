@@ -102,10 +102,17 @@ class TestSpecialsAreNotASeason:
         assert ctx.inherits_parent is False, "иначе заберёт у сериала название и ID"
 
     def test_does_not_land_on_the_series(self) -> None:
-        """Самая опасная ошибка: спешлы засчитались бы сериалу как его серии."""
+        """Самая опасная ошибка: спешлы засчитались бы сериалу как его серии.
+
+        ⚠️ Утверждение положительное намеренно. Прежнее «`None` или не сериал»
+        проходило бы при **полностью сломанном** матчере, возвращающем `None`
+        на всё, — то есть не проверяло ничего.
+        """
         _, result = _specials(TORADORA, "Toradora!", _show_nfo(4224, "Toradora!"))
 
-        assert result is None or result.series_id != 4283
+        assert result is not None, "папка спешлов осталась вовсе без привязки"
+        assert result.series_id != 4283
+        assert result.series_id in {9781, 9387, 9563}
 
     def test_lands_on_a_special_entry(self) -> None:
         _, result = _specials(TORADORA, "Toradora!", _show_nfo(4224, "Toradora!"))
@@ -114,11 +121,15 @@ class TestSpecialsAreNotASeason:
         assert result.series_id in {9781, 9387, 9563}
 
     def test_web_series_is_not_mistaken_for_a_special(self) -> None:
-        """`Mini Yuri` — тип `ona`, четыре серии. Это не спешл."""
+        """`Mini Yuri` — тип `ona`, четыре серии. Это не спешл.
+
+        Проверяем, куда попало, а не только куда не попало: иначе тест прошёл
+        бы при пустом результате.
+        """
         _, result = _specials(YURU_YURI, "Yuru Yuri", _show_nfo(10495, "Yuru Yuri"))
 
-        assert result is None or result.series_id != 21401
-        assert result is None or result.series_id != 260
+        assert result is not None
+        assert result.series_id == 9888, "верный спешл франшизы"
 
 
 class TestOrdinarySeasonStillWorks:
@@ -253,9 +264,14 @@ class TestSpecialIsNamedInTheFileName:
 
         result = Matcher(YURU_YURI).match(ctx)
 
-        # Найдётся спешл франшизы, но не `Mini Yuri`: его название не начинается
-        # с «Yuru Yuri», а кандидатов набирает именно префикс.
-        assert result is None or result.series_id != 21401
+        # Привязки нет вовсе, и это верно — проверено усилением утверждения.
+        #
+        # `Mini Yuri` недостижим: его название не начинается с «Yuru Yuri», а
+        # кандидатов набирает префикс. Единственный оставшийся кандидат —
+        # спешл 9888 с **одним** эпизодом, и он отсекается проверкой
+        # правдоподобия: в папке четыре видео. Отказ здесь лучше неверной
+        # привязки, а папка уходит в список нераспознанных.
+        assert result is None
 
 
 class TestRealYuruYuriCase:
