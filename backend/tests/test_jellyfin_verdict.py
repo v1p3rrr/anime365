@@ -73,7 +73,9 @@ def jellyfin_says(monkeypatch):
             if providers is None:
                 return None
             return {
-                "id": "832548dbb758ac47898f7d07105f9116",
+                # Значение выдуманное: настоящий идентификатор с сервера
+                # пользователя в репозитории не нужен, тесту он безразличен.
+                "id": "0123456789abcdef0123456789abcdef",
                 "type": "Series",
                 "path": f"/media/anime/{FOLDER}",
                 "providers": providers,
