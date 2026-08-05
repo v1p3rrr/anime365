@@ -1123,6 +1123,108 @@ def mapping_report() -> dict[str, Any]:
     }
 
 
+@router.get(
+    "/series/{series_id}/episodes/{episode}/files",
+    dependencies=[Depends(require(Permission.CATALOG))],
+)
+def episode_files(series_id: int, episode: float) -> list[dict[str, Any]]:
+    """Что лежит на диске за конкретной серией: путь каждого файла и дорожки.
+
+    Заведено по просьбе: «по значку у серии открывать окно с путём каждого
+    файла и данными ffprobe». Значок в строке серии показывает наличие, но не
+    отвечает на вопросы «а какой именно это файл» и «что у него внутри» — а
+    именно они возникают, когда что-то смапилось не туда.
+
+    Путь собирается из корня, пути папки и имени файла: в базе он хранится
+    разложенным, а человеку нужен целиком, чтобы найти файл руками.
+    """
+    with session_scope() as session:
+        rows = session.execute(
+            select(EpisodeMapping, LibraryFile, LibraryFolder, LibraryRoot)
+            .join(LibraryFile, EpisodeMapping.file_id == LibraryFile.id)
+            .join(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
+            .join(LibraryRoot, LibraryFolder.root_id == LibraryRoot.id)
+            .where(
+                EpisodeMapping.series_id == series_id,
+                EpisodeMapping.episode == episode,
+            )
+            .order_by(EpisodeMapping.role, LibraryFile.filename)
+        ).all()
+
+        return [
+            {
+                "file_id": file.id,
+                "filename": file.filename,
+                "path": str(Path(root.path) / folder.rel_path / file.filename),
+                "folder": folder.rel_path,
+                "role": mapping.role,
+                "kind": file.kind,
+                "lang": file.lang,
+                "size_bytes": file.size_bytes,
+                "mtime": file.mtime,
+                "is_manual": mapping.is_manual,
+                "matched_rule_id": file.matched_rule_id,
+                "release_group": file.release_group,
+                "anime365_translation_id": file.anime365_translation_id,
+                # Дорожки могут быть и из `.nfo` (бесплатно), и от ffprobe.
+                # Потребителю всё равно, откуда, но «смотрели ли уже» важно:
+                # пусто при непустом `probed_at` значит «смотрели, не нашли».
+                "streams": file.streams,
+                "probed_at": file.probed_at.isoformat() if file.probed_at else None,
+            }
+            for mapping, file, folder, root in rows
+        ]
+
+
+@router.post(
+    "/files/{file_id}/probe",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
+async def probe_one_file(file_id: int) -> dict[str, Any]:
+    """Разбирает ffprobe один файл — по кнопке в окне серии.
+
+    Массовый прогон остаётся фоновой джобой: ffprobe читает не файл целиком, а
+    заголовок (замерено 0,37 МБ из 37-мегабайтного файла и 45,9 мс на процесс),
+    но дорог не объём, а характер — `fork/exec` и мелкие чтения вразнобой по
+    диску, с которого одновременно качают и стримят. Один файл по явной просьбе
+    человека этого не стоит: он ждёт осознанно.
+    """
+    from app.core.config import settings
+    from app.services.audio import AudioError, ffmpeg_available, probe_stream_languages
+
+    if not settings.get_bool("enable_ffprobe"):
+        raise ApiError(
+            409,
+            errors.FFPROBE_DISABLED,
+            "Определение дорожек через ffprobe выключено. Включите его в настройках",
+        )
+    if not ffmpeg_available():
+        raise ApiError(503, errors.FFMPEG_MISSING, "В образе нет ffmpeg")
+
+    with session_scope() as session:
+        row = session.execute(
+            select(LibraryFile, LibraryFolder, LibraryRoot)
+            .join(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
+            .join(LibraryRoot, LibraryFolder.root_id == LibraryRoot.id)
+            .where(LibraryFile.id == file_id)
+        ).first()
+        if row is None:
+            raise ApiError(404, errors.FILE_NOT_FOUND, "Файл не найден")
+        file, folder, root = row
+        path = Path(root.path) / folder.rel_path / file.filename
+        mtime = file.mtime
+
+    try:
+        streams = await probe_stream_languages(path)
+    except AudioError as exc:
+        raise ApiError(422, errors.PROBE_FAILED, f"ffprobe не смог прочитать файл: {exc}")
+
+    # Запись — тем же методом, что у фоновой джобы: одна логика на оба пути,
+    # включая отметку «смотрели» при пустом результате.
+    stream_probe._save(file_id, streams, mtime)
+    return {"file_id": file_id, "streams": streams}
+
+
 @router.post(
     "/series/{series_id}/probe-streams",
     dependencies=[Depends(require(Permission.LIBRARY))],

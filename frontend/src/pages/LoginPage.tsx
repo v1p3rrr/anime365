@@ -16,6 +16,7 @@ import { useMutation } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { api } from '../api/client'
+import { Logo } from '../components/Logo'
 import { ThemeToggle } from '../components/ThemeToggle'
 import { LOCALES, useT, type Locale } from '../i18n'
 
@@ -39,6 +40,10 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
 
   return (
     <Stack align="center" justify="center" style={{ height: '100dvh' }} p="md">
+      {/* Логотип и здесь: до входа человек иначе видит безымянную форму пароля
+          и не понимает, к чему именно она — особенно если сервисов на сервере
+          несколько. */}
+      <Logo height={56} />
       <Card withBorder padding="lg" style={{ width: '100%', maxWidth: 360 }}>
         <Stack gap="md">
           {/* Язык и тема доступны до входа: они хранятся в браузере и сервера

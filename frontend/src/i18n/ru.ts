@@ -480,6 +480,7 @@ export const ru = {
     audio: 'Извлечь звуковую дорожку в фонотеку',
     audioMenu: 'Только звук — в корень фонотеки',
     bind: 'Привязать локальный файл к этой серии',
+    files: 'Файлы серии',
     haveLocal: '{label}: есть локально',
     missing: '{label}: нет',
     localHave: 'Локально:',
@@ -749,6 +750,23 @@ export const ru = {
     kindMovies: 'фильмы',
     kindSeries: 'сериалы',
     pickTitle: 'Выбрать папку для тайтла',
+  },
+
+  episodeFiles: {
+    title: 'Файлы серии {episode}',
+    empty: 'За этой серией не закреплено ни одного файла.',
+    failed: 'Не удалось получить файлы серии',
+    manual: 'привязано вручную',
+    rule: 'правило {id}',
+    group: 'группа {name}',
+    translation: 'перевод t{id}',
+    audio: 'звук {lang}',
+    subtitle: 'сабы {lang}',
+    noTracks: 'Дорожки неизвестны.',
+    probedNothing: 'Проверяли — дорожек не нашлось.',
+    probe: 'Разобрать ffprobe',
+    probed: 'Дорожки определены',
+    probeFailed: 'Не удалось разобрать файл',
   },
 
   bindEpisode: {

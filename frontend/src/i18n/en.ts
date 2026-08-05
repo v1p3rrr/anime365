@@ -481,6 +481,7 @@ export const en: Dictionary = {
     audio: 'Extract the audio track to the audio library',
     audioMenu: 'Audio only — to the audio root',
     bind: 'Link a local file to this episode',
+    files: 'Episode files',
     haveLocal: '{label}: available locally',
     missing: '{label}: missing',
     localHave: 'Local:',
@@ -750,6 +751,23 @@ export const en: Dictionary = {
     kindMovies: 'movies',
     kindSeries: 'series',
     pickTitle: 'Pick a folder for the title',
+  },
+
+  episodeFiles: {
+    title: 'Files of episode {episode}',
+    empty: 'No file is linked to this episode.',
+    failed: 'Could not fetch the episode files',
+    manual: 'linked manually',
+    rule: 'rule {id}',
+    group: 'group {name}',
+    translation: 'translation t{id}',
+    audio: 'audio {lang}',
+    subtitle: 'subs {lang}',
+    noTracks: 'Tracks unknown.',
+    probedNothing: 'Checked — no tracks found.',
+    probe: 'Run ffprobe',
+    probed: 'Tracks detected',
+    probeFailed: 'Could not probe the file',
   },
 
   bindEpisode: {

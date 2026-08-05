@@ -4,7 +4,9 @@ import {
   Badge,
   Drawer,
   Group,
+  Loader,
   Select,
+  Stack,
   Text,
   Tooltip,
   UnstyledButton,
@@ -64,6 +66,23 @@ export function App() {
   const [mobileOpened, { toggle: toggleMobile, close: closeMobile }] = useDisclosure(false)
 
   const width = collapsed ? NARROW : WIDE
+
+  // Три состояния, а не два. Пока статус входа не пришёл, не показываем ни
+  // приложение, ни форму: приложение мигало бы у тех, кто не вошёл, а форма —
+  // у тех, у кого пароля нет вовсе.
+  //
+  // Мигание приложения не выдавало данных (сервер отказывает каждому запросу),
+  // но выдавало устройство интерфейса и порождало пачку заведомо обречённых
+  // запросов. Показывать неизвестному то, что ему не предназначено, не стоит
+  // даже пустым.
+  if (auth.isLoading) {
+    return (
+      <Stack align="center" justify="center" style={{ height: '100dvh' }}>
+        <Logo height={44} />
+        <Loader size="sm" />
+      </Stack>
+    )
+  }
 
   // Пока пароль не введён, приложения нет вовсе: иначе каждая страница успела бы
   // отправить свои запросы и собрать по 401 в уведомлениях.

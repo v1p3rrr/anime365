@@ -5,6 +5,7 @@ import {
   IconDownload,
   IconExternalLink,
   IconFolderSymlink,
+  IconFileSearch,
   IconLink,
   IconDeviceDesktop,
   IconPlayerPlay,
@@ -21,6 +22,7 @@ import { Flag } from './Flag'
 import { isTypeVisible, type TranslationType } from '../stores/preferences'
 import classes from './EpisodeRow.module.css'
 import { BindEpisodeModal } from './BindEpisodeModal'
+import { EpisodeFilesModal } from './EpisodeFilesModal'
 import { EpisodeDownloadPanel } from './EpisodeDownloadPanel'
 import { LocalPlayerModal } from './LocalPlayerModal'
 import { PlayerModal } from './PlayerModal'
@@ -66,6 +68,10 @@ export function EpisodeRow({
   const canWatch = can('watch')
   const canBind = can('library')
   const [binding, setBinding] = useState(false)
+  const [showingFiles, setShowingFiles] = useState(false)
+  // Окно с файлами имеет смысл только когда файлы есть: `have` и заполняет
+  // значки наличия в этой же строке.
+  const hasLocalFiles = episode.have.length > 0
   const [playing, setPlaying] = useState(false)
   const [playingLocal, setPlayingLocal] = useState(false)
   const [expanded, setExpanded] = useState(false)
@@ -287,6 +293,25 @@ export function EpisodeRow({
               </Tooltip>
             )}
 
+            {/* Что именно лежит за этой серией: путь каждого файла и его
+                дорожки. Значки наличия отвечают «есть», но не отвечают
+                «что именно» — а спрашивают об этом ровно тогда, когда
+                смапилось не туда. Показываем только когда файлы есть. */}
+            {episode.episode_num != null && hasLocalFiles && (
+              <Tooltip label={t('episode.files')}>
+                <Button
+                  size="compact-xs"
+                  variant="subtle"
+                  color="gray"
+                  px={6}
+                  onClick={() => setShowingFiles(true)}
+                  aria-label={t('episode.files')}
+                >
+                  <IconFileSearch size={12} />
+                </Button>
+              </Tooltip>
+            )}
+
             {/* Разбор имени ошибается на сдвинутой нумерации и на файлах без
                 номера — тогда серию привязывают к файлу руками. */}
             {canBind && episode.episode_num != null && (
@@ -304,6 +329,16 @@ export function EpisodeRow({
               </Tooltip>
             )}
           </Group>
+
+          {episode.episode_num != null && (
+            <EpisodeFilesModal
+              opened={showingFiles}
+              onClose={() => setShowingFiles(false)}
+              seriesId={seriesId}
+              episode={episode.episode_num}
+              episodeLabel={episode.episode_full || episode.episode_int}
+            />
+          )}
 
           <LocalPlayerModal
             opened={playingLocal}

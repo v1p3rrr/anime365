@@ -61,6 +61,7 @@ JELLYFIN_UNAVAILABLE = "jellyfin_unavailable"
 BIND_KIND_UNSUPPORTED = "bind_kind_unsupported"
 FFPROBE_DISABLED = "ffprobe_disabled"
 FFMPEG_MISSING = "ffmpeg_missing"
+PROBE_FAILED = "probe_failed"
 
 # --- Права доступа -----------------------------------------------------------
 PERMISSION_DENIED = "permission_denied"

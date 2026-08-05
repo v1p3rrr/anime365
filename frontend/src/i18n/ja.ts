@@ -480,6 +480,7 @@ export const ja: Dictionary = {
     audio: '音声トラックを抽出してオーディオライブラリへ',
     audioMenu: '音声のみ — オーディオのルートへ',
     bind: 'ローカルファイルをこの話に紐付ける',
+    files: '話のファイル',
     haveLocal: '{label}：ローカルにあり',
     missing: '{label}：なし',
     localHave: 'ローカル：',
@@ -749,6 +750,23 @@ export const ja: Dictionary = {
     kindMovies: '映画',
     kindSeries: 'シリーズ',
     pickTitle: '作品のフォルダーを選ぶ',
+  },
+
+  episodeFiles: {
+    title: '第 {episode} 話のファイル',
+    empty: 'この話に紐付いたファイルはありません。',
+    failed: 'ファイル一覧を取得できませんでした',
+    manual: '手動で紐付け',
+    rule: 'ルール {id}',
+    group: 'グループ {name}',
+    translation: '翻訳 t{id}',
+    audio: '音声 {lang}',
+    subtitle: '字幕 {lang}',
+    noTracks: 'トラック情報がありません。',
+    probedNothing: '確認済み — トラックは見つかりませんでした。',
+    probe: 'ffprobe で解析',
+    probed: 'トラックを検出しました',
+    probeFailed: 'ファイルを解析できませんでした',
   },
 
   bindEpisode: {
