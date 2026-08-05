@@ -847,12 +847,31 @@ class Matcher:
         ids = self.index.by_japanese.get(normalize_title(nfo.original_title)) or []
         if len(ids) == 1:
             return [MatchResult(ids[0], MatchSource.ORIGINAL_TITLE, 97.0, nfo.original_title)]
-        if ids:
-            narrowed = self._disambiguate(ctx, ids)
-            if narrowed is not None:
-                return [
-                    MatchResult(narrowed, MatchSource.ORIGINAL_TITLE, 92.0, nfo.original_title)
-                ]
+        if not ids:
+            return []
+
+        # ⚠️ Одно японское название на несколько записей — это почти всегда
+        # оригинал и его ремейк. 鋼の錬金術師 носят и сериал 2003 года, и
+        # «Brotherhood» 2009-го, и различить их этой строкой **невозможно**.
+        #
+        # Зато их различает `anilistid`, и он в том же `.nfo`. Так папка
+        # `Fullmetal Alchemist - Brotherhood/Season 1` с 64 файлами уехала на
+        # сериал 2003 года: японское название угадывалось с уверенностью 92 и
+        # перебивало точный идентификатор.
+        #
+        # Поэтому при неоднозначности мы не гадаем: есть идентификатор — он и
+        # решает, нет совпадения с ним — не предлагаем ничего.
+        from_id = self.index.by_anilist.get(nfo.anilist_id) if nfo.anilist_id else None
+        if from_id is not None:
+            return (
+                [MatchResult(from_id, MatchSource.ORIGINAL_TITLE, 92.0, nfo.original_title)]
+                if from_id in ids
+                else []
+            )
+
+        narrowed = self._disambiguate(ctx, ids)
+        if narrowed is not None:
+            return [MatchResult(narrowed, MatchSource.ORIGINAL_TITLE, 92.0, nfo.original_title)]
         return []
 
     def _verify(

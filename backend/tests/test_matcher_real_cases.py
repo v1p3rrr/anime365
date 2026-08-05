@@ -330,3 +330,92 @@ class TestNfoAboutAnotherTitle:
         )
         assert result is not None
         assert result.series_id == 10
+
+
+class TestRemakeSharesTheJapaneseTitle:
+    """`Fullmetal Alchemist - Brotherhood/Season 1`: 64 файла уехали на 2003 год.
+
+    Снято с сервера: папка тайтла привязалась к «Hagane no Renkinjutsushi (2009)»
+    по `anilistid` со стопроцентной уверенностью, а её сезонная подпапка **со
+    всеми файлами** — к сериалу 2003 года по японскому названию с уверенностью
+    91. На странице Brotherhood при этом не показывалось ни одной скачанной
+    серии.
+
+    Причина: 鋼の錬金術師 носят обе записи, и строка их не различает в принципе.
+    Различает идентификатор, и он лежит в том же `.nfo`.
+    """
+
+    INDEX = TitleIndex(
+        [
+            series(
+                4389,
+                "Fullmetal Alchemist",
+                year=2003,
+                episodes=51,
+                anilist=121,
+                extra=["鋼の錬金術師"],
+            ),
+            series(
+                2400,
+                "Hagane no Renkinjutsushi (2009)",
+                year=2009,
+                episodes=64,
+                anilist=5114,
+                extra=["鋼の錬金術師"],
+            ),
+        ]
+    )
+
+    @staticmethod
+    def _index_with_japanese() -> TitleIndex:
+        """`titles.ja` заполняется отдельно — по нему и строится индекс."""
+        items = []
+        for item in TestRemakeSharesTheJapaneseTitle.INDEX.by_id.values():
+            item.titles = {**item.titles, "ja": "鋼の錬金術師"}
+            items.append(item)
+        return TitleIndex(items)
+
+    def _season_folder(self) -> MatchContext:
+        show = nfo(title="Fullmetal Alchemist: Brotherhood", anilist_id=5114)
+        show.original_title = "鋼の錬金術師"
+        return MatchContext(
+            folder_name="Fullmetal Alchemist - Brotherhood",
+            scope="series",
+            nfo=show,
+            season_nfo=nfo("season", season=1),
+            own_name="Season 1",
+            is_child=True,
+            video_count=64,
+            local_episode_count=64,
+        )
+
+    def test_season_folder_follows_the_id_not_the_japanese_title(self) -> None:
+        result = Matcher(self._index_with_japanese()).match(self._season_folder())
+
+        assert result is not None
+        assert result.series_id == 2400, "64 файла уехали на сериал 2003 года"
+
+    def test_japanese_title_alone_still_works(self) -> None:
+        """Страховка: без неоднозначности каскад работает как прежде."""
+        index = TitleIndex(
+            [
+                series(2400, "Hagane no Renkinjutsushi (2009)", year=2009, episodes=64),
+            ]
+        )
+        for item in index.by_id.values():
+            item.titles = {**item.titles, "ja": "鋼の錬金術師"}
+        index = TitleIndex(list(index.by_id.values()))
+
+        show = nfo(title="Fullmetal Alchemist: Brotherhood")
+        show.original_title = "鋼の錬金術師"
+        ctx = MatchContext(
+            folder_name="Fullmetal Alchemist - Brotherhood",
+            scope="series",
+            nfo=show,
+            own_name="Fullmetal Alchemist - Brotherhood",
+            is_child=False,
+            video_count=64,
+        )
+
+        result = Matcher(index).match(ctx)
+        assert result is not None and result.series_id == 2400

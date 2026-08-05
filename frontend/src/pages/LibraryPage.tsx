@@ -41,6 +41,7 @@ import { AudioLibraryTab } from '../components/AudioLibraryTab'
 import { JellyfinAudit } from '../components/JellyfinAudit'
 import { ErrorState } from '../components/ErrorState'
 import { MapFolderModal } from '../components/MapFolderModal'
+import countClasses from '../components/CountBadge.module.css'
 import { MappingReport } from '../components/MappingReport'
 import { PosterThumb } from '../components/PosterThumb'
 import { usePermissions } from '../hooks/usePermissions'
@@ -239,7 +240,7 @@ export function LibraryPage() {
                 {root.kind === 'series' ? t('library.rootSeries') : t('library.rootMovies')}
               </Text>
               {!root.writable && root.available && (
-                <Badge size="xs" color="yellow">
+                <Badge size="xs" color="yellow" className={countClasses.count}>
                   {t('library.rootReadOnly')}
                 </Badge>
               )}
@@ -280,7 +281,7 @@ export function LibraryPage() {
             leftSection={<IconFolderOff size={14} />}
             rightSection={
               unmapped.data?.length ? (
-                <Badge size="xs" color="orange">
+                <Badge size="xs" color="orange" className={countClasses.count}>
                   {unmapped.data.length}
                 </Badge>
               ) : null
@@ -292,7 +293,7 @@ export function LibraryPage() {
             value="mappings"
             rightSection={
               data?.needs_confirmation ? (
-                <Badge size="xs" color="yellow">
+                <Badge size="xs" color="yellow" className={countClasses.count}>
                   {data.needs_confirmation}
                 </Badge>
               ) : null
@@ -305,7 +306,7 @@ export function LibraryPage() {
             leftSection={<IconQuestionMark size={14} />}
             rightSection={
               unmatchedFiles.data?.length ? (
-                <Badge size="xs" color="gray">
+                <Badge size="xs" color="gray" className={countClasses.count}>
                   {unmatchedFiles.data.length}
                 </Badge>
               ) : null

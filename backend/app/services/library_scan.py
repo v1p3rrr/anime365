@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -41,7 +42,7 @@ log = logging.getLogger(__name__)
 #: бы это через сутки, но узнать причину по симптому невозможно.
 #:
 #: При несовпадении версии корень сканируется целиком, будто впервые.
-PARSER_REVISION = 2
+PARSER_REVISION = 3
 
 # Папки, которые не являются тайтлами: служебное и временное.
 SKIP_DIR_NAMES = frozenset({"tmp", ".tmp", "@eaDir", ".@__thumb", "lost+found", ".git"})
@@ -232,6 +233,53 @@ def detect_subtitle_language(path: Path) -> str | None:
     return None
 
 
+#: Файлы, которые Jellyfin создаёт сам: обложки, баннеры, миниатюры, `.nfo`.
+#:
+#: Их вес не является весом библиотеки, а на глаз заметен: у папки без единой
+#: серии набегало по несколько мегабайт, и «занято 5 МБ» читалось как «что-то
+#: скачано». Пустая папка должна показывать ноль, а ноль мы не показываем вовсе.
+#:
+#: Набор **фиксированный**, а не «все картинки»: свои файлы у пользователя тоже
+#: бывают, и выкидывать их из подсчёта молча нельзя.
+ARTWORK_NAMES = frozenset(
+    {
+        "poster",
+        "folder",
+        "cover",
+        "fanart",
+        "backdrop",
+        "banner",
+        "landscape",
+        "logo",
+        "clearart",
+        "clearlogo",
+        "disc",
+        "thumb",
+        "season-specials-poster",
+        "season-all-poster",
+    }
+)
+
+#: Те же артефакты, но с номером или суффиксом: `season01-poster.jpg`,
+#: `backdrop1.jpg`, `Episode S01E01 …-thumb.jpg`.
+_ARTWORK_PATTERNS = (
+    re.compile(r"(?i)^season\d+-poster$"),
+    re.compile(r"(?i)^(backdrop|fanart|logo|banner|landscape)\d+$"),
+    re.compile(r"(?i)-thumb$"),
+)
+
+
+def is_artwork(filename: str) -> bool:
+    """Файл создан медиасервером, а не принесён пользователем."""
+    path = Path(filename)
+    if path.suffix.lower() == ".nfo":
+        return True
+    stem = path.stem
+    if stem.lower() in ARTWORK_NAMES:
+        return True
+    return any(pattern.search(stem) for pattern in _ARTWORK_PATTERNS)
+
+
 def _classify(suffix: str, rules: RuleSet) -> str | None:
     suffix = suffix.lower()
     if suffix in rules.video_ext:
@@ -370,7 +418,10 @@ def scan_folder(
                 elif parsed.kind == "episode":
                     episode_nfo[entry.stem] = parsed
 
-        size += stat.st_size
+        # Обложки и `.nfo` в вес не идут: это файлы медиасервера, а не
+        # библиотеки. Сами записи о них остаются — они нужны разбору.
+        if not is_artwork(entry.name):
+            size += stat.st_size
         parsed_name = parse_filename(entry.name, scope, rules)
 
         # Суффикса языка в имени нет — смотрим, какой письменностью написан

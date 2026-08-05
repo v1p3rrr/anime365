@@ -94,3 +94,51 @@ class TestParserRevision:
 
     def test_unknown_root_is_a_full_pass(self, tmp_path: Path) -> None:
         assert _known_states(str(tmp_path / "никогда-не-сканировали")) is None
+
+
+class TestArtworkIsNotWeight:
+    """Обложки и `.nfo` — файлы медиасервера, а не библиотеки.
+
+    У папки без единой серии набегало по несколько мегабайт постеров и
+    баннеров, и «занято 5 МБ» читалось как «что-то скачано».
+    """
+
+    def test_folder_with_only_artwork_weighs_nothing(self, tmp_path: Path) -> None:
+        from app.services.library_scan import scan_root
+
+        root = tmp_path / "artwork-only"
+        folder = root / "Show"
+        folder.mkdir(parents=True)
+        for name in ("poster.jpg", "folder.jpg", "banner.jpg", "logo.png", "tvshow.nfo"):
+            (folder / name).write_bytes(b"x" * 500_000)
+
+        result = scan_root(str(root), "series")
+
+        assert result.folders[0].size_bytes == 0
+
+    def test_real_files_still_count(self, tmp_path: Path) -> None:
+        from app.services.library_scan import scan_root
+
+        root = tmp_path / "with-video"
+        folder = root / "Show"
+        folder.mkdir(parents=True)
+        (folder / "poster.jpg").write_bytes(b"x" * 500_000)
+        (folder / "Show S01E01 [G] WEBDL-1080p.mkv").write_bytes(b"x" * 1_000)
+        (folder / "Show S01E01 [G] WEBDL-1080p.ru.ass").write_bytes(b"x" * 100)
+
+        result = scan_root(str(root), "series")
+
+        assert result.folders[0].size_bytes == 1_100
+
+    def test_users_own_pictures_are_not_touched(self, tmp_path: Path) -> None:
+        """Набор фиксированный: выкидывать все картинки подряд нельзя."""
+        from app.services.library_scan import scan_root
+
+        root = tmp_path / "own-picture"
+        folder = root / "Show"
+        folder.mkdir(parents=True)
+        (folder / "моя картинка.jpg").write_bytes(b"x" * 700)
+
+        result = scan_root(str(root), "series")
+
+        assert result.folders[0].size_bytes == 700
