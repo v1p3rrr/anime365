@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import (
+    autodownload as autodownload_api,
     auth,
     catalog,
     downloads,
@@ -106,6 +107,7 @@ app.include_router(settings_api.router, prefix="/api")
 app.include_router(stream.router, prefix="/api")
 app.include_router(maintenance.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
+app.include_router(autodownload_api.router, prefix="/api")
 
 
 class ImmutableAssets(StaticFiles):
