@@ -559,8 +559,10 @@ def _file_role(file: LibraryFile) -> str | None:
     return None
 
 
-def _own_downloads(session: Session, files: list[LibraryFile]) -> dict[int, tuple[int, float]]:
-    """Файлы, назвавшие себя сами: `(series_id, номер серии)` по `t{id}` в имени.
+def _own_downloads(
+    session: Session, files: list[LibraryFile]
+) -> dict[int, tuple[int, float, str]]:
+    """Файлы, назвавшие себя сами: `(series_id, номер серии, язык)` по `t{id}`.
 
     Файл `[Anime365] BanG Dream Movie Poppin Dream - 01 (t4000194).mkv` несёт
     идентификатор перевода, а перевод в каталоге привязан к тайтлу и эпизоду.
@@ -576,16 +578,21 @@ def _own_downloads(session: Session, files: list[LibraryFile]) -> dict[int, tupl
         return {}
 
     rows = session.execute(
-        select(Translation.id, Translation.series_id, Episode.episode_num)
+        select(
+            Translation.id,
+            Translation.series_id,
+            Episode.episode_num,
+            Translation.type_lang,
+        )
         .join(Episode, Translation.episode_id == Episode.id, isouter=True)
         .where(Translation.id.in_(list(wanted)))
     ).all()
 
-    out: dict[int, tuple[int, float]] = {}
-    for translation_id, series_id, episode_num in rows:
+    out: dict[int, tuple[int, float, str]] = {}
+    for translation_id, series_id, episode_num, type_lang in rows:
         if series_id is None or episode_num is None:
             continue
-        out[wanted[translation_id]] = (series_id, float(episode_num))
+        out[wanted[translation_id]] = (series_id, float(episode_num), type_lang or "")
     return out
 
 
@@ -714,6 +721,15 @@ def _map_episodes(root_id: int) -> int:
 
                 exact = own.get(file.id)
                 if exact is not None:
+                    # Язык субтитров берётся у перевода, а не из имени файла.
+                    # Точно и без догадок: `t{id}` ведёт к переводу, а у него
+                    # есть `type_lang`. Так подписываются наши же файлы,
+                    # скачанные до того, как языковой суффикс появился в
+                    # правилах именования, — они лежали как `sub_unknown`.
+                    if file.kind == "subtitle" and exact[2] in SUB_ROLE:
+                        if file.lang != exact[2]:
+                            file.lang = exact[2]
+                        role = SUB_ROLE[exact[2]]
                     targets = [(exact[0], exact[1])]
                 elif file.episode is not None:
                     targets = [

@@ -149,6 +149,72 @@ def check_writable(path: Path) -> bool:
     return True
 
 
+#: Сколько символов субтитров читаем, чтобы определить язык.
+#:
+#: У `.ass` первые пару тысяч символов — служебная шапка на латинице
+#: (`[Script Info]`, `Style:`), поэтому берём заметно больше: нужен сам текст
+#: реплик. Файл субтитров редко больше пары сотен килобайт, чтение дешёвое.
+LANG_PROBE_CHARS = 20_000
+
+#: Доля букв, начиная с которой письменность считается основной.
+#:
+#: Кириллица — 5%: у русского `.ass` половина файла всё равно латиница (шапка,
+#: имена стилей, теги), но кириллицы там заведомо больше пяти процентов.
+#: Кана — 2%: японский текст без каны не встречается, а два процента отделяют
+#: настоящие реплики от случайного знака в названии шрифта.
+CYRILLIC_SHARE = 0.05
+KANA_SHARE = 0.02
+
+#: Сколько букв нужно, чтобы вывод вообще имел смысл.
+MIN_LETTERS = 50
+
+#: Сколько латинских букв нужно, чтобы назвать файл английским.
+#:
+#: Порог намеренно выше общего. Кириллица и кана — **положительная** улика: они
+#: не встречаются в служебной шапке, и раз они есть, вопрос закрыт. «Только
+#: латиница» — улика от обратного, то есть слабая: шапка `.ass` сама по себе
+#: латинская, и файл вообще без реплик объявлялся бы английским. Настоящие
+#: субтитры набирают эти сотни букв первыми же строками диалога.
+MIN_LATIN_FOR_ENGLISH = 400
+
+
+def detect_subtitle_language(path: Path) -> str | None:
+    """Язык субтитров по письменности, когда суффикса в имени нет.
+
+    Не эвристика «на глаз»: русский, японский и английский пишутся **разными
+    алфавитами**, и спутать их нельзя. Кана однозначно указывает на японский,
+    кириллица — на русский, чистая латиница — на английский.
+
+    Возвращает None, когда уверенности нет: пусть лучше язык останется
+    неизвестным, чем субтитры уедут не в ту роль.
+    """
+    try:
+        head = path.read_text(encoding="utf-8", errors="replace")[:LANG_PROBE_CHARS]
+    except OSError:
+        return None
+
+    cyrillic = kana = latin = 0
+    for ch in head:
+        code = ord(ch)
+        if 0x0400 <= code <= 0x04FF:
+            cyrillic += 1
+        elif 0x3040 <= code <= 0x30FF:
+            kana += 1
+        elif ch.isascii() and ch.isalpha():
+            latin += 1
+
+    letters = cyrillic + kana + latin
+    if letters < MIN_LETTERS:
+        return None
+    if kana / letters >= KANA_SHARE:
+        return "ja"
+    if cyrillic / letters >= CYRILLIC_SHARE:
+        return "ru"
+    if latin == letters and latin >= MIN_LATIN_FOR_ENGLISH:
+        return "en"
+    return None
+
+
 def _classify(suffix: str, rules: RuleSet) -> str | None:
     suffix = suffix.lower()
     if suffix in rules.video_ext:
@@ -287,13 +353,20 @@ def scan_folder(
 
         size += stat.st_size
         parsed_name = parse_filename(entry.name, scope, rules)
+
+        # Суффикса языка в имени нет — смотрим, какой письменностью написан
+        # сам файл. Так подхватываются чужие сабы и наши старые, скачанные до
+        # того, как языковой суффикс появился в правилах именования.
+        language = parsed_name.language
+        if language is None and kind == "subtitle":
+            language = detect_subtitle_language(entry)
         files.append(
             ScannedFile(
                 filename=entry.name,
                 kind=kind,
                 size_bytes=stat.st_size,
                 mtime=stat.st_mtime,
-                lang=parsed_name.language,
+                lang=language,
                 season_number=parsed_name.season,
                 episode=parsed_name.episode,
                 episode_end=parsed_name.episode_end,
