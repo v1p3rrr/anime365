@@ -158,7 +158,11 @@ export function App() {
                 <ActionIcon
                   variant="subtle"
                   aria-label={t('nav.logout')}
-                  onClick={() => auth.logout().then(auth.refresh)}
+                  // Только выход. `refresh()` здесь стоял зря и вредил: он
+                  // снимает признак «вышли», и до ответа сервера приложение
+                  // снова считалось живым — страницы успевали отправить свои
+                  // запросы и собрать по 401 вместо формы входа.
+                  onClick={() => auth.logout()}
                 >
                   <IconLogout size={18} />
                 </ActionIcon>
