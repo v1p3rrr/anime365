@@ -632,3 +632,167 @@ class TestAmbiguityAndCollisions:
         assert _mapping(root_id)["Kagerou Days"] == SHOW
         # Обе первые серии засчитаны одному тайтлу — вот она, граница.
         assert _episodes(SHOW) == {1.0}
+
+
+class TestRemainingCombinations:
+    """Клетки, которых в живой библиотеке не встречалось, но они выводятся."""
+
+    def test_third_season(self, tmp_path: Path) -> None:
+        """Клетка: сезон 3 — проверялся только второй."""
+        _seed_catalog()
+        with session_scope() as session:
+            third = session.get(Series, 900108)
+            if third is None:
+                third = Series(id=900108)
+                session.add(third)
+            third.title = "Kagerou Days 3rd Season"
+            third.titles = {"romaji": "Kagerou Days 3rd Season"}
+            third.all_titles = ["Kagerou Days 3rd Season"]
+            third.type = "tv"
+            third.year = 2023
+            third.season = "Зима 2023"
+            third.number_of_episodes = 13
+
+        root = tmp_path / "r1"
+        title = root / "Kagerou Days"
+        _write(title, "tvshow.nfo", TVSHOW_NFO)
+        season = title / "Season 3"
+        _write(season, "season.nfo", _season_nfo(3, "2023-01-10"))
+        _write(season, "Kagerou Days S03E01 [Group] WEBDL-1080p.mkv")
+
+        root_id = _persist_root(scan_root(str(root), "series"))
+        _map_folders(root_id, build_index(), "series")
+
+        assert _mapping(root_id)["Kagerou Days/Season 3"] == 900108
+
+    def test_specials_next_to_several_seasons(self, tmp_path: Path) -> None:
+        """Клетка: `Specials` соседствует с двумя сезонами."""
+        root = tmp_path / "r2"
+        title = root / "Kagerou Days"
+        _write(title, "tvshow.nfo", TVSHOW_NFO)
+        first = title / "Season 1"
+        _write(first, "season.nfo", _season_nfo(1, "2019-01-10"))
+        _write(first, "Kagerou Days S01E01 [Group] WEBDL-1080p.mkv")
+        second = title / "Season 2"
+        _write(second, "season.nfo", _season_nfo(2, "2021-01-10"))
+        _write(second, "Kagerou Days S02E01 [Group] WEBDL-1080p.mkv")
+        specials = title / "Specials"
+        _write(specials, "Kagerou Days S00E01 - Natsu no Omoide [Group] Bluray-1080p.mkv")
+
+        root_id = _run(root, "series")
+        mapping = _mapping(root_id)
+
+        assert mapping["Kagerou Days/Season 1"] == SHOW
+        assert mapping["Kagerou Days/Season 2"] == SHOW_S2
+        assert mapping["Kagerou Days/Specials"] == SPECIAL
+
+    def test_more_local_episodes_than_the_catalog_knows(self, tmp_path: Path) -> None:
+        """Клетка: локальных серий больше, чем `numberOfEpisodes`.
+
+        Требование из ТЗ: показываем локальное число, а не обрезаем по каталогу.
+        """
+        root = tmp_path / "r3"
+        folder = root / "Kagerou Days"
+        _write(folder, "tvshow.nfo", TVSHOW_NFO)
+        for i in range(1, 16):  # каталог знает про 13
+            _write(folder, f"Kagerou Days S01E{i:02d} [Group] WEBDL-1080p.mkv")
+
+        root_id = _run(root, "series")
+
+        assert _mapping(root_id)["Kagerou Days"] == SHOW
+        assert len(_episodes(SHOW)) == 15, "лишние серии потерялись"
+
+    def test_two_videos_for_one_episode(self, tmp_path: Path) -> None:
+        """Клетка: на одну серию два видео — озвучка и оригинал."""
+        root = tmp_path / "r4"
+        folder = root / "Kagerou Days"
+        _write(folder, "tvshow.nfo", TVSHOW_NFO)
+        _write(folder, "Kagerou Days S01E01 [Group] WEBDL-1080p.mkv")
+        _write(folder, "Kagerou Days S01E01 [Other] Bluray-1080p.ru.mkv")
+
+        root_id = _run(root, "series")
+
+        assert _episodes(SHOW) == {1.0}
+        with session_scope() as session:
+            count = len(
+                session.execute(
+                    select(EpisodeMapping.id).where(
+                        EpisodeMapping.series_id == SHOW, EpisodeMapping.role == "video"
+                    )
+                ).all()
+            )
+        assert count == 2, "второй файл потерялся, хотя это другая версия той же серии"
+
+    def test_title_without_anilist_id(self, tmp_path: Path) -> None:
+        """Клетка: у тайтла нет `anilist_id` — таких в каталоге десять тысяч.
+
+        Работать должен один строковый путь, без единого идентификатора.
+        """
+        _seed_catalog()
+        with session_scope() as session:
+            session.get(Series, SHOW).anilist_id = None
+
+        root = tmp_path / "r5"
+        folder = root / "Kagerou Days"
+        _write(folder, "Kagerou Days S01E01 [Group] WEBDL-1080p.mkv")
+
+        root_id = _persist_root(scan_root(str(root), "series"))
+        _map_folders(root_id, build_index(), "series")
+
+        assert _mapping(root_id)["Kagerou Days"] == SHOW
+
+    def test_manual_mapping_survives_a_rescan(self, tmp_path: Path) -> None:
+        """Клетка: ручная привязка не перетирается сканом."""
+        root = tmp_path / "r6"
+        folder = root / "Kagerou Days"
+        _write(folder, "tvshow.nfo", TVSHOW_NFO)
+        _write(folder, "Kagerou Days S01E01 [Group] WEBDL-1080p.mkv")
+
+        root_id = _run(root, "series")
+        with session_scope() as session:
+            folder_id = session.execute(
+                select(LibraryFolder.id).where(
+                    LibraryFolder.root_id == root_id, LibraryFolder.rel_path == "Kagerou Days"
+                )
+            ).scalar_one()
+            session.execute(delete(TitleMapping).where(TitleMapping.folder_id == folder_id))
+            session.add(
+                TitleMapping(
+                    series_id=SHOW_S2,
+                    folder_id=folder_id,
+                    source="manual",
+                    confidence=100.0,
+                    is_manual=True,
+                )
+            )
+
+        _persist_root(scan_root(str(root), "series"))
+        _map_folders(root_id, build_index(), "series")
+
+        assert _mapping(root_id)["Kagerou Days"] == SHOW_S2, "скан перетёр решение человека"
+
+    def test_where_the_nesting_limit_actually_is(self, tmp_path: Path) -> None:
+        """Клетка: докуда доходит обход вложенных папок.
+
+        Я предполагал, что предел — два уровня, и ошибся: релизная подпапка
+        внутри сезона (третий уровень) обходится. Не обходится четвёртый.
+        Тест фиксирует настоящую границу, потому что она наблюдаемая:
+        файлы глубже просто не попадают в базу.
+        """
+        root = tmp_path / "r7"
+        third = root / "Kagerou Days" / "Season 1" / "[Group] Extras"
+        _write(third, "Kagerou Days S01E09 [Group] WEBDL-1080p.mkv")
+        fourth = third / "Bonus"
+        _write(fourth, "Kagerou Days S01E10 [Group] WEBDL-1080p.mkv")
+
+        root_id = _persist_root(scan_root(str(root), "series"))
+        with session_scope() as session:
+            paths = {
+                rel
+                for (rel,) in session.execute(
+                    select(LibraryFolder.rel_path).where(LibraryFolder.root_id == root_id)
+                ).all()
+            }
+
+        assert "Kagerou Days/Season 1/[Group] Extras" in paths, "третий уровень обходится"
+        assert "Kagerou Days/Season 1/[Group] Extras/Bonus" not in paths, "четвёртый — нет"
