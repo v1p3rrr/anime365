@@ -11,6 +11,7 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core'
+import { useDebouncedValue } from '@mantine/hooks'
 import { notifications } from '@mantine/notifications'
 import { IconFolderOff, IconFolderSymlink } from '@tabler/icons-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -72,10 +73,18 @@ export function EpisodeTargetsModal({
     enabled: opened,
   })
 
+  // Поиск папки по всей библиотеке. Окрестности тайтла хватает не всегда:
+  // у тайтла может не быть ни одной привязанной папки (и тогда собирать
+  // окрестность не из чего), а нужная папка может лежать в стороне — вторая
+  // часть «Girls Band Cry» это отдельная папка в корне фильмов.
+  const [folderSearch, setFolderSearch] = useState('')
+  const [folderNeedle] = useDebouncedValue(folderSearch.trim(), 250)
+
   const folders = useQuery({
-    queryKey: ['episode-target-folders', seriesId],
-    queryFn: () => episodeTargetApi.folders(seriesId),
+    queryKey: ['episode-target-folders', seriesId, folderNeedle],
+    queryFn: () => episodeTargetApi.folders(seriesId, folderNeedle),
     enabled: opened,
+    placeholderData: (previous) => previous,
   })
 
   const refresh = () => {
@@ -159,6 +168,9 @@ export function EpisodeTargetsModal({
             searchable
             w={220}
           />
+          {/* Ввод в поле уходит на сервер, а не фильтрует загруженный кусок:
+              иначе папка, которой нет в окрестности тайтла, не нашлась бы
+              никаким запросом. */}
           <Select
             label={t('episodeTarget.folder')}
             placeholder={t('episodeTarget.folderPlaceholder')}
@@ -166,6 +178,9 @@ export function EpisodeTargetsModal({
             value={folderId}
             onChange={setFolderId}
             searchable
+            searchValue={folderSearch}
+            onSearchChange={setFolderSearch}
+            filter={({ options }) => options}
             nothingFoundMessage={t('episodeTarget.noFolders')}
             style={{ flex: 1, minWidth: 220 }}
           />
@@ -185,7 +200,9 @@ export function EpisodeTargetsModal({
             привязанных папок, и окрестность собирать не из чего. Человек шёл
             проверять монтирования вместо того, чтобы привязать папку. */}
         {!folders.isLoading && (folders.data ?? []).length === 0 && (
-          <Alert color="gray">{t('episodeTarget.noFoldersAtAll')}</Alert>
+          <Alert color="gray">
+            {folderNeedle ? t('episodeTarget.noSearchHits') : t('episodeTarget.noFoldersAtAll')}
+          </Alert>
         )}
         {!folders.isLoading && (folders.data ?? []).length > 0 && options.length === 0 && (
           <Alert color="yellow">{t('episodeTarget.noWritableFolders')}</Alert>

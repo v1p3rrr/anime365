@@ -274,8 +274,15 @@ export interface TargetFolderOption {
 export const episodeTargetApi = {
   list: (seriesId: number) =>
     api.get<{ targets: EpisodeTarget[] }>(`/library/episode-targets/${seriesId}`),
-  folders: (seriesId: number) =>
-    api.get<TargetFolderOption[]>(`/library/episode-targets/${seriesId}/folders`),
+  /**
+   * Без запроса — окрестность тайтла (его папки и их соседи вроде Specials).
+   * С запросом — поиск по всей библиотеке: нужная папка может лежать в стороне,
+   * а у тайтла папок может не быть вовсе.
+   */
+  folders: (seriesId: number, query = '') =>
+    api.get<TargetFolderOption[]>(
+      `/library/episode-targets/${seriesId}/folders${query ? `?query=${encodeURIComponent(query)}` : ''}`,
+    ),
   clearAll: (seriesId: number) =>
     api.del<{ deleted: number }>(`/library/episode-targets/series/${seriesId}`),
   set: (seriesId: number, episode: number, folderId: number) =>

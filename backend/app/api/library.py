@@ -35,6 +35,14 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/library", tags=["library"])
 
+#: Сколько находок отдавать при поиске по всей библиотеке.
+#:
+#: Папок тысячи, файлов десятки тысяч. Ограничение здесь не про скорость запроса,
+#: а про смысл выдачи: список на две тысячи строк выбирать не легче, чем искать
+#: руками, а уточнить запрос дешевле.
+FOLDER_SEARCH_LIMIT = 60
+FILE_SEARCH_LIMIT = 100
+
 
 def _disk_usage(path: Path) -> dict[str, Any]:
     """Место на носителе, где лежит корень: сколько всего, сколько свободно.
@@ -680,24 +688,44 @@ def reload_parsing_rules() -> dict[str, Any]:
     "/series/{series_id}/files",
     dependencies=[Depends(require(Permission.CATALOG))],
 )
-def series_files(series_id: int) -> list[dict[str, Any]]:
+def series_files(
+    series_id: int,
+    query: Annotated[str, Query(max_length=200, description="Искать по всей библиотеке")] = "",
+) -> list[dict[str, Any]]:
     """Локальные файлы всех папок тайтла — кандидаты для ручной привязки серии.
 
     Показываем не только нераспознанные: перепривязать бывает нужно и файл,
     который разобрался, но не в ту серию (сдвиг нумерации у релиз-группы —
     обычное дело).
+
+    С непустым `query` отбор идёт по **всей** библиотеке, а не по папкам тайтла.
+    Так решается случай, когда часть тайтла лежит отдельно: вторая часть
+    «Girls Band Cry» — своя папка в корне фильмов, к тайтлу не привязанная, и в
+    окрестности первой части её не найти. Привязка серии к файлу папку тайтла
+    не требует, поэтому и выбор ограничивать ею незачем.
     """
+    needle = query.strip().lower()
     with session_scope() as session:
-        folder_ids = select(TitleMapping.folder_id).where(TitleMapping.series_id == series_id)
-        rows = session.execute(
+        stmt = (
             select(LibraryFile, LibraryFolder)
             .join(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
-            .where(
-                LibraryFile.folder_id.in_(folder_ids),
-                LibraryFile.kind.in_(("video", "subtitle")),
-            )
+            .where(LibraryFile.kind.in_(("video", "subtitle")))
             .order_by(LibraryFile.filename)
-        ).all()
+        )
+        if needle:
+            # `ilike` в SQLite регистронезависим только для латиницы, поэтому
+            # приводим сами — иначе кириллица в имени файла не найдётся.
+            pattern = f"%{needle}%"
+            stmt = stmt.where(
+                func.lower(LibraryFile.filename).like(pattern)
+                | func.lower(LibraryFolder.rel_path).like(pattern)
+            ).limit(FILE_SEARCH_LIMIT)
+        else:
+            folder_ids = select(TitleMapping.folder_id).where(
+                TitleMapping.series_id == series_id
+            )
+            stmt = stmt.where(LibraryFile.folder_id.in_(folder_ids))
+        rows = session.execute(stmt).all()
 
         manual = {
             m.file_id: m
@@ -781,17 +809,25 @@ def list_episode_targets(series_id: int) -> dict[str, Any]:
     "/episode-targets/{series_id}/folders",
     dependencies=[Depends(require(Permission.CATALOG))],
 )
-def episode_target_folders(series_id: int) -> list[dict[str, Any]]:
+def episode_target_folders(
+    series_id: int,
+    query: Annotated[str, Query(max_length=200, description="Искать по всей библиотеке")] = "",
+) -> list[dict[str, Any]]:
     """Папки, куда можно направить отдельную серию.
 
-    Берём не все папки библиотеки, а окрестность тайтла: привязанные к нему
-    плюс их соседи по родителю. Соседи нужны обязательно — типичный случай это
-    `Specials` рядом с `Season 1`, а она привязана к другому `series_id` и в
-    список «папок тайтла» не попала бы.
+    По умолчанию берём не все папки библиотеки, а окрестность тайтла:
+    привязанные к нему плюс их соседи по родителю. Соседи нужны обязательно —
+    типичный случай это `Specials` рядом с `Season 1`, а она привязана к другому
+    `series_id` и в список «папок тайтла» не попала бы.
 
-    Полный список папок библиотеки здесь был бы бесполезен: их тысячи, и
-    выбирать серии папку из другого сериала незачем.
+    ⚠️ Окрестности мало в двух случаях, и оба живые: у тайтла **нет ни одной**
+    привязанной папки (тогда собирать окрестность не из чего, и раньше окно
+    молча оказывалось пустым), и нужная папка лежит **в стороне** — вторая часть
+    «Girls Band Cry» это отдельная папка в корне фильмов. Поэтому непустой
+    `query` ищет по всей библиотеке; выдача ограничена, полный список тысяч
+    папок здесь по-прежнему бесполезен.
     """
+    needle = query.strip().lower()
     with session_scope() as session:
         own = (
             session.execute(
@@ -802,23 +838,35 @@ def episode_target_folders(series_id: int) -> list[dict[str, Any]]:
             .scalars()
             .all()
         )
-        if not own:
-            return []
 
-        # Родители и соседи: и сама папка тайтла, и сёстры вроде Specials.
-        parent_ids = {f.parent_id for f in own if f.parent_id} | {f.id for f in own}
-        siblings = (
-            session.execute(
-                select(LibraryFolder).where(
-                    LibraryFolder.parent_id.in_(parent_ids)
-                    | LibraryFolder.id.in_(parent_ids)
+        if needle:
+            found = (
+                session.execute(
+                    select(LibraryFolder)
+                    .where(func.lower(LibraryFolder.rel_path).like(f"%{needle}%"))
+                    .order_by(LibraryFolder.video_count.desc())
+                    .limit(FOLDER_SEARCH_LIMIT)
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
-
-        by_id = {f.id: f for f in [*own, *siblings]}
+            by_id = {f.id: f for f in found}
+        else:
+            if not own:
+                return []
+            # Родители и соседи: и сама папка тайтла, и сёстры вроде Specials.
+            parent_ids = {f.parent_id for f in own if f.parent_id} | {f.id for f in own}
+            siblings = (
+                session.execute(
+                    select(LibraryFolder).where(
+                        LibraryFolder.parent_id.in_(parent_ids)
+                        | LibraryFolder.id.in_(parent_ids)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            by_id = {f.id: f for f in [*own, *siblings]}
         roots = {
             r.id: r
             for r in session.execute(

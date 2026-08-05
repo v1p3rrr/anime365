@@ -1,4 +1,5 @@
 import { Badge, Button, Group, Modal, Stack, Text, TextInput, UnstyledButton } from '@mantine/core'
+import { useDebouncedValue } from '@mantine/hooks'
 import { notifications } from '@mantine/notifications'
 import { IconLink, IconUnlink } from '@tabler/icons-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -48,10 +49,21 @@ export function BindEpisodeModal({ opened, onClose, seriesId, episode, episodeLa
   const queryClient = useQueryClient()
   const [filter, setFilter] = useState('')
 
+  // Поле фильтра работает в двух режимах, и это намеренно. Пустое — список
+  // файлов папок тайтла, как было. С текстом — поиск по ВСЕЙ библиотеке на
+  // сервере: часть тайтла нередко лежит в стороне (вторая часть «Girls Band
+  // Cry» — своя папка в корне фильмов), и в папках тайтла её нет вовсе.
+  // Привязка серии к файлу папку тайтла не требует, ограничивать выбор незачем.
+  const needle = useDebouncedValue(filter.trim(), 250)[0]
+
   const files = useQuery({
-    queryKey: ['series-files', seriesId],
-    queryFn: () => api.get<LocalFile[]>(`/library/series/${seriesId}/files`),
+    queryKey: ['series-files', seriesId, needle],
+    queryFn: () =>
+      api.get<LocalFile[]>(
+        `/library/series/${seriesId}/files${needle ? `?query=${encodeURIComponent(needle)}` : ''}`,
+      ),
     enabled: opened,
+    placeholderData: (previous) => previous,
   })
 
   const bind = useMutation({
@@ -71,9 +83,9 @@ export function BindEpisodeModal({ opened, onClose, seriesId, episode, episodeLa
       notifications.show({ color: 'red', title: t('bindEpisode.failed'), message: apiError(error) }),
   })
 
-  const visible = (files.data ?? []).filter((f) =>
-    filter ? f.filename.toLowerCase().includes(filter.toLowerCase()) : true,
-  )
+  // Отбор уже сделан сервером, когда запрос непустой; фильтровать повторно
+  // нельзя — совпасть могло имя папки, а не файла, и находка бы пропала.
+  const visible = files.data ?? []
 
   return (
     <Modal opened={opened} onClose={onClose} title={t('bindEpisode.title', { episode: episodeLabel })} size="lg">
@@ -95,9 +107,7 @@ export function BindEpisodeModal({ opened, onClose, seriesId, episode, episodeLa
 
         {files.isSuccess && visible.length === 0 && (
           <Text size="sm" c="dimmed">
-            {files.data.length === 0
-              ? t('bindEpisode.noFiles')
-              : t('bindEpisode.noMatch')}
+            {needle ? t('bindEpisode.noMatch') : t('bindEpisode.noFiles')}
           </Text>
         )}
 
