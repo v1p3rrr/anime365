@@ -32,6 +32,22 @@ SKIP_DIR_NAMES = frozenset({"tmp", ".tmp", "@eaDir", ".@__thumb", "lost+found", 
 # Имена подпапок, означающие спешлы. Номер сезона у них — 0.
 SPECIALS_NAMES = frozenset({"specials", "special", "extras", "ova", "ovas"})
 
+# Какой .nfo описывает саму папку, если их рядом лежит несколько.
+#
+# В корне фильмов у 42 папок из 58 лежат и `movie.nfo`, и `tvshow.nfo` — след
+# того, что когда-то эти папки сканировались как сериальная библиотека. Данные в
+# них разные: `title` расходится у 35 папок из 42 (у «Look Back» в `tvshow.nfo`
+# записан «Kekkai Sensen & Beyond», у «Chainsaw Man — Reze» — «Arc the Lad»),
+# и правильная сторона — всегда `movie.nfo`.
+#
+# Раньше побеждал не тот файл, причём случайно: записи перебирались по алфавиту,
+# и `tvshow.nfo` затирал разобранный ранее `movie.nfo`. Поэтому выбор делается
+# явным приоритетом, а не порядком обхода.
+NFO_PRIORITY: dict[str, dict[str, int]] = {
+    "movie": {"movie": 3, "season": 2, "tvshow": 1},
+    "series": {"season": 3, "tvshow": 2, "movie": 1},
+}
+
 
 @dataclass
 class ScannedFile:
@@ -170,6 +186,7 @@ def scan_folder(
     """
     rel = folder.relative_to(root).as_posix()
     nfo_data: NfoData | None = None
+    nfo_rank = 0
     files: list[ScannedFile] = []
     children: list[ScannedFolder] = []
     size = 0
@@ -244,7 +261,11 @@ def scan_folder(
                     "season",
                     "movie",
                 ):
-                    nfo_data = parsed
+                    ranks = NFO_PRIORITY.get(scope, NFO_PRIORITY["series"])
+                    rank = ranks.get(parsed.kind, 0)
+                    if rank > nfo_rank:
+                        nfo_data = parsed
+                        nfo_rank = rank
                 elif parsed.kind == "episode":
                     episode_nfo[entry.stem] = parsed
 
