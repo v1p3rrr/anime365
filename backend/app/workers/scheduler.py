@@ -21,6 +21,7 @@ from app.services.fts import needs_rowid_rebuild, rebuild_all
 from app.services.library_service import library_scanner
 from app.services.library_watcher import WatcherState, library_watcher
 from app.services.stream_probe import stream_probe
+from app.services import autodownload
 from app.services.translation_scan import scan_interval_hours, scan_rpm, scan_scope, translation_scan
 
 log = logging.getLogger(__name__)
@@ -60,6 +61,32 @@ def _on_library_changed(folders: set) -> None:
         library_scanner.scan_all()
     except Exception:
         log.exception("Пересканирование после изменений в файловой системе не удалось")
+        return
+    # Файлы приехали — самое время поискать к ним субтитры. Отдельной разовой
+    # задачей, а не здесь же: этот обработчик вызывается из потока слежения за
+    # файловой системой, а поиск ходит в сеть и может идти минутами.
+    _kick_autodownload()
+
+
+def _kick_autodownload() -> None:
+    """Разовый запуск автоскачивания — сразу, но не в чужом потоке.
+
+    Окно то же, что у расписания: только что появившиеся серии и попадают в
+    него по определению, а гонять всю библиотеку на каждое изменение файлов
+    незачем.
+    """
+    if _scheduler is None or settings.get_int("autodownload_interval_hours") <= 0:
+        return
+    try:
+        _scheduler.add_job(
+            _autodownload_job,
+            id="autodownload_now",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+    except Exception:
+        log.exception("Не удалось запустить автоскачивание после изменений")
 
 
 async def _translation_job() -> None:
@@ -94,6 +121,29 @@ async def _stream_probe_job() -> None:
         await stream_probe.run()
     except Exception:
         log.exception("Определение дорожек не удалось")
+
+
+async def _autodownload_job() -> None:
+    """Перепроверка серий без субтитров — по расписанию и с окном.
+
+    Субтитры почти всегда выкладывают позже видео: серия приезжает от Сонарра
+    вечером, а перевод появляется через день-два. Одной проверки в момент
+    появления файла поэтому мало.
+
+    Окно обязательно. Без него каждые несколько часов мы обходили бы всю
+    библиотеку, спрашивая чужой сайт о переводах, которых нет и не будет.
+    Старые серии не брошены: их разбирает кнопка «искать по всей библиотеке»,
+    которая идёт без ограничения по сроку.
+
+    Пока скан библиотеки идёт, не начинаем: разметка серий в этот момент
+    меняется, и решение «субтитров нет» принималось бы по половине данных.
+    """
+    if library_scanner.running:
+        return
+    try:
+        await autodownload.run_for_all(within_days=settings.get_int("autodownload_window_days"))
+    except Exception:
+        log.exception("Автоскачивание субтитров не удалось")
 
 
 def _library_job() -> None:
@@ -191,6 +241,17 @@ def start_scheduler() -> AsyncIOScheduler:
             _translation_job,
             IntervalTrigger(hours=scan_interval_hours()),
             id="translation_scan",
+            max_instances=1,
+            coalesce=True,
+        )
+
+    # Ноль означает «по расписанию не проверять»: остаются проверка при
+    # появлении новых файлов и кнопка «искать сейчас».
+    if settings.get_int("autodownload_interval_hours") > 0:
+        scheduler.add_job(
+            _autodownload_job,
+            IntervalTrigger(hours=settings.get_int("autodownload_interval_hours")),
+            id="autodownload",
             max_instances=1,
             coalesce=True,
         )

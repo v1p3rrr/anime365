@@ -81,8 +81,14 @@ def _folder() -> int:
         return folder.id
 
 
-def _video(episode: float, *, subtitle_languages: list[str] | None = None, probed: bool = False):
-    """Видеофайл серии. `subtitle_languages=None` — про дорожки ничего не знаем."""
+def _video(
+    episode: float, *, subtitle_languages: list[str] | None = None, probed: bool = False
+) -> int:
+    """Видеофайл серии. `subtitle_languages=None` — про дорожки ничего не знаем.
+
+    Возвращает id файла: искать его потом по имени нельзя — имена в тестах
+    повторяются, и запрос цепляет строки соседних проверок.
+    """
     folder_id = _folder()
     with session_scope() as session:
         streams = None
@@ -102,6 +108,7 @@ def _video(episode: float, *, subtitle_languages: list[str] | None = None, probe
         session.add(
             EpisodeMapping(series_id=SERIES, episode=episode, file_id=row.id, role="video")
         )
+        return row.id
 
 
 def _sidecar(episode: float, lang: str) -> None:
@@ -368,3 +375,73 @@ class TestPlan:
 
         assert asyncio.run(plan_for_series(SERIES)) == []
         assert resolve_for_series(SERIES) == {}
+
+
+class TestRecheckWindow:
+    """Расписание перепроверяет только недавние серии, кнопка — все.
+
+    Без окна каждые несколько часов мы обходили бы всю библиотеку, спрашивая
+    чужой сайт о переводах, которых нет и не будет.
+    """
+
+    @staticmethod
+    def _aged(episode: float, days: float) -> None:
+        """Видеофайл, появившийся столько-то дней назад."""
+        import time
+
+        file_id = _video(episode)
+        with session_scope() as session:
+            session.get(LibraryFile, file_id).mtime = time.time() - days * 86400
+
+    def test_an_old_episode_is_outside_the_window(self) -> None:
+        self._aged(1, days=90)
+
+        assert episodes_with_video(SERIES, within_days=30) == {}
+
+    def test_a_fresh_episode_is_inside(self) -> None:
+        self._aged(1, days=2)
+
+        assert list(episodes_with_video(SERIES, within_days=30)) == [1.0]
+
+    def test_without_a_window_everything_counts(self) -> None:
+        """Кнопка «искать по всей библиотеке» не должна терять старое."""
+        self._aged(1, days=90)
+
+        assert list(episodes_with_video(SERIES)) == [1.0]
+
+    def test_zero_means_no_limit(self) -> None:
+        """Ноль в настройке — «не ограничивать», а не «ничего не брать»."""
+        self._aged(1, days=90)
+
+        assert list(episodes_with_video(SERIES, within_days=0)) == [1.0]
+
+
+class TestWholeLibraryPass:
+    def test_nothing_runs_while_every_language_is_off(self, monkeypatch) -> None:
+        """Дешёвая проверка до обхода: выключено — значит не ходим никуда."""
+        _video(1)
+        _translation(101, 1, "Kazoku")
+
+        result = asyncio.run(__import__(
+            "app.services.autodownload", fromlist=["run_for_all"]
+        ).run_for_all())
+
+        assert result["queued"] == 0
+        assert "skipped" in result
+
+    def test_a_failing_title_does_not_stop_the_rest(self, monkeypatch) -> None:
+        """Сайт может не ответить по любому переводу — проход обязан продолжиться."""
+        from app.services import autodownload as engine
+
+        _video(1)
+        _translation(101, 1, "Kazoku")
+        with session_scope() as session:
+            session.merge(AutoDownloadRule(lang="ru", mode="all", priorities=["kazoku"]))
+
+        async def explode(series_id: int, *args, **kwargs):
+            raise RuntimeError("сайт не ответил")
+
+        monkeypatch.setattr(engine, "run_for_series", explode)
+
+        # Падение внутри тайтла не должно поднимать исключение наружу.
+        assert asyncio.run(engine.run_for_all())["queued"] == 0

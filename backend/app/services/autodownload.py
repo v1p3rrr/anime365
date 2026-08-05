@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
@@ -51,20 +52,32 @@ class Choice:
     reason: str
 
 
-def episodes_with_video(series_id: int) -> dict[float, int | None]:
+def episodes_with_video(
+    series_id: int, within_days: int | None = None
+) -> dict[float, int | None]:
     """Серии, у которых на диске есть видео: номер → id файла.
 
     Именно по разметке серий, а не по числу файлов в папке: файл может лежать
     в папке и не быть привязан ни к одной серии (мусор, трейлер, склейка), и
     качать субтитры к такому нечему.
+
+    `within_days` ограничивает выборку недавно появившимися сериями. Нужно
+    расписанию: перепроверять всю библиотеку каждые несколько часов значило бы
+    вечно спрашивать чужой сайт о переводах, которых нет и не будет. Время
+    берём у файла на диске — другого «когда серия появилась» у нас нет, а
+    Сонарр кладёт файл ровно в момент появления.
     """
+    stmt = select(EpisodeMapping.episode, EpisodeMapping.file_id).where(
+        EpisodeMapping.series_id == series_id,
+        EpisodeMapping.role == VIDEO_ROLE,
+    )
+    if within_days is not None and within_days > 0:
+        edge = (datetime.utcnow() - timedelta(days=within_days)).timestamp()
+        stmt = stmt.join(LibraryFile, EpisodeMapping.file_id == LibraryFile.id).where(
+            LibraryFile.mtime >= edge
+        )
     with session_scope() as session:
-        rows = session.execute(
-            select(EpisodeMapping.episode, EpisodeMapping.file_id).where(
-                EpisodeMapping.series_id == series_id,
-                EpisodeMapping.role == VIDEO_ROLE,
-            )
-        ).all()
+        rows = session.execute(stmt).all()
     return {float(episode): file_id for episode, file_id in rows}
 
 
@@ -109,13 +122,15 @@ def _embedded_languages(file_ids: list[int]) -> dict[int, set[str]]:
     return known
 
 
-def missing_episodes(series_id: int, resolved: Resolved) -> list[float]:
+def missing_episodes(
+    series_id: int, resolved: Resolved, within_days: int | None = None
+) -> list[float]:
     """Серии, к которым субтитров этого языка заведомо нет.
 
     Возвращает только те, у которых есть локальное видео: остальным качать
     нечего по определению.
     """
-    videos = episodes_with_video(series_id)
+    videos = episodes_with_video(series_id, within_days)
     if not videos:
         return []
 
@@ -237,7 +252,7 @@ async def _first_soft_subtitle(candidates: list[dict]) -> dict | None:
     return None
 
 
-async def plan_for_series(series_id: int) -> list[Choice]:
+async def plan_for_series(series_id: int, within_days: int | None = None) -> list[Choice]:
     """Что нужно скачать этому тайтлу прямо сейчас. Ничего не ставит в очередь."""
     rules = resolve_for_series(series_id)
     if not rules:
@@ -245,7 +260,7 @@ async def plan_for_series(series_id: int) -> list[Choice]:
 
     plan: list[Choice] = []
     for lang, resolved in rules.items():
-        missing = missing_episodes(series_id, resolved)
+        missing = missing_episodes(series_id, resolved, within_days)
         if not missing:
             continue
         by_episode = _candidates(series_id, lang)
@@ -273,7 +288,9 @@ async def plan_for_series(series_id: int) -> list[Choice]:
     return plan
 
 
-async def run_for_series(series_id: int, user_id: int = 1) -> dict:
+async def run_for_series(
+    series_id: int, user_id: int = 1, within_days: int | None = None
+) -> dict:
     """Считает план и ставит его в очередь загрузок.
 
     Постановка идёт через общий `enqueue`, а не своим путём: он уже идемпотентен
@@ -282,7 +299,7 @@ async def run_for_series(series_id: int, user_id: int = 1) -> dict:
     """
     from app.services.download_queue import QueueError, enqueue
 
-    plan = await plan_for_series(series_id)
+    plan = await plan_for_series(series_id, within_days)
     queued = 0
     for choice in plan:
         try:
@@ -303,3 +320,58 @@ async def run_for_series(series_id: int, user_id: int = 1) -> dict:
             queued,
         )
     return {"series_id": series_id, "planned": len(plan), "queued": queued}
+
+
+def series_with_files() -> list[int]:
+    """Тайтлы, у которых есть хоть одна размеченная серия с видео.
+
+    Обходить весь каталог незачем: автоскачивание работает только там, где
+    файлы уже лежат, а таких тайтлов сотни, а не двадцать девять тысяч.
+    """
+    with session_scope() as session:
+        rows = session.execute(
+            select(EpisodeMapping.series_id)
+            .where(EpisodeMapping.role == VIDEO_ROLE)
+            .distinct()
+        ).scalars()
+        return sorted(rows)
+
+
+async def run_for_all(user_id: int = 1, within_days: int | None = None) -> dict:
+    """Проход по всей библиотеке.
+
+    Два разных вызывающих, и разница между ними — в `within_days`:
+
+    * кнопка «искать по всей библиотеке» зовёт без ограничения по сроку —
+      человек нажал осознанно и ждёт полного результата;
+    * расписание зовёт с окном, иначе каждые несколько часов мы спрашивали бы
+      чужой сайт о переводах, которых нет и не будет.
+
+    Ошибка на одном тайтле не должна останавливать остальные: сайт может не
+    ответить по любому из сотен переводов, и терять из-за этого весь проход
+    неправильно.
+    """
+    from app.services.autodownload_rules import any_language_enabled
+
+    if not any_language_enabled():
+        return {"series": 0, "planned": 0, "queued": 0, "skipped": "автоскачивание выключено"}
+
+    planned = queued = touched = 0
+    for series_id in series_with_files():
+        try:
+            result = await run_for_series(series_id, user_id, within_days)
+        except Exception:
+            log.exception("Автоскачивание: тайтл %s обработать не удалось", series_id)
+            continue
+        if result["planned"]:
+            touched += 1
+        planned += result["planned"]
+        queued += result["queued"]
+
+    log.info(
+        "Автоскачивание: проход завершён — тайтлов с находками %d, выбрано %d, поставлено %d",
+        touched,
+        planned,
+        queued,
+    )
+    return {"series": touched, "planned": planned, "queued": queued}
