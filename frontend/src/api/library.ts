@@ -76,6 +76,8 @@ export interface MappingRow {
   video_count: number
   series_id: number
   series_title: string | null
+  /** Постер тайтла с Anime365. Меняется вместе с привязкой сам. */
+  poster_url: string | null
   series_year: number | null
   series_season: string | null
   source: string
@@ -118,6 +120,7 @@ export interface MappingReport {
     folder: string
     series_id: number
     series_title: string
+    poster_url: string | null
     source: string
     confidence: number
     matched_on: string | null

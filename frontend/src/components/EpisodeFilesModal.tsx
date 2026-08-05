@@ -1,4 +1,4 @@
-import { Alert, Badge, Button, Code, Group, Loader, Modal, Stack, Text } from '@mantine/core'
+import { Alert, Badge, Button, Code, Group, Loader, Modal, Select, Stack, Text } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
 import { IconFileSearch } from '@tabler/icons-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -19,6 +19,8 @@ interface EpisodeFile {
   role: string
   kind: 'video' | 'subtitle' | 'metadata'
   lang: string | null
+  /** Язык поставил человек — скан такой не перетирает. */
+  lang_is_manual: boolean
   size_bytes: number
   is_manual: boolean
   matched_rule_id: string | null
@@ -82,6 +84,24 @@ export function EpisodeFilesModal({ opened, onClose, seriesId, episode, episodeL
   // держим в памяти окна: они нужны ровно здесь и сейчас, а гонять их через
   // скан и базу ради одного взгляда незачем.
   const [media, setMedia] = useState<Record<number, MediaInfo>>({})
+
+  // Ручной язык нужен там, где автоматика бессильна: файл без суффикса, со
+  // смешанным текстом или вовсе на четвёртом языке.
+  //
+  // «прочий» — не то же, что «неизвестно». Неизвестный зовёт разобраться,
+  // прочий значит «разобрались, это не ru/en/ja»: файл лежит как есть и никуда
+  // не подтягивается.
+  const setLanguage = useMutation({
+    mutationFn: ({ fileId, lang }: { fileId: number; lang: string | null }) =>
+      api.post<unknown>(`/library/files/${fileId}/language`, { lang }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['episode-files', seriesId, episode] })
+      queryClient.invalidateQueries({ queryKey: ['title', seriesId] })
+      notifications.show({ color: 'teal', message: t('episodeFiles.languageSaved') })
+    },
+    onError: (error: Error) =>
+      notifications.show({ color: 'red', title: t('episodeFiles.languageFailed'), message: apiError(error) }),
+  })
 
   const probe = useMutation({
     mutationFn: (fileId: number) =>
@@ -187,6 +207,33 @@ export function EpisodeFilesModal({ opened, onClose, seriesId, episode, episodeL
                   пустого или битого файла. Прятать её у файлов с известными
                   дорожками тоже нельзя — данные из `.nfo` бывают неверными
                   (у Fate HF у видеодорожки стоял язык `ita`). */}
+              {file.kind === 'subtitle' && (
+                <Group gap="xs" align="center">
+                  <Select
+                    size="xs"
+                    w={190}
+                    label={undefined}
+                    placeholder={t('episodeFiles.languageAuto')}
+                    value={file.lang_is_manual ? file.lang : null}
+                    onChange={(value) =>
+                      setLanguage.mutate({ fileId: file.file_id, lang: value })
+                    }
+                    clearable
+                    data={[
+                      { value: 'ru', label: t('episodeFiles.langRu') },
+                      { value: 'ja', label: t('episodeFiles.langJa') },
+                      { value: 'en', label: t('episodeFiles.langEn') },
+                      { value: 'other', label: t('episodeFiles.langOther') },
+                    ]}
+                  />
+                  <Text size="xs" c="dimmed">
+                    {file.lang_is_manual
+                      ? t('episodeFiles.languageManual')
+                      : t('episodeFiles.languageGuessed', { lang: file.lang ?? '—' })}
+                  </Text>
+                </Group>
+              )}
+
               {file.kind !== 'metadata' && (
                 <Group gap="xs">
                   {!hasTracks && (

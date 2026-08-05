@@ -2,6 +2,8 @@ import { Badge, Card, Group, Progress, Stack, Table, Text, Tooltip } from '@mant
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 
+import { PosterThumb } from './PosterThumb'
+
 import { libraryApi, SOURCE_COLORS } from '../api/library'
 import { ErrorState } from './ErrorState'
 import pathClasses from './PathLine.module.css'
@@ -145,9 +147,12 @@ export function MappingReport() {
                       </Text>
                     </Table.Td>
                     <Table.Td>
-                      <Text size="sm" component={Link} to={`/series/${row.series_id}`} c="blue">
-                        {row.series_title}
-                      </Text>
+                      <Group gap="xs" wrap="nowrap" align="center">
+                        <PosterThumb url={row.poster_url} />
+                        <Text size="sm" component={Link} to={`/series/${row.series_id}`} c="blue">
+                          {row.series_title}
+                        </Text>
+                      </Group>
                     </Table.Td>
                     <Table.Td>
                       <Tooltip label={row.matched_on ?? t('report.noExplanation')}>

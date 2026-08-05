@@ -614,6 +614,10 @@ def list_mappings(limit: Annotated[int, Query(ge=1, le=1000)] = 500) -> list[dic
                 "video_count": folder.video_count,
                 "series_id": series.id,
                 "series_title": (series.titles or {}).get("romaji") or series.title,
+                # Постер отдаётся ссылкой на Anime365 и меняется вместе с
+                # привязкой сам: тайтл другой — и картинка другая, хранить
+                # у себя нечего.
+                "poster_url": series.poster_url,
                 "series_year": series.year,
                 "series_season": series.season,
                 "source": mapping.source,
@@ -1203,6 +1207,7 @@ def mapping_report() -> dict[str, Any]:
                 "folder": f.rel_path,
                 "series_id": s.id,
                 "series_title": (s.titles or {}).get("romaji") or s.title,
+                "poster_url": s.poster_url,
                 "source": m.source,
                 "confidence": m.confidence,
                 "matched_on": m.matched_on,
@@ -1249,6 +1254,9 @@ def episode_files(series_id: int, episode: float) -> list[dict[str, Any]]:
                 "role": mapping.role,
                 "kind": file.kind,
                 "lang": file.lang,
+                # Признак нужен интерфейсу, чтобы отличить выбор человека от
+                # догадки автоматики: сбрасывать имеет смысл только первое.
+                "lang_is_manual": file.lang_is_manual,
                 "size_bytes": file.size_bytes,
                 "mtime": file.mtime,
                 "is_manual": mapping.is_manual,
@@ -1263,6 +1271,74 @@ def episode_files(series_id: int, episode: float) -> list[dict[str, Any]]:
             }
             for mapping, file, folder, root in rows
         ]
+
+
+class FileLanguage(BaseModel):
+    #: `null` — вернуть определение автоматике.
+    lang: Annotated[str | None, Field(max_length=8)] = None
+
+
+@router.post(
+    "/files/{file_id}/language",
+    dependencies=[Depends(require(Permission.LIBRARY))],
+)
+def set_file_language(file_id: int, payload: FileLanguage) -> dict[str, Any]:
+    """Язык субтитров, указанный человеком.
+
+    Автоматика определяет язык двумя способами — точно по `t{id}` и по
+    письменности, — но остаётся третий случай: файл без суффикса, со смешанным
+    текстом или вовсе на четвёртом языке. Тогда решает человек.
+
+    ⚠️ `other` — это **не** «неизвестно». `sub_unknown` значит «не смогли
+    определить» и зовёт разобраться; `other` значит «определили, это не
+    ru/en/ja». Первое пользователь должен видеть в списке недоделанного, второе
+    — нет, и субтитры при этом никуда не подтягиваются, а просто лежат.
+    """
+    from app.services.library_service import (
+        OTHER_LANG,
+        SUB_OTHER_ROLE,
+        SUB_ROLE,
+        _file_role,
+    )
+
+    allowed = set(SUB_ROLE) | {OTHER_LANG}
+    lang = (payload.lang or "").strip().lower() or None
+    if lang is not None and lang not in allowed:
+        raise ApiError(
+            400,
+            errors.BIND_KIND_UNSUPPORTED,
+            f"Язык должен быть одним из: {', '.join(sorted(allowed))}, либо пустым",
+        )
+
+    with session_scope() as session:
+        file = session.get(LibraryFile, file_id)
+        if file is None:
+            raise ApiError(404, errors.FILE_NOT_FOUND, "Файл не найден")
+        if file.kind != "subtitle":
+            raise ApiError(
+                400, errors.BIND_KIND_UNSUPPORTED, "Язык задаётся только у субтитров"
+            )
+
+        file.lang = lang
+        # Пустое значение возвращает файл автоматике: на следующем скане язык
+        # определится заново, а до тех пор останется тем, что стоит сейчас.
+        file.lang_is_manual = lang is not None
+        session.flush()
+
+        role = _file_role(file)
+        # Роль правим сразу, не дожидаясь скана: человек нажал и должен увидеть
+        # результат, а не «через сутки».
+        session.execute(
+            EpisodeMapping.__table__.update()
+            .where(EpisodeMapping.file_id == file_id)
+            .values(role=role)
+        )
+        return {
+            "file_id": file_id,
+            "lang": lang,
+            "role": role,
+            "is_manual": file.lang_is_manual,
+        }
 
 
 @router.post(

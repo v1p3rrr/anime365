@@ -97,6 +97,10 @@ class LibraryFile(Base):
     kind: Mapped[str] = mapped_column(String(16))  # video | subtitle | metadata
 
     lang: Mapped[str | None] = mapped_column(String(8), index=True)
+    # Язык поставил человек, а не разбор. Скан такой не трогает: автоматика
+    # ошибается на файлах без суффикса и на смешанном тексте, и молча
+    # переписывать решение человека — худшее, что она может сделать.
+    lang_is_manual: Mapped[bool] = mapped_column(Boolean, default=False)
     season_number: Mapped[int | None] = mapped_column(Integer)
     episode: Mapped[float | None] = mapped_column(Float, index=True)
     episode_end: Mapped[float | None] = mapped_column(Float)

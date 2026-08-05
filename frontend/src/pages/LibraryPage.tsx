@@ -42,6 +42,7 @@ import { JellyfinAudit } from '../components/JellyfinAudit'
 import { ErrorState } from '../components/ErrorState'
 import { MapFolderModal } from '../components/MapFolderModal'
 import { MappingReport } from '../components/MappingReport'
+import { PosterThumb } from '../components/PosterThumb'
 import { usePermissions } from '../hooks/usePermissions'
 import { useT, type TranslationKey } from '../i18n'
 import { useApiError } from '../i18n/apiError'
@@ -400,10 +401,19 @@ export function LibraryPage() {
                     </Text>
                   </Table.Td>
                   <Table.Td style={{ wordBreak: 'break-word' }}>
-                    <Link to={`/series/${row.series_id}`}>{row.series_title ?? `#${row.series_id}`}</Link>
-                    <Text size="xs" c="dimmed">
-                      {row.series_season ?? row.series_year ?? ''}
-                    </Text>
+                    {/* Постер тут не украшение: по картинке ошибочная привязка
+                        видна мгновенно, а по названию её надо читать. */}
+                    <Group gap="xs" wrap="nowrap" align="flex-start">
+                      <PosterThumb url={row.poster_url} />
+                      <div style={{ minWidth: 0 }}>
+                        <Link to={`/series/${row.series_id}`}>
+                          {row.series_title ?? `#${row.series_id}`}
+                        </Link>
+                        <Text size="xs" c="dimmed">
+                          {row.series_season ?? row.series_year ?? ''}
+                        </Text>
+                      </div>
+                    </Group>
                   </Table.Td>
                   <Table.Td>
                     <Tooltip

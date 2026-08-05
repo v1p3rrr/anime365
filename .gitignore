@@ -53,6 +53,7 @@ temp/
 .idea/
 .vscode/
 *.swp
+.claude
 
 # Копия libass-wasm, раскладывается скриптом перед сборкой (см. scripts/copy-libass.mjs)
 frontend/public/libass/

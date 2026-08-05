@@ -37,6 +37,14 @@ log = logging.getLogger(__name__)
 # Роль файла в маппинге эпизода.
 SUB_ROLE = {"ru": "sub_ru", "ja": "sub_ja", "en": "sub_en"}
 
+#: Язык, который нас не интересует, но и «неизвестным» не является.
+#:
+#: Разница существенная: `sub_unknown` значит «не смогли определить» и зовёт
+#: разобраться, а `other` — «определили, это не ru/en/ja». Первое пользователь
+#: должен видеть в списке недоделанного, второе — нет.
+OTHER_LANG = "other"
+SUB_OTHER_ROLE = "sub_other"
+
 
 def build_index() -> TitleIndex:
     with session_scope() as session:
@@ -121,7 +129,10 @@ def _persist_folder(
             session.add(row)
 
         row.kind = file.kind
-        row.lang = file.lang
+        # ⚠️ Ручной язык скан не трогает. Автоматика ошибается на файлах без
+        # суффикса и на смешанном тексте, а человек уже сказал, как есть.
+        if not row.lang_is_manual:
+            row.lang = file.lang
         row.season_number = file.season_number
         row.episode = file.episode
         row.episode_end = file.episode_end
@@ -557,6 +568,8 @@ def _file_role(file: LibraryFile) -> str | None:
     if file.kind == "video":
         return "video"
     if file.kind == "subtitle":
+        if file.lang == OTHER_LANG:
+            return SUB_OTHER_ROLE
         return SUB_ROLE.get(file.lang or "", "sub_unknown")
     return None
 
