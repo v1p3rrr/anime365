@@ -165,21 +165,99 @@ class TestDirectDownload:
 
 
 class TestPermissions:
-    """Скачивание на компьютер — то же право, что и просмотр."""
+    """Посмотреть и унести файл себе — разные права.
 
-    def test_download_routes_require_watch(self) -> None:
+    Раньше и то и другое закрывалось правом «просмотр», и роль «пусть смотрит»
+    молча включала в себя «пусть выносит копии наружу». Решение пользователя:
+    развести, потому что последствия разные — просмотр ничего не оставляет,
+    а скачивание отдаёт файл с сервера навсегда.
+
+    Сложность в том, что маршрут у обоих действий **один и тот же**: плееру и
+    кнопке «сохранить» нужен один файл, отличается только `download` в запросе.
+    Поэтому право выбирается по параметру, и проверять надо поведение, а не
+    объявления: по объявлению видно лишь, что зависимость стоит.
+    """
+
+    @staticmethod
+    def _as(*permissions: str):
+        """Клиент от имени пользователя ровно с этими правами."""
+        from app.core.permissions import CurrentUser, current_user
         from app.main import app
 
-        paths = {
-            "/api/stream/{translation_id}/download",
-            "/api/stream/local/{file_id}",
-            "/api/stream/audio/{task_id}",
-        }
+        app.dependency_overrides[current_user] = lambda: CurrentUser(
+            98, "гость", is_admin=False, permissions=list(permissions)
+        )
+
+    @staticmethod
+    def _reset() -> None:
+        from app.core.permissions import current_user
+        from app.main import app
+
+        app.dependency_overrides.pop(current_user, None)
+
+    def test_watcher_cannot_save_the_file(self, client) -> None:
+        """Тот самый случай, ради которого право и разведено."""
+        from app.core.permissions import Permission
+
+        self._as(Permission.WATCH.value)
+        try:
+            response = client.get("/api/stream/local/1?download=1")
+        finally:
+            self._reset()
+
+        assert response.status_code == 403
+        assert response.json()["detail"]["params"]["permission"] == Permission.DEVICE_DOWNLOADS.value
+
+    def test_saver_cannot_stream(self, client) -> None:
+        """И обратно: право уносить себе не даёт смотреть через наш прокси."""
+        from app.core.permissions import Permission
+
+        self._as(Permission.DEVICE_DOWNLOADS.value)
+        try:
+            response = client.get("/api/stream/local/1")
+        finally:
+            self._reset()
+
+        assert response.status_code == 403
+        assert response.json()["detail"]["params"]["permission"] == Permission.WATCH.value
+
+    def test_saver_gets_past_the_permission_check(self, client) -> None:
+        """С нужным правом проверка пропускает дальше — до самого файла.
+
+        Файла с таким номером нет, поэтому ждём 404, а не 200: важно, что
+        отказ пришёл уже не от прав.
+        """
+        from app.core.permissions import Permission
+
+        self._as(Permission.DEVICE_DOWNLOADS.value)
+        try:
+            response = client.get("/api/stream/local/999999?download=1")
+        finally:
+            self._reset()
+
+        assert response.status_code != 403
+
+    def test_direct_download_route_needs_the_save_permission(self, client) -> None:
+        """У ссылки на скачивание видео другого назначения нет."""
+        from app.core.permissions import Permission
+
+        self._as(Permission.WATCH.value)
+        try:
+            response = client.get("/api/stream/1/download")
+        finally:
+            self._reset()
+
+        assert response.status_code == 403
+        assert response.json()["detail"]["params"]["permission"] == Permission.DEVICE_DOWNLOADS.value
+
+    def test_every_stream_route_still_asks_for_something(self) -> None:
+        """Роутер больше не закрыт целиком — ни один маршрут не должен выпасть."""
+        from app.main import app
+
         for route in app.routes:
-            if getattr(route, "path", None) in paths:
-                names = [
-                    getattr(d.call, "__qualname__", "") for d in route.dependant.dependencies
-                ]
-                assert any(
-                    n.startswith("require.") for n in names
-                ), f"{route.path} без проверки права: {names}"
+            if not getattr(route, "path", "").startswith("/api/stream/"):
+                continue
+            names = [getattr(d.call, "__qualname__", "") for d in route.dependant.dependencies]
+            assert any(
+                n.startswith(("require.", "require_save_or_watch.")) for n in names
+            ), f"{route.path} без проверки права: {names}"

@@ -204,6 +204,7 @@ export const ja: Dictionary = {
       downloads: 'ダウンロード',
       library: 'ライブラリ',
       watch: '再生',
+      device_downloads: '端末への保存',
     },
     permissionHint: {
       catalog: 'カタログ、作品ページ、ライブラリの状態の閲覧。読み取りのみで、これがないと画面には何も表示されません',
@@ -211,6 +212,7 @@ export const ja: Dictionary = {
       downloads: 'ダウンロードのキュー投入と管理。ディスクと通信量を消費します',
       library: 'フォルダーとエピソードの紐づけ変更、スキャンの実行',
       watch: '視聴：プロキシ経由のストリーミングとダウンロード済みファイル。変更は行いません',
+      device_downloads: 'ファイルを自分の端末に保存する。サーバーの容量は使わない',
     },
   },
   common: {

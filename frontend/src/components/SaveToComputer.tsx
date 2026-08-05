@@ -1,6 +1,8 @@
 import { ActionIcon, Tooltip } from '@mantine/core'
 import { IconDeviceFloppy, IconFileText, IconMovie } from '@tabler/icons-react'
 
+import { usePermissions } from '../hooks/usePermissions'
+
 interface Props {
   /** Адрес, отдающий файл с `Content-Disposition: attachment`. */
   href: string
@@ -39,7 +41,13 @@ const ICONS = {
  * Первое ставит задачу в очередь на сервере, второе просто отдаёт файл.
  */
 export function SaveToComputer({ href, label, disabled, size = 'sm', icon = 'any' }: Props) {
+  const { can } = usePermissions()
   const Icon = ICONS[icon]
+
+  // Право спрашивается здесь, а не на каждом месте вызова. Кнопок этих
+  // полдесятка в разных экранах, и одну забыли бы наверняка — а забытая
+  // означала бы кнопку, которая молча отвечает отказом.
+  if (!can('device_downloads')) return null
 
   return (
     <Tooltip label={label} withArrow>

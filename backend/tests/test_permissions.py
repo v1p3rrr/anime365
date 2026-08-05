@@ -237,3 +237,40 @@ class TestUserCreation:
         assert created.status_code == 200
         assert created.json()["permissions"] == ALL_PERMISSIONS
         client.delete(f"/api/users/{created.json()['id']}")
+
+
+class TestDefaultsForANewUser:
+    """Что получает обычная учётная запись, если галочки не трогали.
+
+    Требование пользователя: каталог, страницы тайтлов и сохранение себе на
+    устройство. Всё, что тратит ресурсы сервера, по умолчанию выключено.
+    """
+
+    def test_reading_and_saving_are_on(self) -> None:
+        from app.core.permissions import DEFAULT_PERMISSIONS, Permission
+
+        assert Permission.DEVICE_DOWNLOADS.value in DEFAULT_PERMISSIONS
+        assert Permission.WATCH.value in DEFAULT_PERMISSIONS
+
+    def test_nothing_that_spends_server_resources_is_on(self) -> None:
+        from app.core.permissions import DEFAULT_PERMISSIONS, Permission
+
+        for costly in (Permission.DOWNLOADS, Permission.LIBRARY, Permission.SETTINGS):
+            assert costly.value not in DEFAULT_PERMISSIONS, costly.value
+
+    def test_catalog_is_not_stored_because_it_is_implicit(self) -> None:
+        """Каталог есть у всех вошедших и в запись не пишется — см. IMPLICIT."""
+        from app.core.permissions import DEFAULT_PERMISSIONS, IMPLICIT_PERMISSIONS, Permission
+
+        assert Permission.CATALOG.value in IMPLICIT_PERMISSIONS
+        assert Permission.CATALOG.value not in DEFAULT_PERMISSIONS
+
+    def test_a_default_user_can_save_but_not_queue(self) -> None:
+        """Проверка по существу, а не по составу списка."""
+        from app.core.permissions import DEFAULT_PERMISSIONS, CurrentUser, Permission
+
+        user = CurrentUser(7, "новичок", is_admin=False, permissions=list(DEFAULT_PERMISSIONS))
+
+        assert user.can(Permission.DEVICE_DOWNLOADS)
+        assert user.can(Permission.CATALOG)
+        assert not user.can(Permission.DOWNLOADS)

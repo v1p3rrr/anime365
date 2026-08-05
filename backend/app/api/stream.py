@@ -29,7 +29,7 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 
 from app.api.deps import rate_limit
 from app.core.config import settings
-from app.core.permissions import Permission, require
+from app.core.permissions import Permission, require, require_save_or_watch
 from app.services.anime365 import Anime365Client, Anime365Error, SubscriptionRequired
 from app.services.downloader import is_allowed_target, pick_download_url
 from app.services.title_service import get_embed
@@ -39,9 +39,11 @@ log = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/stream",
     tags=["stream"],
-    # Весь роутер — проксирование видео и субтитров через наш
-    # премиум-токен, поэтому право проверяется на входе целиком.
-    dependencies=[Depends(require(Permission.WATCH))],
+    # Права здесь НЕ общие на роутер, и это не упущение. Маршруты делятся на
+    # два действия с разными последствиями: посмотреть через наш премиум-токен
+    # (`watch`) и унести файл себе на устройство (`device_downloads`). Причём
+    # у половины маршрутов действие выбирается параметром `download`, а не
+    # адресом, — для них стоит `require_save_or_watch`.
 )
 
 # Заголовки, которые имеет смысл передать наверх от плеера к CDN.
@@ -178,7 +180,7 @@ async def stream_video(
 @router.get(
     "/{translation_id}/download",
     dependencies=[
-        Depends(require(Permission.WATCH)),
+        Depends(require(Permission.DEVICE_DOWNLOADS)),
         Depends(rate_limit("download-link", limit=30, window=60)),
     ],
 )
@@ -257,11 +259,11 @@ async def download_video(
 # сохраниться, а ломать работающие ссылки ради нового ни к чему.
 @router.get(
     "/{translation_id}/subtitles.ass",
-    dependencies=[Depends(require(Permission.WATCH))],
+    dependencies=[Depends(require_save_or_watch())],
 )
 @router.get(
     "/{translation_id}/subtitles",
-    dependencies=[Depends(require(Permission.WATCH))],
+    dependencies=[Depends(require_save_or_watch())],
 )
 async def stream_subtitles(
     translation_id: int,
@@ -443,7 +445,7 @@ def serve_file_with_range(
 
 @router.get(
     "/audio/{task_id}",
-    dependencies=[Depends(require(Permission.WATCH))],
+    dependencies=[Depends(require_save_or_watch())],
 )
 def stream_audio(
     task_id: int,
@@ -485,7 +487,7 @@ LOCAL_VIDEO_TYPES = {
 
 @router.get(
     "/local/{file_id}",
-    dependencies=[Depends(require(Permission.WATCH))],
+    dependencies=[Depends(require_save_or_watch())],
 )
 def stream_local(
     file_id: int,
@@ -553,7 +555,7 @@ async def local_subtitle_tracks(file_id: int) -> dict[str, Any]:
     # получается file_id=«12.sr» и ext=«t», и запрос падает на разборе числа.
     # Тот же приём уже стоит у логотипов студий.
     "/local/subtitle/{file_id}.{ext}",
-    dependencies=[Depends(require(Permission.WATCH))],
+    dependencies=[Depends(require_save_or_watch())],
 )
 def local_subtitle_file(
     file_id: int,
@@ -588,7 +590,7 @@ def local_subtitle_file(
 
 @router.get(
     "/local/{file_id}/embedded/{index}.ass",
-    dependencies=[Depends(require(Permission.WATCH))],
+    dependencies=[Depends(require_save_or_watch())],
 )
 async def local_embedded_subtitle(
     file_id: int,

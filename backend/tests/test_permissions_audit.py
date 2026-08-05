@@ -38,8 +38,13 @@ OPEN_ROUTES = {
     "users.change_own_password",
 }
 
-#: Обе формы проверки: по конкретному праву и «только администратор».
-GUARD_RE = re.compile(r"require(_admin)?\(")
+#: Все формы проверки: по конкретному праву, «только администратор» и выбор
+#: права по параметру запроса (`/api/stream/*`, где один маршрут и играет файл,
+#: и отдаёт его на устройство).
+#:
+#: Список закрытый намеренно. Написать здесь `require\w*\(` было бы проще, но
+#: тогда любая новая функция с похожим именем молча сошла бы за проверку прав.
+GUARD_RE = re.compile(r"require(_admin|_save_or_watch)?\(")
 
 
 ROUTE_RE = re.compile(
@@ -106,7 +111,7 @@ def test_every_registered_route_is_guarded() -> None:
         while stack:
             dep = stack.pop()
             name = getattr(dep.call, "__qualname__", "")
-            if name.startswith(("require.", "require_admin.")):
+            if name.startswith(("require.", "require_admin.", "require_save_or_watch.")):
                 return True
             stack.extend(dep.dependencies)
         return False

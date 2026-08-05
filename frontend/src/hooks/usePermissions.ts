@@ -3,7 +3,13 @@ import { useQuery } from '@tanstack/react-query'
 import { usersApi, type Me } from '../api/users'
 
 /** Категории прав. Держатся в согласии с `Permission` на сервере. */
-export type PermissionKey = 'catalog' | 'watch' | 'downloads' | 'library' | 'settings'
+export type PermissionKey =
+  | 'catalog'
+  | 'watch'
+  | 'device_downloads'
+  | 'downloads'
+  | 'library'
+  | 'settings'
 
 /**
  * Что доступно текущему пользователю.

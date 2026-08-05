@@ -205,6 +205,7 @@ export const en: Dictionary = {
       downloads: 'Downloads',
       library: 'Library',
       watch: 'Playback',
+      device_downloads: 'Save to device',
     },
     permissionHint: {
       catalog: 'See the catalog, title pages and library status. Read only; without it the interface is empty',
@@ -212,6 +213,7 @@ export const en: Dictionary = {
       downloads: 'Queue downloads and manage the queue. Costs disk and traffic',
       library: 'Change folder and episode bindings, start scans',
       watch: 'Watch and listen: streaming through our proxy and local files. Changes nothing',
+      device_downloads: 'Save files to their own device. Uses no server disk',
     },
   },
   common: {
