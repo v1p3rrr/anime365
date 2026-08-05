@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from sqlalchemy import select
 
@@ -14,6 +15,40 @@ from app.models import DEFAULT_USER_ID, AppSetting, AppUser
 from app.services.fts import init_fts
 
 log = logging.getLogger(__name__)
+
+
+def close_orphaned_runs() -> int:
+    """Закрывает джобы, которые прервал перезапуск.
+
+    ⚠️ Статус `running` означает «этим прямо сейчас кто-то занят». После
+    падения или рестарта контейнера заниматься уже некому, а запись остаётся —
+    и висит навсегда. Найдено на живом сервере: скан библиотеки, начатый в
+    01:59, остался `running`, и индикатор в интерфейсе показывал вечное
+    «идёт сканирование».
+
+    Ровно та же ловушка, что была у очереди загрузок ([D-37](../../../claude/09-decisions.md)),
+    только там она мешала работать, а здесь врёт человеку о состоянии.
+
+    Возобновлять такие джобы не пытаемся: скан дешёвый и запускается кнопкой
+    или расписанием, а досчитывать чужую половину — значит гадать, где она
+    остановилась.
+    """
+    from app.models.catalog import ScanRun
+
+    with session_scope() as session:
+        stale = (
+            session.execute(select(ScanRun).where(ScanRun.status == "running"))
+            .scalars()
+            .all()
+        )
+        for run in stale:
+            run.status = "failed"
+            run.finished_at = datetime.utcnow()
+            run.error = "Прервано перезапуском сервиса"
+
+    if stale:
+        log.info("Закрыто джоб, прерванных перезапуском: %d", len(stale))
+    return len(stale)
 
 
 def bootstrap() -> None:
@@ -39,6 +74,7 @@ def bootstrap() -> None:
     if obsolete:
         log.info("Удалено устаревших индексов: %d", obsolete)
     init_fts()
+    close_orphaned_runs()
 
     with session_scope() as session:
         if session.get(AppUser, DEFAULT_USER_ID) is None:
