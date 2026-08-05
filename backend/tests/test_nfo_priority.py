@@ -107,3 +107,52 @@ class TestNfoPriority:
 
         assert result.nfo is not None
         assert result.nfo.kind == "tvshow"
+
+
+# Настоящая пара из папки `Tamako Love Story`: в movie.nfo верные данные,
+# в tvshow.nfo — совсем другой тайтл, корейская дорама 2009 года.
+TAMAKO_MOVIE = """<?xml version="1.0" encoding="utf-8"?>
+<movie>
+  <title>Tamako Love Story</title>
+  <originaltitle>たまこラブストーリー</originaltitle>
+  <year>2014</year>
+  <premiered>2014-04-26</premiered>
+  <anilistid>20519</anilistid>
+  <shikimoriid>21647</shikimoriid>
+</movie>
+"""
+
+TAMAKO_TVSHOW = """<?xml version="1.0" encoding="utf-8"?>
+<tvshow>
+  <title>Fuyu no Sonata</title>
+  <originaltitle>冬のソナタ</originaltitle>
+  <year>2009</year>
+  <premiered>2009-10-17</premiered>
+  <anilistid>20519</anilistid>
+  <shikimoriid>4189</shikimoriid>
+</tvshow>
+"""
+
+
+class TestTamakoRealPair:
+    """Мусорный `tvshow.nfo` в корне фильмов не должен читаться вовсе.
+
+    Заметно, что `anilistid` в обоих файлах одинаковый и верный — расходятся
+    название, год и `shikimoriid`. Именно расхождение названия с именем папки
+    заставляло матчер отбросить идентификаторы целиком ([D-86]) и уйти в
+    нечёткий поиск, где «Tamako Love Story» нашла «True Love Story» 2003 года.
+    """
+
+    def test_movie_nfo_wins(self, tmp_path: Path) -> None:
+        folder = _folder(
+            tmp_path,
+            "Tamako Love Story",
+            {"movie.nfo": TAMAKO_MOVIE, "tvshow.nfo": TAMAKO_TVSHOW},
+        )
+
+        result = scan_folder(folder, tmp_path, "movie", get_rules())
+
+        assert result.nfo is not None
+        assert result.nfo.title == "Tamako Love Story"
+        assert result.nfo.year == 2014
+        assert result.nfo.kind == "movie"
