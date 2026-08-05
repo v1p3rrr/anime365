@@ -21,6 +21,7 @@ import {
   IconLogout,
   IconSettings,
 } from '@tabler/icons-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 
 import { Logo } from './components/Logo'
@@ -29,6 +30,7 @@ import { useAuth } from './hooks/useAuth'
 import { usePermissions } from './hooks/usePermissions'
 import { LOCALES, useT, type Locale } from './i18n'
 import { LoginPage } from './pages/LoginPage'
+import { MustChangePasswordPage } from './pages/MustChangePasswordPage'
 import classes from './App.module.css'
 
 // `need` — право, без которого раздела не видно вовсе. Прятать, а не
@@ -52,7 +54,8 @@ export function App() {
   const { pathname } = useLocation()
   const auth = useAuth()
   const { t, locale, setLocale } = useT()
-  const { can } = usePermissions()
+  const { can, me } = usePermissions()
+  const queryClient = useQueryClient()
   // Свёрнуто по умолчанию: в узком окне развёрнутое меню съедало почти всю ширину.
   const [collapsed, setCollapsed] = useLocalStorage({
     key: 'a365.v1.navCollapsed',
@@ -88,6 +91,13 @@ export function App() {
   // отправить свои запросы и собрать по 401 в уведомлениях.
   if (!auth.authenticated) {
     return <LoginPage onSuccess={auth.refresh} />
+  }
+
+  // Вошли с временным паролём — приложения тоже нет. Это не назидание:
+  // сервер в таком состоянии отвечает отказом почти на весь API, и показать
+  // меню значило бы предложить полтора десятка заведомо обречённых страниц.
+  if (me?.must_change_password) {
+    return <MustChangePasswordPage onDone={() => queryClient.invalidateQueries({ queryKey: ['me'] })} />
   }
 
   const navItems = (showLabels: boolean, onNavigate?: () => void) =>

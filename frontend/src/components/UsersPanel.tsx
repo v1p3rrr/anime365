@@ -19,6 +19,7 @@ import { notifications } from '@mantine/notifications'
 import {
   IconArrowBackUp,
   IconDeviceFloppy,
+  IconKey,
   IconTrash,
   IconUserPlus,
 } from '@tabler/icons-react'
@@ -26,6 +27,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
 import { usersApi, type AppUser } from '../api/users'
+import { IssuedPasswordModal } from './IssuedPasswordModal'
 import { useT } from '../i18n'
 import { type TranslationKey } from '../i18n'
 
@@ -79,6 +81,17 @@ export function UsersPanel({ onDirtyChange }: Props = {}) {
   // «удалён» как ещё одно поле.
   const [toRemove, setToRemove] = useState<number[]>([])
   const [confirming, setConfirming] = useState(false)
+
+  // Выданный сервером пароль: показывается один раз и нигде не хранится.
+  const [issued, setIssued] = useState<{ name: string; password: string } | null>(null)
+
+  const reset = useMutation({
+    mutationFn: (id: number) => usersApi.resetPassword(id),
+    onSuccess: (result) => {
+      setIssued({ name: result.name, password: result.password })
+      invalidate()
+    },
+  })
 
   // Черновик: id пользователя -> что в нём поменяли. Пустая запись означает
   // «изменений нет» и в него не попадает.
@@ -226,6 +239,8 @@ export function UsersPanel({ onDirtyChange }: Props = {}) {
                         : [...current, user.id],
                     )
                   }
+                  onResetPassword={() => reset.mutate(user.id)}
+                  resetting={reset.isPending && reset.variables === user.id}
                 />
               )
             })}
@@ -273,8 +288,16 @@ export function UsersPanel({ onDirtyChange }: Props = {}) {
       <CreateUserModal
         opened={creating}
         allPermissions={data?.all_permissions ?? []}
+        defaultPermissions={data?.default_permissions ?? []}
         onClose={() => setCreating(false)}
         onCreated={invalidate}
+        onIssued={(name, password) => setIssued({ name, password })}
+      />
+
+      <IssuedPasswordModal
+        password={issued?.password ?? null}
+        name={issued?.name ?? ''}
+        onClose={() => setIssued(null)}
       />
     </Card>
   )
@@ -291,6 +314,9 @@ interface RowProps {
   onToggleAdmin: (value: boolean) => void
   onPermissions: (value: string[]) => void
   onRemove: () => void
+  /** Сброс пароля идёт мимо черновика: он возвращает значение на показ. */
+  onResetPassword: () => void
+  resetting: boolean
 }
 
 function UserRow({
@@ -302,6 +328,8 @@ function UserRow({
   onToggleAdmin,
   onPermissions,
   onRemove,
+  onResetPassword,
+  resetting,
 }: RowProps) {
   const { t } = useT()
 
@@ -339,6 +367,11 @@ function UserRow({
           <Text size="xs" c="dimmed">
             {t('users.noPassword')}
           </Text>
+        )}
+        {user.must_change_password && (
+          <Badge size="xs" color="orange" variant="light">
+            {t('users.temporaryPassword')}
+          </Badge>
         )}
       </Table.Td>
 
@@ -382,19 +415,39 @@ function UserRow({
       </Table.Td>
 
       <Table.Td>
-        <Tooltip label={lockReason} disabled={!lockReason}>
-          <span>
+        <Group gap={2} wrap="nowrap">
+          {/* Сброс применяется сразу, в обход черновика, и это осознанно:
+              он возвращает открытый пароль, который надо показать немедленно.
+              Отложить такое действие «до сохранения» нельзя — пришлось бы
+              хранить выданный пароль в памяти формы до неопределённого
+              момента. Необратимости здесь нет: сбросить можно ещё раз. */}
+          <Tooltip label={t('users.resetPasswordHint')}>
             <ActionIcon
               variant="subtle"
-              color={markedForRemoval ? 'gray' : 'red'}
-              disabled={Boolean(lockReason)}
-              onClick={onRemove}
-              aria-label={markedForRemoval ? t('users.undoRemove') : t('users.remove')}
+              color="gray"
+              loading={resetting}
+              disabled={markedForRemoval}
+              onClick={onResetPassword}
+              aria-label={t('users.resetPassword')}
             >
-              {markedForRemoval ? <IconArrowBackUp size={15} /> : <IconTrash size={15} />}
+              <IconKey size={15} />
             </ActionIcon>
-          </span>
-        </Tooltip>
+          </Tooltip>
+
+          <Tooltip label={lockReason} disabled={!lockReason}>
+            <span>
+              <ActionIcon
+                variant="subtle"
+                color={markedForRemoval ? 'gray' : 'red'}
+                disabled={Boolean(lockReason)}
+                onClick={onRemove}
+                aria-label={markedForRemoval ? t('users.undoRemove') : t('users.remove')}
+              >
+                {markedForRemoval ? <IconArrowBackUp size={15} /> : <IconTrash size={15} />}
+              </ActionIcon>
+            </span>
+          </Tooltip>
+        </Group>
       </Table.Td>
     </Table.Tr>
   )
@@ -403,15 +456,29 @@ function UserRow({
 interface ModalProps {
   opened: boolean
   allPermissions: string[]
+  /** Чем предзаполнить галочки — список приходит с сервера. */
+  defaultPermissions: string[]
   onClose: () => void
   onCreated: () => void
+  /** Сервер выдал пароль: показать его один раз. */
+  onIssued: (name: string, password: string) => void
 }
 
-function CreateUserModal({ opened, allPermissions, onClose, onCreated }: ModalProps) {
+function CreateUserModal({
+  opened,
+  allPermissions,
+  defaultPermissions,
+  onClose,
+  onCreated,
+  onIssued,
+}: ModalProps) {
   const { t } = useT()
   const [name, setName] = useState('')
   const [isAdmin, setIsAdmin] = useState(false)
-  const [permissions, setPermissions] = useState<string[]>([])
+  // Галочки предзаполнены умолчаниями с сервера: держать этот список на
+  // клиенте значило бы иметь вторую правду, которая однажды разойдётся.
+  const [permissions, setPermissions] = useState<string[]>(defaultPermissions)
+  const [temporary, setTemporary] = useState(true)
   const [password, setPassword] = useState('')
 
   const create = useMutation({
@@ -420,10 +487,13 @@ function CreateUserModal({ opened, allPermissions, onClose, onCreated }: ModalPr
         name: name.trim(),
         is_admin: isAdmin,
         permissions,
-        password: password || undefined,
+        // Временный пароль придумывает сервер, поле ввода при этом скрыто.
+        password: temporary ? undefined : password || undefined,
+        temporary_password: temporary,
       }),
-    onSuccess: () => {
+    onSuccess: (user) => {
       onCreated()
+      if (user.password) onIssued(user.name, user.password)
       reset()
       onClose()
     },
@@ -432,7 +502,8 @@ function CreateUserModal({ opened, allPermissions, onClose, onCreated }: ModalPr
   function reset() {
     setName('')
     setIsAdmin(false)
-    setPermissions([])
+    setPermissions(defaultPermissions)
+    setTemporary(true)
     setPassword('')
   }
 
@@ -479,12 +550,24 @@ function CreateUserModal({ opened, allPermissions, onClose, onCreated }: ModalPr
           </Stack>
         )}
 
-        <PasswordInput
-          label={t('users.password')}
-          description={t('users.passwordHint')}
-          value={password}
-          onChange={(event) => setPassword(event.currentTarget.value)}
+        <Switch
+          label={t('users.temporaryPassword')}
+          description={t('users.temporaryPasswordHint')}
+          checked={temporary}
+          onChange={(event) => setTemporary(event.currentTarget.checked)}
         />
+
+        {/* Поле ввода только для постоянного пароля. Временный придумывает
+            сервер: придуманный руками «временный» пароль на практике
+            оказывается словарным, а живёт он до первого входа. */}
+        {!temporary && (
+          <PasswordInput
+            label={t('users.password')}
+            description={t('users.passwordHint')}
+            value={password}
+            onChange={(event) => setPassword(event.currentTarget.value)}
+          />
+        )}
 
         {create.isError && <Alert color="red">{t('users.createFailed')}</Alert>}
 

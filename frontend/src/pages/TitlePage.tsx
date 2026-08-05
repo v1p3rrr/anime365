@@ -53,11 +53,29 @@ import { TranslationGroups } from '../components/TranslationGroups'
 import { TitleDetails } from '../components/TitleDetails'
 import { useSeriesTypeLabel } from '../i18n/seriesType'
 import { useT, type TranslationKey } from '../i18n'
+import { useSeasonLabel } from '../i18n/season'
 import { LangTag } from '../components/Flag'
 import { useApiError } from '../i18n/apiError'
 import { useTitleName } from '../i18n/titles'
 import { useFormat } from '../i18n/format'
 import scrollClasses from './ScrollPage.module.css'
+
+/**
+ * Названия внешних ресурсов приходят с Anime365 по-русски. Латиница здесь
+ * уместнее: это имена собственные, и на всех трёх языках интерфейса их пишут
+ * одинаково — «Шикимори» в английской версии страницы читалось бы как
+ * недоделанный перевод.
+ *
+ * Переименовываем только то, у чего есть общепринятое латинское написание;
+ * остальные подписи отдаём как пришли, чтобы новая ссылка не пропала.
+ */
+const LINK_TITLES: Record<string, string> = {
+  Шикимори: 'Shikimori',
+}
+
+function linkTitle(title: string | undefined): string {
+  return LINK_TITLES[(title ?? '').trim()] ?? title ?? ''
+}
 
 export function TitlePage() {
   const { id } = useParams()
@@ -80,6 +98,7 @@ export function TitlePage() {
   }, [targetsQuery.data])
   const queryClient = useQueryClient()
   const { t } = useT()
+  const seasonLabel = useSeasonLabel()
   const seriesTypeLabel = useSeriesTypeLabel()
   const apiError = useApiError()
   const titleName = useTitleName()
@@ -356,7 +375,7 @@ export function TitlePage() {
 
             <Badge variant="light">{seriesTypeLabel(series.type, series.type_title)}</Badge>
             {series.year && <Badge variant="light">{series.year}</Badge>}
-            {series.season && <Badge variant="light">{series.season}</Badge>}
+            {series.season && <Badge variant="light">{seasonLabel(series.season)}</Badge>}
             {series.is_airing && <Badge color="red">{t('catalog.cardOngoing')}</Badge>}
             {series.mal_score != null && <Badge color="yellow">MAL {series.mal_score}</Badge>}
             <Badge color="gray" variant="outline">
@@ -453,7 +472,7 @@ export function TitlePage() {
           {data.links.slice(0, 10).map((l, i) =>
             l.url ? (
               <Anchor key={i} href={l.url} target="_blank" rel="noreferrer noopener" size="xs">
-                {l.title} <IconExternalLink size={10} />
+                {linkTitle(l.title)} <IconExternalLink size={10} />
               </Anchor>
             ) : null,
           )}

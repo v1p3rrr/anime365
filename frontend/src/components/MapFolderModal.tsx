@@ -21,6 +21,7 @@ import { libraryApi, type UnmappedFolder } from '../api/library'
 import { ErrorState } from './ErrorState'
 import pathClasses from './PathLine.module.css'
 import { useT } from '../i18n'
+import { useSeasonLabel } from '../i18n/season'
 import { useApiError } from '../i18n/apiError'
 import { useTitleName } from '../i18n/titles'
 
@@ -38,6 +39,7 @@ interface Props {
  */
 export function MapFolderModal({ folder, onClose }: Props) {
   const { t } = useT()
+  const seasonLabel = useSeasonLabel()
   const apiError = useApiError()
   const titleName = useTitleName()
   const queryClient = useQueryClient()
@@ -151,7 +153,7 @@ export function MapFolderModal({ folder, onClose }: Props) {
                       </Badge>
                       {card.season && (
                         <Badge size="xs" variant="light">
-                          {card.season}
+                          {seasonLabel(card.season)}
                         </Badge>
                       )}
                       {card.number_of_episodes > 0 && (

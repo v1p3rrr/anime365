@@ -68,6 +68,8 @@ PERMISSION_DENIED = "permission_denied"
 ADMIN_REQUIRED = "admin_required"
 USER_EXISTS = "user_exists"
 USER_NOT_FOUND = "user_not_found"
+#: Пароль выдан временно: работать нельзя, пока не задан свой.
+PASSWORD_CHANGE_REQUIRED = "password_change_required"
 CANNOT_REMOVE_LAST_ADMIN = "cannot_remove_last_admin"
 
 # --- Настройки ---------------------------------------------------------------

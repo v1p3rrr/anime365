@@ -120,11 +120,19 @@ ASSIGNABLE_PERMISSIONS = [p for p in ALL_PERMISSIONS if p not in IMPLICIT_PERMIS
 class CurrentUser:
     """Кто выполняет запрос. Отдельный тип, чтобы не таскать модель из сессии БД."""
 
-    def __init__(self, user_id: int, name: str, is_admin: bool, permissions: list[str]) -> None:
+    def __init__(
+        self,
+        user_id: int,
+        name: str,
+        is_admin: bool,
+        permissions: list[str],
+        must_change_password: bool = False,
+    ) -> None:
         self.id = user_id
         self.name = name
         self.is_admin = is_admin
         self.permissions = permissions
+        self.must_change_password = must_change_password
 
     def can(self, permission: Permission) -> bool:
         # У администратора прав не спрашивают: иначе достаточно забыть выдать
@@ -162,13 +170,41 @@ def current_user(request: Request) -> CurrentUser:
                 errors.PERMISSION_DENIED,
                 "Пользователь больше не существует — войдите заново",
             )
-        return CurrentUser(row.id, row.name, row.is_admin, list(row.permissions or []))
+        return CurrentUser(
+            row.id,
+            row.name,
+            row.is_admin,
+            list(row.permissions or []),
+            must_change_password=bool(row.must_change_password),
+        )
+
+
+def _deny_while_password_is_temporary(user: CurrentUser) -> None:
+    """Временный пароль запрещает работу, а не только показывает экран.
+
+    Пароль, который выдал администратор, знает не только владелец — значит
+    паролем он ещё не является. Если бы флаг лишь рисовал форму, закрыть её
+    было бы достаточно, чтобы продолжить работать под чужим паролём.
+
+    Проверка стоит в самих проверках прав, а не в `current_user`, и это
+    осознанно: `/api/users/me` и смена собственного пароля обязаны остаться
+    доступными — иначе человеку нечем узнать, чего от него хотят, и нечем
+    это исполнить.
+    """
+    if not user.must_change_password:
+        return
+    raise ApiError(
+        403,
+        errors.PASSWORD_CHANGE_REQUIRED,
+        "Пароль выдан временно — задайте свой, чтобы продолжить",
+    )
 
 
 def require(permission: Permission):
     """Зависимость эндпоинта: пускает дальше только с этим правом."""
 
     def guard(user: CurrentUser = Depends(current_user)) -> CurrentUser:
+        _deny_while_password_is_temporary(user)
         if not user.can(permission):
             raise ApiError(
                 403,
@@ -200,6 +236,7 @@ def require_save_or_watch():
     """
 
     def guard(request: Request, user: CurrentUser = Depends(current_user)) -> CurrentUser:
+        _deny_while_password_is_temporary(user)
         saving = (request.query_params.get("download") or "").strip().lower() in _TRUTHY
         needed = Permission.DEVICE_DOWNLOADS if saving else Permission.WATCH
         if not user.can(needed):
@@ -218,6 +255,7 @@ def require_admin():
     """Только администратор. Для управления самими пользователями."""
 
     def guard(user: CurrentUser = Depends(current_user)) -> CurrentUser:
+        _deny_while_password_is_temporary(user)
         if not user.is_admin:
             raise ApiError(
                 403,

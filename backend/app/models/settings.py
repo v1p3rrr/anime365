@@ -42,6 +42,17 @@ class AppUser(Base):
     # пользователей, ни в настройках.
     password_hash: Mapped[str | None] = mapped_column(String(255))
 
+    # Пароль выдан временно и должен быть заменён при первом же входе.
+    #
+    # Ставится в двух случаях: администратор завёл запись с галочкой «временный
+    # пароль» и администратор сбросил пароль. Оба означают одно — пароль знает
+    # не только владелец, а значит паролем он ещё не является.
+    #
+    # ⚠️ Флаг обязан запрещать работу, а не только показывать экран: иначе
+    # достаточно закрыть окно, чтобы продолжить с чужим паролём. Запрет стоит
+    # в middleware, см. `require_own_password`.
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -35,8 +36,15 @@ from app.core.permissions import (
     require_admin,
 )
 from app.api.auth import issue_session_after_password_change
-from app.core.security import hash_password, password_problem, sessions
+from app.core.security import (
+    generate_temporary_password,
+    hash_password,
+    password_problem,
+    sessions,
+)
 from app.models import AppUser
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -49,12 +57,23 @@ class UserCreate(BaseModel):
     #: Без пароля под этим именем нельзя войти — запись останется владельцем
     #: задач и привязок. Это законный случай, поэтому поле необязательное.
     password: str | None = None
+    #: Пароль выдаётся на один раз: сервер придумывает его сам и показывает
+    #: администратору однократно, а владелец задаёт свой при первом входе.
+    #:
+    #: Взаимоисключающе с `password`: либо администратор задаёт пароль
+    #: насовсем, либо мы генерируем временный. Придуманный руками «временный»
+    #: пароль на практике оказывается словарным, а живёт он до первого входа —
+    #: смысла в такой комбинации нет.
+    temporary_password: bool = False
 
 
 class UserUpdate(BaseModel):
     is_admin: bool | None = None
     permissions: list[str] | None = None
     password: str | None = None
+    #: Назначенный пароль по умолчанию временный. `False` — редкий случай
+    #: «задать насовсем», когда пароль придумал сам владелец.
+    temporary_password: bool | None = None
 
 
 def _to_dict(row: AppUser) -> dict[str, Any]:
@@ -66,6 +85,8 @@ def _to_dict(row: AppUser) -> dict[str, Any]:
         # он может всё, а не «права не заданы».
         "permissions": ALL_PERMISSIONS if row.is_admin else list(row.permissions or []),
         "has_password": bool(row.password_hash),
+        # Администратору видно, что человек ещё не сменил выданный пароль.
+        "must_change_password": bool(row.must_change_password),
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
@@ -120,6 +141,10 @@ def me(user: CurrentUser = Depends(current_user)) -> dict[str, Any]:
         # Пока режим не включён, интерфейс не должен прятать ничего. Флаг
         # отделяет «прав нет» от «разграничение ещё не действует».
         "multiuser_enabled": _multiuser_enabled(),
+        # Пароль временный — интерфейс обязан увести на форму смены. Сервер
+        # при этом уже отказывает всему остальному, так что это подсказка,
+        # а не защита.
+        "must_change_password": user.must_change_password,
     }
 
 
@@ -146,6 +171,10 @@ def list_users() -> dict[str, Any]:
             # Только назначаемые: каталог есть у всех, кто вошёл, и галочка,
             # которую нельзя снять, в форме только сбивала бы с толку.
             "all_permissions": ASSIGNABLE_PERMISSIONS,
+            # Чем предзаполнить галочки в форме создания. Держать этот список
+            # на клиенте значило бы иметь вторую правду, которая разойдётся с
+            # серверной при первом же изменении.
+            "default_permissions": list(DEFAULT_PERMISSIONS),
             "multiuser_enabled": any(not r.is_admin for r in rows),
         }
 
@@ -170,15 +199,27 @@ def create_user(payload: UserCreate) -> dict[str, Any]:
                 409, errors.USER_EXISTS, f"Пользователь «{name}» уже есть", name=name
             )
 
+        # Временный пароль придумывает сервер. Открытое значение уходит в
+        # ответ и больше нигде не хранится — второй раз узнать его нельзя.
+        issued = generate_temporary_password() if payload.temporary_password else None
+        plain = issued or payload.password
+
         row = AppUser(
             name=name,
             is_admin=payload.is_admin,
             permissions=permissions,
-            password_hash=hash_password(_checked(payload.password)) if payload.password else None,
+            password_hash=hash_password(_checked(plain)) if plain else None,
+            # Без пароля флаг бессмыслен: входить под такой записью нечем,
+            # а менять нечего.
+            must_change_password=bool(issued),
         )
         session.add(row)
         session.flush()
-        return _to_dict(row)
+        created = _to_dict(row)
+
+    if issued:
+        created["password"] = issued
+    return created
 
 
 @router.put("/{user_id}", dependencies=[Depends(require_admin())])
@@ -195,6 +236,11 @@ def update_user(user_id: int, payload: UserUpdate) -> dict[str, Any]:
             row.permissions = _validate(payload.permissions)
         if payload.password:
             row.password_hash = hash_password(_checked(payload.password))
+            # Пароль, назначенный администратором, знает не он один — значит
+            # владелец обязан заменить его при первом же входе. Снять это
+            # можно только сменив пароль самому, и это не лишний шаг: иначе
+            # у чужого пароля не будет срока годности вовсе.
+            row.must_change_password = payload.temporary_password is not False
             # Чужой пароль меняют по одной причине: он скомпрометирован или
             # человек потерял доступ. В обоих случаях оставлять живыми сессии,
             # открытые старым паролём, — значит не сделать ровно того, ради чего
@@ -203,6 +249,36 @@ def update_user(user_id: int, payload: UserUpdate) -> dict[str, Any]:
 
         session.flush()
         return _to_dict(row)
+
+
+@router.post("/{user_id}/password/reset", dependencies=[Depends(require_admin())])
+def reset_password(user_id: int) -> dict[str, Any]:
+    """Сброс пароля: сервер придумывает новый и показывает его один раз.
+
+    Нужен на случай «человек забыл пароль». Придумывать пароль руками
+    администратору не даём: он придумает удобный, а удобный здесь означает
+    слабый — этот пароль всё равно живёт до первого входа.
+
+    ⚠️ Открытое значение возвращается **единственный раз**, в ответе на это
+    действие. Нигде не хранится и не логируется: в базе только хеш, и второй
+    раз узнать пароль нельзя — можно лишь сбросить снова.
+
+    Новый пароль сразу помечен временным, поэтому им можно только войти и
+    тут же задать свой. Сессии закрываются: если доступ уводили, старая кука
+    не должна пережить сброс.
+    """
+    plain = generate_temporary_password()
+    with session_scope() as session:
+        row = session.get(AppUser, user_id)
+        if row is None:
+            raise ApiError(404, errors.USER_NOT_FOUND, "Пользователь не найден")
+        row.password_hash = hash_password(plain)
+        row.must_change_password = True
+        name = row.name
+
+    sessions.drop_for_user(user_id)
+    log.info("Пароль пользователя %s сброшен администратором", user_id)
+    return {"id": user_id, "name": name, "password": plain}
 
 
 class PasswordChange(BaseModel):
@@ -248,6 +324,8 @@ def change_own_password(
         if row is None:
             raise ApiError(404, errors.USER_NOT_FOUND, "Пользователь не найден")
         row.password_hash = hash_password(payload.new)
+        # Пароль теперь знает только владелец — временным он быть перестал.
+        row.must_change_password = False
 
     login_limiter.reset(key)
     # Остальные сессии закрываем: смена пароля обязана выкидывать того, кто
