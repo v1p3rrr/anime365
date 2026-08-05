@@ -153,7 +153,11 @@ export function App() {
                 <IconLayoutSidebar size={18} />
               </ActionIcon>
             </Tooltip>
-            <Logo height={40} />
+            {/* Логотип — ссылка в каталог. Привычка общая для всех сайтов, и
+                ждать её человек будет независимо от того, есть ли пункт меню. */}
+            <UnstyledButton component={Link} to="/" aria-label={t('nav.catalog')}>
+              <Logo height={40} />
+            </UnstyledButton>
           </Group>
           <Group gap="xs" wrap="nowrap">
             <Badge variant="light" color="gray" visibleFrom="xs">
@@ -200,7 +204,14 @@ export function App() {
         padding={4}
         withCloseButton={false}
         title={
-          <Logo height={30} />
+          <UnstyledButton
+            component={Link}
+            to="/"
+            onClick={closeMobile}
+            aria-label={t('nav.catalog')}
+          >
+            <Logo height={30} />
+          </UnstyledButton>
         }
         // Затемнение обязательно: без него сквозь меню видно каталог.
         overlayProps={{ backgroundOpacity: 0.55, blur: 2 }}

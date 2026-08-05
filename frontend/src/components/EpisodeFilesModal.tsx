@@ -6,6 +6,8 @@ import { useState } from 'react'
 
 import { api } from '../api/client'
 import { ErrorState } from './ErrorState'
+import { SaveToComputer } from './SaveToComputer'
+import rowClasses from './StripedRows.module.css'
 import { useT } from '../i18n'
 import { useApiError } from '../i18n/apiError'
 import { useFormat } from '../i18n/format'
@@ -156,12 +158,23 @@ export function EpisodeFilesModal({ opened, onClose, seriesId, episode, episodeL
         {(files.data ?? []).map((file) => {
           const hasTracks = tracks(file)
           return (
-            <Stack key={file.file_id} gap={4} p="xs" style={{ borderRadius: 6 }}>
+            <Stack key={file.file_id} gap={4} className={rowClasses.row}>
               <Group gap="xs" justify="space-between" wrap="nowrap">
                 <Text size="sm" fw={500} style={{ minWidth: 0 }} truncate>
                   {file.filename}
                 </Text>
                 <Group gap={4} wrap="nowrap">
+                  {/* Скачать этот самый файл себе. Кнопка стоит на файле, а не
+                      в плеере: в плеер идут смотреть, а сюда — разбираться,
+                      и «забрать вот этот файл» здесь и требуется. */}
+                  <SaveToComputer
+                    size="xs"
+                    href={`/api/stream/local/${file.file_id}?download=1`}
+                    label={
+                      file.kind === 'subtitle' ? t('save.localSubtitles') : t('save.localVideo')
+                    }
+                    icon={file.kind === 'subtitle' ? 'subtitles' : 'video'}
+                  />
                   <Badge size="xs" variant="light">
                     {file.role}
                   </Badge>

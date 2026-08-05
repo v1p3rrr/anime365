@@ -1033,7 +1033,7 @@ export const en: Dictionary = {
   },
 
   save: {
-    title: 'To your computer:',
+    title: 'To your device:',
     video: 'Save the video — straight from Anime365, bypassing this server',
     subtitles: 'Save the subtitles',
     localVideo: 'Save this file',

@@ -35,6 +35,7 @@ import {
 import { usePermissions } from '../hooks/usePermissions'
 import { DownloadButton, type Emphasis } from './DownloadButton'
 import { SaveToComputer } from './SaveToComputer'
+import rowClasses from './StripedRows.module.css'
 
 interface Props {
   episode: EpisodeItem
@@ -277,7 +278,13 @@ export function EpisodeDownloadPanel({ episode, types }: Props) {
           <ScrollArea.Autosize mah={260} type="auto">
             <Stack gap={4} pr="xs">
               {section.items.map((item) => (
-                <Group key={item.id} gap="xs" wrap="wrap" justify="space-between">
+                <Group
+                  key={item.id}
+                  gap="xs"
+                  wrap="wrap"
+                  justify="space-between"
+                  className={rowClasses.row}
+                >
                   <Group gap={6} wrap="nowrap" style={{ minWidth: 0, flex: '1 1 180px' }}>
                     <Text size="xs" style={{ wordBreak: 'break-word' }}>
                       {item.authors}
@@ -290,27 +297,37 @@ export function EpisodeDownloadPanel({ episode, types }: Props) {
                   </Group>
 
                   <Group gap={4} wrap="nowrap">
-                    {/* Себе на компьютер, а не в библиотеку сервера. Стоит
-                        первой в ряду и отделена: остальные кнопки ставят
-                        задачу в очередь, эта просто отдаёт файл — видео едет
-                        прямо с CDN, минуя наш сервер. */}
+                    {/* ── Себе на устройство ──────────────────────────────
+                        Отдельная группа, отчёркнутая от серверных кнопок:
+                        это разные действия с разным исходом. Слева файл
+                        приходит в браузер, справа задача уходит в очередь
+                        сервера, и путать их нельзя.
+
+                        В разделе субтитров раньше можно было сохранить себе
+                        только субтитры, хотя видео сервер оттуда же скачать
+                        предлагал. Теперь набор одинаков с обеих сторон. */}
                     {canWatch && (
-                      <SaveToComputer
-                        size="xs"
-                        href={
-                          section.kind === 'sub'
-                            ? `/api/stream/${item.id}/subtitles.ass?download=1`
-                            : `/api/stream/${item.id}/download`
-                        }
-                        disabled={section.kind === 'sub' && hardsub.has(item.id)}
-                        label={
-                          section.kind === 'sub'
-                            ? hardsub.has(item.id)
-                              ? t('episode.hardsubReason')
-                              : t('save.subtitles')
-                            : t('save.video')
-                        }
-                      />
+                      <Group gap={2} wrap="nowrap" className={rowClasses.deviceGroup}>
+                        <SaveToComputer
+                          size="xs"
+                          href={`/api/stream/${item.id}/download`}
+                          label={t('save.video')}
+                          icon="video"
+                        />
+                        {section.kind === 'sub' && (
+                          <SaveToComputer
+                            size="xs"
+                            href={`/api/stream/${item.id}/subtitles.ass?download=1`}
+                            disabled={hardsub.has(item.id)}
+                            label={
+                              hardsub.has(item.id)
+                                ? t('episode.hardsubReason')
+                                : t('save.subtitles')
+                            }
+                            icon="subtitles"
+                          />
+                        )}
+                      </Group>
                     )}
                     {section.kind === 'sub' ? (
                       subActions(section.lang, hardsub.has(item.id)).map((action) => (

@@ -1,5 +1,5 @@
 import { ActionIcon, Tooltip } from '@mantine/core'
-import { IconDeviceFloppy } from '@tabler/icons-react'
+import { IconDeviceFloppy, IconFileText, IconMovie } from '@tabler/icons-react'
 
 interface Props {
   /** Адрес, отдающий файл с `Content-Disposition: attachment`. */
@@ -7,6 +7,18 @@ interface Props {
   label: string
   disabled?: boolean
   size?: 'xs' | 'sm' | 'md'
+  /**
+   * Что именно сохраняем. Дискета говорит «себе на устройство», но не говорит
+   * «что»: когда в ряду две такие кнопки, различать их надо по значку, а не по
+   * порядку — по порядку промахиваются.
+   */
+  icon?: 'any' | 'video' | 'subtitles'
+}
+
+const ICONS = {
+  any: IconDeviceFloppy,
+  video: IconMovie,
+  subtitles: IconFileText,
 }
 
 /**
@@ -26,7 +38,9 @@ interface Props {
  * «скачать себе» — разные действия с разным исходом, и путать их нельзя.
  * Первое ставит задачу в очередь на сервере, второе просто отдаёт файл.
  */
-export function SaveToComputer({ href, label, disabled, size = 'sm' }: Props) {
+export function SaveToComputer({ href, label, disabled, size = 'sm', icon = 'any' }: Props) {
+  const Icon = ICONS[icon]
+
   return (
     <Tooltip label={label} withArrow>
       <ActionIcon
@@ -40,7 +54,7 @@ export function SaveToComputer({ href, label, disabled, size = 'sm' }: Props) {
           if (disabled) event.preventDefault()
         }}
       >
-        <IconDeviceFloppy size={size === 'xs' ? 14 : 16} />
+        <Icon size={size === 'xs' ? 14 : 16} />
       </ActionIcon>
     </Tooltip>
   )
