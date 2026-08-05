@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
-from app.services.filename_rules import RuleSet, get_rules, parse_filename
+from app.services.filename_rules import RuleSet, extract_season, get_rules, parse_filename
 from app.services.nfo_parser import NfoData, parse_nfo
 
 log = logging.getLogger(__name__)
@@ -244,16 +244,18 @@ def _classify(suffix: str, rules: RuleSet) -> str | None:
 
 
 def _season_from_dir_name(name: str) -> int | None:
+    """Номер сезона по имени подпапки.
+
+    ⚠️ Разбор общий с названиями (`extract_season`), а не свой. Раньше здесь
+    лежала копия правил, и она понимала только «Season 2»: релизная подпапка
+    `[Ohys-Raws] Kagerou Days 2nd Season (BD …)` оставалась без номера и уезжала
+    на первый сезон. Формы «2nd Season», «S2» и «2 сезон» общий разбор знает
+    давно — дублировать его смысла не было.
+    """
     lowered = name.strip().lower()
     if lowered in SPECIALS_NAMES:
         return 0
-    # «Season 2», «сезон 2»
-    import re
-
-    match = re.search(r"(?i)\b(?:season|сезон)\s*(\d{1,2})\b", name)
-    if match:
-        return int(match.group(1))
-    return None
+    return extract_season(name)[1]
 
 
 def scan_folder(

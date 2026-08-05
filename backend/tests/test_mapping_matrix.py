@@ -332,3 +332,150 @@ class TestMovieRoot:
         root_id = _run(root, "movie")
 
         assert _mapping(root_id).get("Kagerou Days") != SHOW
+
+
+# --------------------------------------------------------------------------- #
+# Клетки, найденные при повторном выводе матрицы
+# --------------------------------------------------------------------------- #
+
+
+class TestFolderShapes:
+    def test_release_subfolder_inside_a_title(self, tmp_path: Path) -> None:
+        """Клетка: сериалы · релизная подпапка внутри тайтла.
+
+        Реальная раскладка: `Yuru Camp/[Ohys-Raws] Yuru Camp Season 2 (BD …)`.
+        Имя подпапки — это релизный тег плюс название с номером сезона.
+        """
+        root = tmp_path / "f1"
+        title = root / "Kagerou Days"
+        _write(title, "tvshow.nfo", TVSHOW_NFO)
+        release = title / "[Ohys-Raws] Kagerou Days 2nd Season (BD 1280x720 x264 AAC)"
+        for i in (1, 2):
+            _write(release, f"Kagerou Days 2nd Season - 0{i} (BD 1280x720 x264 AAC).mkv")
+
+        root_id = _run(root, "series")
+        mapping = _mapping(root_id)
+
+        assert mapping.get(release.name and f"Kagerou Days/{release.name}") == SHOW_S2
+
+    def test_specials_folder_named_extras(self, tmp_path: Path) -> None:
+        """Клетка: сериалы · спешлы под именем `Extras`, а не `Specials`."""
+        root = tmp_path / "f2"
+        title = root / "Kagerou Days"
+        _write(title, "tvshow.nfo", TVSHOW_NFO)
+        extras = title / "Extras"
+        _write(extras, "Kagerou Days S00E01 - Natsu no Omoide [Group] Bluray-1080p.mkv")
+
+        root_id = _run(root, "series")
+
+        assert _mapping(root_id).get("Kagerou Days/Extras") == SPECIAL
+
+    def test_excluded_files_do_not_count(self, tmp_path: Path) -> None:
+        """Клетка: сериалы · бонусы NCOP/NCED рядом с сериями."""
+        root = tmp_path / "f3"
+        folder = root / "Kagerou Days"
+        _write(folder, "tvshow.nfo", TVSHOW_NFO)
+        _write(folder, "Kagerou Days S01E01 [Group] WEBDL-1080p.mkv")
+        _write(folder, "Kagerou Days - NCOP (BD 1920x1080).mkv")
+        _write(folder, "Kagerou Days - NCED (BD 1920x1080).mkv")
+
+        root_id = _run(root, "series")
+
+        assert _episodes(SHOW) == {1.0}, "бонусы засчитались как серии"
+
+    def test_folder_with_subtitles_only(self, tmp_path: Path) -> None:
+        """Клетка: сериалы · подпапка без единого видео, только субтитры.
+
+        Реальная: `Yuru Camp/[Ohys-Raws] …` — там тринадцать `.ja.srt` и ни
+        одного видео (единственный `.mkv` там — спешл, он исключается).
+        """
+        root = tmp_path / "f4"
+        title = root / "Kagerou Days"
+        _write(title, "tvshow.nfo", TVSHOW_NFO)
+        _write(title, "Kagerou Days S01E01 [Group] WEBDL-1080p.mkv")
+        subs = title / "[Ohys-Raws] Kagerou Days (BD)"
+        for i in (1, 2):
+            _write(subs, f"Kagerou Days - 0{i} (BD 1280x720).ja.srt", "こんにちは。元気ですか。" * 20)
+
+        root_id = _run(root, "series")
+
+        # Падать не должно, а серии тайтла остаются от настоящих видеофайлов.
+        assert _episodes(SHOW) == {1.0}
+
+
+class TestSubtitleRolesThroughThePipeline:
+    def test_sidecar_language_reaches_the_role(self, tmp_path: Path) -> None:
+        """Клетка: субтитры · язык из суффикса · роль в связях серий."""
+        root = tmp_path / "f5"
+        folder = root / "Kagerou Days"
+        _write(folder, "tvshow.nfo", TVSHOW_NFO)
+        _write(folder, "Kagerou Days S01E01 [Group] WEBDL-1080p.mkv")
+        _write(folder, "Kagerou Days S01E01 [Group] WEBDL-1080p.ru.ass", "Привет, как дела? " * 40)
+
+        root_id = _run(root, "series")
+
+        with session_scope() as session:
+            roles = {
+                role
+                for (role,) in session.execute(
+                    select(EpisodeMapping.role).where(EpisodeMapping.series_id == SHOW)
+                ).all()
+            }
+        assert roles == {"video", "sub_ru"}
+
+    def test_language_from_script_when_suffix_is_missing(self, tmp_path: Path) -> None:
+        """Клетка: субтитры без суффикса · язык по письменности."""
+        root = tmp_path / "f6"
+        folder = root / "Kagerou Days"
+        _write(folder, "tvshow.nfo", TVSHOW_NFO)
+        _write(folder, "Kagerou Days S01E01 [Group] WEBDL-1080p.mkv")
+        _write(folder, "Kagerou Days S01E01 [Group] WEBDL-1080p.ass", "Привет, как дела? " * 40)
+
+        root_id = _run(root, "series")
+
+        with session_scope() as session:
+            roles = {
+                role
+                for (role,) in session.execute(
+                    select(EpisodeMapping.role).where(EpisodeMapping.series_id == SHOW)
+                ).all()
+            }
+        assert "sub_ru" in roles
+
+
+class TestMovieShapes:
+    def test_several_parts_in_one_folder(self, tmp_path: Path) -> None:
+        """Клетка: фильмы · несколько видео в одной папке.
+
+        Реальная: `Gekijou Soushuuhen Bocchi the Rock! Movie + Tokuten BD`.
+        Правило «единственное видео — первая серия» тут намеренно молчит, и
+        сейчас у файлов не остаётся номера вовсе. Тест фиксирует **текущее**
+        поведение, чтобы изменение было заметным.
+        """
+        root = tmp_path / "f7"
+        folder = root / "Hoshi no Koe"
+        _write(folder, "movie.nfo", MOVIE_NFO)
+        _write(folder, "Hoshi no Koe (2014) - Part 1 [Bluray-1080p].mkv")
+        _write(folder, "Hoshi no Koe (2014) - Part 2 [Bluray-1080p].mkv")
+
+        root_id = _run(root, "movie")
+
+        assert _mapping(root_id)["Hoshi no Koe"] == MOVIE
+        assert _episodes(MOVIE) == set(), "номеров нет — это известная граница"
+
+    def test_season_nfo_inside_a_movie_folder(self, tmp_path: Path) -> None:
+        """Клетка: фильмы · рядом лежит season.nfo.
+
+        Реальная: у обеих папок Girls Band Cry в корне фильмов есть `season.nfo`.
+        Он не должен перебивать `movie.nfo`.
+        """
+        root = tmp_path / "f8"
+        folder = root / "Hoshi no Koe"
+        _write(folder, "movie.nfo", MOVIE_NFO)
+        _write(folder, "season.nfo", _season_nfo(1, "2014-05-24"))
+        _write(folder, "Hoshi no Koe (2014) - [Bluray-1080p] [JA].mkv")
+
+        root_id = _run(root, "movie")
+
+        assert _mapping(root_id)["Hoshi no Koe"] == MOVIE
+        assert _episodes(MOVIE) == {1.0}

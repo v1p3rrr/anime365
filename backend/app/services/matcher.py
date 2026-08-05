@@ -944,7 +944,19 @@ class Matcher:
         """
         if ctx.season_is_guessed:
             return None
-        for source in (ctx.season_nfo, ctx.own_nfo, ctx.nfo):
+
+        # У сезона со вторым и дальше номером годится только **его собственная**
+        # дата. Год из `tvshow.nfo` родителя описывает первый сезон, и подставлять
+        # его сюда — значит зарубить верного кандидата: у подпапки
+        # `[Ohys-Raws] … 2nd Season` ожидаемым годом оказывался 2019-й, а второй
+        # сезон вышел в 2021-м, и проверка отвергала именно его.
+        sources: tuple[NfoData | None, ...]
+        if ctx.season_number is not None and ctx.season_number > 1:
+            sources = (ctx.season_nfo, ctx.own_nfo)
+        else:
+            sources = (ctx.season_nfo, ctx.own_nfo, ctx.nfo)
+
+        for source in sources:
             if source is None:
                 continue
             if source.year:
