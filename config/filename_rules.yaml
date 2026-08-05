@@ -24,11 +24,17 @@ version: 1
 
 episode_rules:
   - id: jellyfin_sxxexx
-    scope: series
+    scope: any
     priority: 100
     enabled: true
     # Основной формат Jellyfin и Sonarr, включая склейки нескольких серий в файле.
     # Пример: "Wotakoi S01E01-E11 - Narumi and Hirotaka ... [Sonarr] Bluray-1080p.mkv"
+    #
+    # scope: any, а не series. Мы сами кладём в корень фильмов файлы с этим
+    # форматом ("Chainsaw Man Movie Reze-hen S01E01 [anime365_Crunchyroll]
+    # WEBDL.ru.ass"), и при scope: series они там не разбирались — номер серии
+    # оставался пустым, а без него файл не связывается с тайтлом. Явный SxxExx
+    # однозначен в любом корне и по приоритету старше разбора "название (год)".
     pattern: '(?i)\bS(?P<season>\d{1,2})E(?P<episode>\d{1,4})(?:\s*-\s*E(?P<episode_end>\d{1,4}))?\b'
 
   - id: anime365_own

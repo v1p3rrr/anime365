@@ -289,6 +289,8 @@ def scan_folder(
         )
 
     _apply_episode_nfo(files, episode_nfo)
+    _apply_single_movie(files, scope)
+    _pair_sidecar_subtitles(files)
 
     return ScannedFolder(
         rel_path=rel,
@@ -324,6 +326,66 @@ def _apply_episode_nfo(files: list[ScannedFile], episode_nfo: dict[str, NfoData]
             file.season_number = data.season
         if data.streams.subtitle_languages or data.streams.audio_languages:
             file.streams = data.streams.to_dict()
+
+
+def _content_videos(files: list[ScannedFile]) -> list[ScannedFile]:
+    return [f for f in files if f.kind == "video" and not f.excluded_reason]
+
+
+def _apply_single_movie(files: list[ScannedFile], scope: str) -> None:
+    """Единственное видео в папке фильма — это первая (и единственная) серия.
+
+    У фильмов номера в имени нет и взяться ему неоткуда:
+    «Chainsaw Man - The Movie - Reze Arc (2025) - [WEBDL-1080p]…» разбирается на
+    название и год, а `episode` остаётся пустым. Связь же с тайтлом ставится
+    только по номеру серии, поэтому фильм не показывался вовсе — при том, что
+    файл лежит на диске и запись о нём в базе есть.
+
+    Правило намеренно узкое: **ровно одно** видео. Составные фильмы (части,
+    «Movies and OVAs») так не разложить, им нужен свой разбор — приписать всем
+    единицу означало бы склеить разные части в одну серию.
+    """
+    if scope != "movie":
+        return
+    videos = _content_videos(files)
+    if len(videos) != 1:
+        return
+    only = videos[0]
+    if only.episode is None:
+        only.episode = 1.0
+        only.matched_rule_id = "single_movie"
+
+
+def _pair_sidecar_subtitles(files: list[ScannedFile]) -> None:
+    """Субтитры без номера серии берут его у своего видео.
+
+    Сайдкар-субтитры называются по видеофайлу с добавленным хвостом
+    (`…[JA].mkv` → `…[JA].ja.srt`) — именно по этому совпадению их подхватывает
+    и плеер. Разбор имени тут бессилен: у фильмов номера нет ни в одном из имён,
+    а у сериалов хвост языка иногда съедает номер вместе с собой.
+
+    Берётся самое длинное имя видео, являющееся началом имени субтитров, —
+    иначе в папке с «Part 1» и «Part 11» короткое имя перехватило бы чужие.
+    """
+    videos = [f for f in _content_videos(files) if f.episode is not None]
+    if not videos:
+        return
+    by_stem = sorted(
+        ((Path(f.filename).stem, f) for f in videos), key=lambda pair: len(pair[0]), reverse=True
+    )
+
+    for file in files:
+        if file.kind != "subtitle" or file.episode is not None or file.excluded_reason:
+            continue
+        stem = Path(file.filename).stem
+        for video_stem, video in by_stem:
+            if stem == video_stem or stem.startswith(video_stem + "."):
+                file.episode = video.episode
+                file.episode_end = video.episode_end
+                if file.season_number is None:
+                    file.season_number = video.season_number
+                file.matched_rule_id = "sidecar_of_video"
+                break
 
 
 def iter_title_folders(root: Path) -> Iterator[Path]:
