@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import delete, func, select
@@ -307,6 +308,18 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
         for folder_id, season, _count in season_rows:
             seasons_seen.setdefault(folder_id, set()).add(int(season))
 
+        # Имена видеофайлов — для папок спешлов. Сама папка называется
+        # «Specials», а конкретный спешл назван в имени файла.
+        names_seen: dict[int, list[str]] = {}
+        for folder_id, filename in session.execute(
+            select(LibraryFile.folder_id, LibraryFile.filename).where(
+                LibraryFile.folder_id.in_([f.id for f in folders] or [0]),
+                LibraryFile.kind == "video",
+                LibraryFile.excluded_reason.is_(None),
+            )
+        ).all():
+            names_seen.setdefault(folder_id, []).append(Path(filename).stem)
+
         # Контексты собираем здесь же: дальше объекты будут отсоединены от
         # сессии, и обращение к их полям стало бы неожиданным запросом.
         contexts: list[tuple[int, MatchContext]] = []
@@ -348,6 +361,7 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
                         video_count=folder.video_count,
                         own_season=folder.season_number,
                         season_from_files=season_from_files,
+                        file_names=names_seen.get(folder.id, []),
                     ),
                 )
             )

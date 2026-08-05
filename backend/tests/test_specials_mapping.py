@@ -25,11 +25,12 @@ def series(
     episodes: int = 12,
     anilist: int | None = None,
     mal: int | None = None,
+    extra: list[str] | None = None,
 ) -> SeriesCandidate:
     return SeriesCandidate(
         id=sid,
         titles={"romaji": romaji},
-        all_titles=[romaji],
+        all_titles=[romaji, *(extra or [])],
         type=type_,
         year=year,
         season=None,
@@ -43,7 +44,19 @@ def series(
 TORADORA = TitleIndex(
     [
         series(4283, "toradora", year=2008, episodes=25, anilist=4224, mal=4224),
-        series(9781, "Toradora!: Bentou no Gokui", type_="special", year=2011, episodes=1),
+        series(
+            9781,
+            "Toradora!: Bentou no Gokui",
+            type_="special",
+            year=2011,
+            episodes=1,
+            # Варианты названий настоящие — из ответа /api/series/9781.
+            extra=[
+                "Toradora! Special",
+                "Toradora!: Bento Battle",
+                "Toradora!: The True Meaning of Bento",
+            ],
+        ),
         series(9387, "Toradora! Recap", type_="ova", year=2009, episodes=1),
         series(9563, "Toradora!: SOS! Kuishinbou Banbanzai", type_="special", year=2009, episodes=4),
     ]
@@ -141,3 +154,105 @@ class TestOrdinarySeasonStillWorks:
         assert ctx.is_specials is False
         result = Matcher(TORADORA).match(ctx)
         assert result is not None and result.series_id == 4283
+
+
+class TestSpecialIsNamedInTheFileName:
+    """Имя файла называет конкретный спешл — этого хватает, чтобы опознать.
+
+    Настоящая пара с сервера: файл
+    `Toradora! S00E05 - The True Meaning of Bento [Shiniori-Raws] Bluray-720p`
+    и вариант названия `Toradora!: The True Meaning of Bento` у вхождения 9781.
+    """
+
+    FILE = "Toradora! S00E05 - The True Meaning of Bento [Shiniori-Raws] Bluray-720p"
+
+    def test_picks_the_named_special(self) -> None:
+        ctx = MatchContext(
+            folder_name="Toradora!",
+            scope="series",
+            nfo=_show_nfo(4224, "Toradora!"),
+            own_name="Specials",
+            is_child=True,
+            own_season=0,
+            video_count=1,
+            file_names=[self.FILE],
+        )
+
+        result = Matcher(TORADORA).match(ctx)
+
+        assert result is not None
+        assert result.series_id == 9781
+        assert result.needs_confirmation is False, "название сошлось — подтверждать нечего"
+
+    def test_without_file_names_it_stays_a_guess(self) -> None:
+        """Без имён файлов выбирать не из чего — пометка обязана остаться."""
+        ctx = MatchContext(
+            folder_name="Toradora!",
+            scope="series",
+            nfo=_show_nfo(4224, "Toradora!"),
+            own_name="Specials",
+            is_child=True,
+            own_season=0,
+            video_count=1,
+        )
+
+        result = Matcher(TORADORA).match(ctx)
+
+        assert result is not None
+        assert result.needs_confirmation is True
+
+    def test_spinoff_named_like_the_franchise_is_reachable(self) -> None:
+        """`ona` вернули в рассмотрение — но найти его можно, только если его
+        название начинается с названия франшизы.
+
+        Кандидаты набираются поиском по префиксу, и это осознанная граница:
+        `Mini Yuri` (тот самый спиноф Yuru Yuri) под неё **не** подпадает и по
+        папке `Specials` не находится. Название из имени файла помогает выбрать
+        среди найденных, но само по себе кандидатов не ищет.
+        """
+        index = TitleIndex(
+            [
+                series(260, "Yuru Yuri", year=2011, anilist=10495),
+                series(
+                    19093,
+                    "Yuru Yuri OVA",
+                    type_="ona",
+                    year=2019,
+                    episodes=1,
+                ),
+            ]
+        )
+        ctx = MatchContext(
+            folder_name="Yuru Yuri",
+            scope="series",
+            nfo=_show_nfo(10495, "Yuru Yuri"),
+            own_name="Specials",
+            is_child=True,
+            own_season=0,
+            video_count=1,
+            file_names=["Yuru Yuri S00E01 - OVA [Raws] WEBRip-720p"],
+        )
+
+        result = Matcher(index).match(ctx)
+
+        assert result is not None
+        assert result.series_id == 19093
+
+    def test_spinoff_named_differently_is_not_found(self) -> None:
+        """Обратная сторона той же границы — записана, чтобы её не забыть."""
+        ctx = MatchContext(
+            folder_name="Yuru Yuri",
+            scope="series",
+            nfo=_show_nfo(10495, "Yuru Yuri"),
+            own_name="Specials",
+            is_child=True,
+            own_season=0,
+            video_count=4,
+            file_names=["Yuru Yuri S00E01 - Mini Yuri [Raws] WEBRip-720p"],
+        )
+
+        result = Matcher(YURU_YURI).match(ctx)
+
+        # Найдётся спешл франшизы, но не `Mini Yuri`: его название не начинается
+        # с «Yuru Yuri», а кандидатов набирает именно префикс.
+        assert result is None or result.series_id != 21401

@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterable
 
@@ -99,12 +99,26 @@ IMPLAUSIBLE_VIDEO_COUNT = 3
 #: Сколько серий допустимо у тайтла, лежащего в корне фильмов.
 MOVIE_EPISODE_LIMIT = 6
 
-#: Типы каталога, которыми бывают спешлы. Папке `Specials` подходят только они.
+#: Типы каталога, которыми бывают спешлы.
 #:
-#: `ona` сюда не входит намеренно: так помечают полноценные веб-сериалы
-#: (у Yuru Yuri это `Mini Yuri` из четырёх серий), и пускать их в спешлы —
-#: значит вернуть ровно ту ошибку, от которой правило заводилось.
-SPECIAL_TYPES = frozenset({"special", "tv_special", "ova"})
+#: `ona` здесь есть. Сначала его исключили — так помечают полноценные
+#: веб-сериалы (`Mini Yuri`, четыре серии), и он конкурировал бы со спешлом за
+#: ту же папку. Но тип оказался не тем признаком, на котором это должно
+#: держаться: разводит кандидатов **название из имени файла**, а по типу мы лишь
+#: отсекаем заведомо не то — сам сериал. С названием ограничение можно ослабить,
+#: и спиноф, положенный в `Specials`, перестаёт быть невидимым.
+SPECIAL_TYPES = frozenset({"special", "tv_special", "ova", "ona"})
+
+#: Насколько название из имени файла должно совпасть с вариантом названия
+#: кандидата, чтобы считаться опознанием.
+#:
+#: Замерено на живых данных: файл `Toradora! S00E05 - The True Meaning of Bento`
+#: против варианта `Toradora!: The True Meaning of Bento` даёт около сотни, а
+#: против соседнего спешла `Toradora! Recap` — заметно меньше. Порог взят с
+#: запасом вниз, потому что у второго живого случая (`Love Paradox Eternal`
+#: против `…Doushite, Tomaranai, Tokimeki, Dokidoki, Paradox, Eternal`) общее
+#: только хвост.
+SPECIAL_TITLE_FLOOR = 70.0
 
 #: Уверенность привязки папки спешлов.
 #:
@@ -113,6 +127,12 @@ SPECIAL_TYPES = frozenset({"special", "tv_special", "ova"})
 #: догадка, а не установленный факт, и плашка на странице тайтла обязана
 #: показывать её именно так.
 SPECIALS_CONFIDENCE = 70.0
+
+#: Уверенность, когда спешл назван в имени файла и опознан однозначно.
+#:
+#: Высокая намеренно: это уже не «папка принадлежит франшизе», а совпадение
+#: конкретного названия с вариантом названия конкретного вхождения.
+SPECIALS_NAMED_CONFIDENCE = 92.0
 
 
 @dataclass
@@ -263,6 +283,14 @@ class MatchContext:
     video_count: int = 0
     #: Номер сезона из имени самой папки («Season 2»), когда `season.nfo` нет.
     own_season: int | None = None
+    #: Имена видеофайлов папки без расширения.
+    #:
+    #: Нужны папке спешлов: сама она называется «Specials», а вот в имени файла
+    #: стоит название конкретного спешла — `Toradora! S00E05 - The True Meaning
+    #: of Bento`. В каталоге у вхождения 9781 среди вариантов названия есть
+    #: ровно `Toradora!: The True Meaning of Bento`, так что это опознание,
+    #: а не догадка.
+    file_names: list[str] = field(default_factory=list)
     #: Номер сезона, на котором сошлись имена видеофайлов папки.
     #:
     #: Заполняется только при единогласии. Реальный случай: в папке
@@ -501,19 +529,33 @@ class Matcher:
         узнаёт об ошибке по уехавшим файлам. Сами файлы при этом не пропадут:
         скачанные нами несут `t{id}` и находят свой тайтл сами.
         """
-        found: dict[int, float] = {}
+        found: set[int] = set()
         for raw in self._match_titles(ctx):
             norm, _ = normalize_for_match(raw)
             if not norm:
                 continue
             for series_id in self.index.by_prefix(norm):
                 candidate = self.index.by_id.get(series_id)
-                if candidate is None or candidate.type not in SPECIAL_TYPES:
-                    continue
-                found.setdefault(series_id, self._title_score(ctx, candidate))
+                if candidate is not None and candidate.type in SPECIAL_TYPES:
+                    found.add(series_id)
 
         if not found:
             return []
+
+        # Имя файла называет конкретный спешл. Если оно сошлось с вариантом
+        # названия ровно одного кандидата — это опознание, и подтверждать
+        # нечего.
+        named = self._special_by_file_name(ctx, found)
+        if named is not None:
+            series_id, matched_on = named
+            return [
+                MatchResult(
+                    series_id,
+                    MatchSource.EXACT_TITLE,
+                    SPECIALS_NAMED_CONFIDENCE,
+                    matched_on,
+                )
+            ]
 
         ambiguous = len(found) > 1
         return [
@@ -526,6 +568,56 @@ class Matcher:
             )
             for series_id in found
         ]
+
+    def _special_by_file_name(
+        self, ctx: MatchContext, candidates: set[int]
+    ) -> tuple[int, str] | None:
+        """Кандидат, чьё название стоит в имени файла.
+
+        Сравниваем `token_set_ratio`, а не посимвольно: в имени файла к названию
+        приклеены и код серии, и релиз-группа, и метка качества, а у каталожного
+        варианта их нет. У этой меры лишние слова с одной стороны не штрафуются,
+        что здесь и нужно.
+
+        Побеждает только **единоличный** лидер: если два спешла набрали столько
+        же, имя файла их не развело, и решать за человека нельзя.
+        """
+        if not ctx.file_names:
+            return None
+
+        normalized_files = [normalize_for_match(name)[0] for name in ctx.file_names]
+        normalized_files = [name for name in normalized_files if name]
+        if not normalized_files:
+            return None
+
+        best: tuple[float, int, str] | None = None
+        runner_up = 0.0
+        for series_id in candidates:
+            candidate = self.index.by_id.get(series_id)
+            if candidate is None:
+                continue
+            variants = [normalize_title(t) for t in TitleIndex._all_variants(candidate)]
+            score = 0.0
+            matched_variant = ""
+            for variant in variants:
+                if not variant:
+                    continue
+                for name in normalized_files:
+                    hit = fuzz.token_set_ratio(variant, name)
+                    if hit > score:
+                        score, matched_variant = hit, variant
+            if best is None or score > best[0]:
+                if best is not None:
+                    runner_up = max(runner_up, best[0])
+                best = (score, series_id, matched_variant)
+            else:
+                runner_up = max(runner_up, score)
+
+        if best is None or best[0] < SPECIAL_TITLE_FLOOR:
+            return None
+        if best[0] - runner_up < AMBIGUITY_MARGIN:
+            return None
+        return best[1], f"имя файла → «{best[2]}»"
 
     def _propose_ids(self, ctx: MatchContext) -> list[MatchResult]:
         """Кандидаты по внешним идентификаторам — **оба**, а не первый.
@@ -679,7 +771,13 @@ class Matcher:
         )
         # Слабое совпадение по названию оставляем, но с пометкой: пусть человек
         # посмотрит, а не узнаёт об ошибке по уехавшим файлам.
-        if title < SUGGEST_TITLE_FLOOR:
+        #
+        # ⚠️ Кроме спешла, опознанного по имени файла. У него похожесть с
+        # названием франшизы низкая по устройству (сравнивается «Toradora!» с
+        # «Toradora!: The True Meaning of Bento»), а опознание при этом точное —
+        # совпал конкретный вариант названия конкретного вхождения. Пометка
+        # здесь означала бы «проверьте» на ровном месте.
+        if title < SUGGEST_TITLE_FLOOR and proposal.source is not MatchSource.EXACT_TITLE:
             result.needs_confirmation = True
         return score, result
 
