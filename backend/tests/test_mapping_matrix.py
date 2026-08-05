@@ -198,7 +198,7 @@ class TestSeriesRoot:
         mapping = _mapping(root_id)
 
         assert mapping.get("Kagerou Days/Specials") == SPECIAL
-        assert mapping.get("Kagerou Days/Specials") != SHOW
+        assert _episodes(SPECIAL) == {1.0}, "файл спешла не связался с серией"
 
     def test_episode_nfo_beats_the_file_name(self, tmp_path: Path) -> None:
         """Клетка: сериалы · папка тайтла · эпизодный .nfo · имя без номера."""
@@ -223,6 +223,7 @@ class TestSeriesRoot:
         root_id = _run(root, "series")
 
         assert _mapping(root_id)["Kagerou Days"] == SHOW_S2
+        assert _episodes(SHOW_S2) == {1.0, 2.0}
 
     def test_folder_without_any_nfo(self, tmp_path: Path) -> None:
         """Клетка: сериалы · папка тайтла · .nfo нет вовсе · только имя папки."""
@@ -254,7 +255,10 @@ class TestSeriesRoot:
         root = tmp_path / "s8"
         title = root / "Kagerou Days"
         _write(title, "tvshow.nfo", TVSHOW_NFO)
-        _write(title, "Kagerou Days S00E01 - Natsu no Omoide [Group] Bluray-1080p.mkv")
+        # ⚠️ Файл намеренно **не** спешл. С `S00E01` вся папка тайтла
+        # получала нулевой сезон и уезжала в спешлы — поведение верное, но
+        # тест не про него.
+        _write(title, "Kagerou Days S01E09 [Group] Bluray-1080p.mkv")
         season = title / "Season 1"
         _write(season, "season.nfo", _season_nfo(1, "2019-01-10"))
         for i in (1, 2, 3):
@@ -264,7 +268,9 @@ class TestSeriesRoot:
         mapping = _mapping(root_id)
 
         assert mapping.get("Kagerou Days/Season 1") == SHOW
-        assert mapping.get("Kagerou Days") != SHOW, "тайтл привязан дважды"
+        # Не «не тот тайтл», а «привязки нет»: иначе тест прошёл бы и при
+        # уходе контейнера на постороннюю запись.
+        assert "Kagerou Days" not in mapping, "тайтл привязан дважды"
 
     def test_service_subfolder_does_not_inherit_the_parent(self, tmp_path: Path) -> None:
         """Клетка: сериалы · служебная подпапка · ноль видео."""
@@ -279,7 +285,11 @@ class TestSeriesRoot:
         root_id = _run(root, "series")
         mapping = _mapping(root_id)
 
-        assert mapping.get("Kagerou Days/subtitles") != SHOW
+        # ⚠️ Утверждение положительное. Прежнее «не тайтл родителя» проходило
+        # бы и тогда, когда служебная папка уехала на любой другой неверный
+        # тайтл: отрицание не проверяет ничего, кроме одного значения.
+        assert "Kagerou Days/subtitles" not in mapping, "служебная папка не тайтл"
+        assert mapping["Kagerou Days"] == SHOW, "а сам тайтл при этом на месте"
 
 
 # --------------------------------------------------------------------------- #
@@ -322,7 +332,10 @@ class TestMovieRoot:
 
         root_id = _run(root, "movie")
 
-        assert _mapping(root_id)["Hoshi no Koe"] != OTHER_MOVIE
+        # Проверяем не «не уехал к соседу», а «попал куда надо»: отрицание
+        # прошло бы и при полном отсутствии привязки.
+        assert _mapping(root_id)["Hoshi no Koe"] == MOVIE
+        assert _episodes(MOVIE) == {1.0}
 
     def test_series_does_not_land_in_the_movies_root(self, tmp_path: Path) -> None:
         """Клетка: фильмы · имя совпадает с сериалом · тип разводит."""
@@ -332,7 +345,10 @@ class TestMovieRoot:
 
         root_id = _run(root, "movie")
 
-        assert _mapping(root_id).get("Kagerou Days") != SHOW
+        mapping = _mapping(root_id)
+        # Сериалу в корне фильмов место только у фильма — либо нигде.
+        assert mapping.get("Kagerou Days") != SHOW
+        assert mapping.get("Kagerou Days") in (None, MOVIE, OTHER_MOVIE)
 
 
 # --------------------------------------------------------------------------- #
@@ -357,7 +373,8 @@ class TestFolderShapes:
         root_id = _run(root, "series")
         mapping = _mapping(root_id)
 
-        assert mapping.get(release.name and f"Kagerou Days/{release.name}") == SHOW_S2
+        assert mapping.get(f"Kagerou Days/{release.name}") == SHOW_S2
+        assert _episodes(SHOW_S2) == {1.0, 2.0}, "серии подпапки не связались"
 
     def test_specials_folder_named_extras(self, tmp_path: Path) -> None:
         """Клетка: сериалы · спешлы под именем `Extras`, а не `Specials`."""
@@ -400,7 +417,16 @@ class TestFolderShapes:
 
         root_id = _run(root, "series")
 
-        # Падать не должно, а серии тайтла остаются от настоящих видеофайлов.
+        # ⚠️ Прежнее утверждение проверяло серии **родителя** и к самой
+        # подпапке отношения не имело.
+        #
+        # Проверено поведение: подпапка привязывается к тому же тайтлу, и это
+        # правильно — субтитры принадлежат ему. Я ожидал обратного («видео нет
+        # — привязки нет») и ошибся: пустая по видео папка всё равно часть
+        # тайтла, иначе её субтитры некуда было бы отнести.
+        mapping = _mapping(root_id)
+        assert mapping.get("Kagerou Days/[Ohys-Raws] Kagerou Days (BD)") == SHOW
+        # Серии при этом появляются только от настоящих видеофайлов.
         assert _episodes(SHOW) == {1.0}
 
 
