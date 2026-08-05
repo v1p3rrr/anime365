@@ -29,7 +29,7 @@ from sqlalchemy import delete, select
 
 from app.core.db import Base, engine, session_scope
 from app.models.catalog import Episode, Series, Translation
-from app.models.library import EpisodeMapping, LibraryFolder, TitleMapping
+from app.models.library import EpisodeMapping, LibraryFile, LibraryFolder, TitleMapping
 from app.services.library_scan import scan_root
 from app.services.mapping_info import ensure_primary_mapping
 from app.services.library_service import (
@@ -467,7 +467,9 @@ class TestSubtitleRolesThroughThePipeline:
                     select(EpisodeMapping.role).where(EpisodeMapping.series_id == SHOW)
                 ).all()
             }
-        assert "sub_ru" in roles
+        # Полный набор, а не вхождение: при проверке «`sub_ru` есть среди»
+        # тест прошёл бы и с лишней ошибочной ролью рядом.
+        assert roles == {"video", "sub_ru"}
 
 
 class TestMovieShapes:
@@ -552,6 +554,8 @@ class TestAmbiguityAndCollisions:
 
         assert rows, "папка спешлов вообще не привязалась"
         assert all(flag for _sid, flag in rows), "выбор наугад между спешлами"
+        # И привязка ушла именно к спешлу, а не к сериалу.
+        assert all(sid in {SPECIAL, 900107} for sid, _flag in rows)
 
     def test_own_translation_id_beats_the_folder(self, tmp_path: Path) -> None:
         """Клетка: файл с `t{id}` чужого тайтла лежит в папке сериала.
@@ -593,6 +597,17 @@ class TestAmbiguityAndCollisions:
         root_id = _run(root, "series")
 
         assert _episodes(SHOW) == {1.0}
+        # Конец диапазона разобран — просто пока не превращается в связи.
+        with session_scope() as session:
+            ends = {
+                end
+                for (end,) in session.execute(
+                    select(LibraryFile.episode_end)
+                    .join(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
+                    .where(LibraryFolder.root_id == root_id)
+                ).all()
+            }
+        assert 11.0 in ends, "диапазон S01E01-E11 не разобран"
 
     def test_same_title_in_two_folders_picks_a_primary(self, tmp_path: Path) -> None:
         """Клетка: один тайтл лежит в двух папках · выбор основной.
@@ -658,6 +673,16 @@ class TestAmbiguityAndCollisions:
         assert _mapping(root_id)["Kagerou Days"] == SHOW
         # Обе первые серии засчитаны одному тайтлу — вот она, граница.
         assert _episodes(SHOW) == {1.0}
+        # Файлы при этом оба на месте: теряется не файл, а различие сезонов.
+        with session_scope() as session:
+            count = len(
+                session.execute(
+                    select(LibraryFile.id)
+                    .join(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
+                    .where(LibraryFolder.root_id == root_id, LibraryFile.kind == "video")
+                ).all()
+            )
+        assert count == 2
 
 
 class TestRemainingCombinations:
@@ -822,3 +847,62 @@ class TestRemainingCombinations:
 
         assert "Kagerou Days/Season 1/[Group] Extras" in paths, "третий уровень обходится"
         assert "Kagerou Days/Season 1/[Group] Extras/Bonus" not in paths, "четвёртый — нет"
+
+    def test_unreadable_subtree_keeps_its_data(self, tmp_path: Path) -> None:
+        """Клетка: поддерево не удалось прочитать — данные остаются.
+
+        Пустой список файлов там означает «неизвестно», а не «пусто». Без этой
+        оговорки отвалившееся на секунду монтирование стёрло бы половину базы
+        вместе с ручными привязками.
+        """
+        root = tmp_path / "r8"
+        title = root / "Kagerou Days"
+        _write(title, "tvshow.nfo", TVSHOW_NFO)
+        season = title / "Season 1"
+        _write(season, "season.nfo", _season_nfo(1, "2019-01-10"))
+        for i in (1, 2):
+            _write(season, f"Kagerou Days S01E0{i} [Group] WEBDL-1080p.mkv")
+
+        root_id = _run(root, "series")
+        assert "Kagerou Days/Season 1" in _mapping(root_id)
+
+        # Так выглядит проход, где папку не удалось открыть.
+        result = scan_root(str(root), "series")
+        result.folders[0].children = []
+        result.folders[0].read_failed = True
+        _persist_root(result)
+
+        with session_scope() as session:
+            paths = {
+                rel
+                for (rel,) in session.execute(
+                    select(LibraryFolder.rel_path).where(LibraryFolder.root_id == root_id)
+                ).all()
+            }
+        assert "Kagerou Days/Season 1" in paths, "нечитаемое поддерево стёрли"
+        assert _episodes(SHOW) == {1.0, 2.0}, "связи серий потеряны"
+
+    def test_same_title_in_both_roots(self, tmp_path: Path) -> None:
+        """Клетка: франшиза лежит и в сериалах, и в фильмах одновременно.
+
+        Реальная раскладка Girls Band Cry: сериал в одном корне, фильмы в
+        другом. Корни не должны мешать друг другу — тип разводит их сам.
+        """
+        series_root = tmp_path / "r9-series"
+        _write(series_root / "Kagerou Days", "tvshow.nfo", TVSHOW_NFO)
+        for i in (1, 2):
+            _write(series_root / "Kagerou Days", f"Kagerou Days S01E0{i} [G] WEBDL-1080p.mkv")
+
+        movie_root = tmp_path / "r9-movies"
+        _write(movie_root / "Hoshi no Koe", "movie.nfo", MOVIE_NFO)
+        _write(movie_root / "Hoshi no Koe", "Hoshi no Koe (2014) - [Bluray-1080p].mkv")
+
+        series_id_root = _run(series_root, "series")
+        movie_id_root = _persist_root(scan_root(str(movie_root), "movie"))
+        _map_folders(movie_id_root, build_index(), "movie")
+        _map_episodes(movie_id_root)
+
+        assert _mapping(series_id_root)["Kagerou Days"] == SHOW
+        assert _mapping(movie_id_root)["Hoshi no Koe"] == MOVIE
+        assert _episodes(SHOW) == {1.0, 2.0}
+        assert _episodes(MOVIE) == {1.0}
