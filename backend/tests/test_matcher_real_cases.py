@@ -236,3 +236,93 @@ class TestSeasonsDoNotCollapse:
             )
         )
         assert result is None or result.series_id != 1032, "первый сезон 2009 года — не четвёртый"
+
+
+class TestNfoAboutAnotherTitle:
+    """`.nfo` в папке описывает совсем другое аниме.
+
+    Снято с сервера 2026-08-05 — это оказалось причиной «большинство фильмов
+    вообще не впопад»:
+
+        папка «A Silent Voice - The Movie» → <title>Meitantei Conan Magic File 2…
+        папка «Look Back»                  → <title>Kekkai Sensen & Beyond…
+        папка «Cencoroll Connect»          → <title>Connected…
+
+    Jellyfin записал в папки метаданные другого тайтла, и матчер честно
+    приводил к тому, что там написано — совпадение выходило **точным**, 99%.
+
+    Знать, какое аниме правильное, мы не можем. Но заметить, что имя папки и
+    `.nfo` противоречат друг другу, — можем.
+    """
+
+    INDEX = TitleIndex(
+        [
+            series(1, "Koe no Katachi", type_="movie", year=2016, episodes=1,
+                   extra=["A Silent Voice", "A Silent Voice: The Movie"]),
+            series(2, "Meitantei Conan Magic File 2: Kudou Shinichi", type_="special",
+                   year=2008, episodes=1),
+        ]
+    )
+
+    def _match(self, folder: str, nfo_title: str, ids: dict | None = None):
+        data = nfo("tvshow", title=nfo_title, **(ids or {}))
+        return Matcher(self.INDEX).match(
+            MatchContext(
+                folder_name=folder,
+                scope="movie",
+                nfo=data,
+                own_name=folder,
+                own_nfo=data,
+                video_count=1,
+                local_episode_count=1,
+            )
+        )
+
+    def test_foreign_nfo_does_not_win(self) -> None:
+        result = self._match(
+            "A Silent Voice - The Movie",
+            "Meitantei Conan Magic File 2: Kudou Shinichi Nazo no Kabe to Kuro Lab Jiken",
+        )
+        assert result is None or result.series_id != 2, "Конан не должен победить"
+
+    def test_folder_name_is_used_instead(self) -> None:
+        # Полное название, как в настоящем `.nfo`: по нему тайтл находится
+        # точно, и расхождение с папкой становится доказуемым. По обрезанному
+        # («Meitantei Conan Magic File 2») каталог уверенно ничего не находит —
+        # и тогда мы молчим, а не гадаем.
+        result = self._match(
+            "A Silent Voice - The Movie", "Meitantei Conan Magic File 2: Kudou Shinichi"
+        )
+        assert result is not None
+        assert result.series_id == 1, "искать надо по имени папки, раз .nfo о другом"
+        assert result.needs_confirmation, "догадку обязаны показать человеку"
+
+    def test_agreeing_nfo_is_trusted(self) -> None:
+        """Правку легко сделать слишком подозрительной: согласный .nfo обязан работать."""
+        result = self._match("A Silent Voice - The Movie", "A Silent Voice: The Movie")
+        assert result is not None
+        assert result.series_id == 1
+
+    def test_different_wording_is_not_a_disagreement(self) -> None:
+        """«Yuru Camp» против «Laid-Back Camp» — то же аниме, разные подписи.
+
+        Порог низкий намеренно: придираться к разным написаниям нельзя, ловим
+        только явное расхождение.
+        """
+        index = TitleIndex(
+            [series(10, "Yuru Camp△", year=2018, extra=["Laid-Back Camp"])]
+        )
+        data = nfo("tvshow", title="Laid-Back Camp", anilist_id=98444)
+        result = Matcher(index).match(
+            MatchContext(
+                folder_name="Yuru Camp",
+                scope="series",
+                nfo=data,
+                own_name="Yuru Camp",
+                own_nfo=data,
+                video_count=12,
+                local_episode_count=12,
+            )
+        )
+        assert result is not None
+        assert result.series_id == 10

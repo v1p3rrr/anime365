@@ -318,6 +318,11 @@ class Matcher:
             if scored[1][1].series_id != best.series_id:
                 best.needs_confirmation = True
 
+        # `.nfo` в этой папке говорит о другом тайтле, чем её имя. Что бы мы ни
+        # выбрали, это догадка — и человек должен её увидеть.
+        if self.nfo_disagrees_with_folder(ctx):
+            best.needs_confirmation = True
+
         # ⚠️ Мы отвергли идентификатор, который дала разметка, и взяли другого
         # кандидата — то есть переголосовали Jellyfin. Делать это молча нельзя.
         #
@@ -337,10 +342,76 @@ class Matcher:
     # Сбор кандидатов и их сверка
     # ------------------------------------------------------------------ #
 
+    def nfo_disagrees_with_folder(self, ctx: MatchContext) -> bool:
+        """Говорит ли `.nfo` не о том, что написано на папке.
+
+        ⚠️ Найдено на живой библиотеке 2026-08-05, и это оказалось причиной
+        «большинство фильмов вообще не впопад»:
+
+            папка «A Silent Voice - The Movie» → <title>Meitantei Conan Magic File 2…
+            папка «Look Back»                  → <title>Kekkai Sensen & Beyond…
+            папка «Cencoroll Connect»          → <title>Connected…
+
+        Jellyfin записал в папки метаданные **другого аниме**, и матчер честно
+        приводил к тому, что там написано. Знать, какое аниме правильное, мы не
+        можем и не должны. Но заметить, что два источника в одной папке
+        противоречат друг другу, — можем: имя папки человек видит глазами, и
+        оно осмысленно.
+
+        Правило работает только там, где имя папки что-то значит: у сезонной
+        подпапки оно «Season 2» и сравнивать его не с чем.
+        """
+        nfo = ctx.own_nfo or ctx.nfo
+        name = ctx.own_name or ctx.folder_name
+        if nfo is None or not name or ctx.inherits_parent:
+            return False
+
+        title = (nfo.title or "").strip()
+        if not title:
+            return False
+
+        # ⚠️ Сравнивать сами строки бесполезно, и это измерено:
+        #
+        #     «A Silent Voice - The Movie» против «Meitantei Conan Magic File 2» → 42,3
+        #     «Yuru Camp»                  против «Laid-Back Camp»              → 43,5
+        #
+        # Один балл разницы, а смысл противоположный: первое — метаданные чужого
+        # аниме, второе — то же самое аниме под другим названием. Никакой порог
+        # их не разведёт.
+        #
+        # Поэтому сравниваем не строки, а **тайтлы, к которым они приводят**:
+        # «Yuru Camp» и «Laid-Back Camp» находят один и тот же тайтл каталога,
+        # а «A Silent Voice» и «Meitantei Conan» — разные.
+        from_folder = self._resolve_by_string(name)
+        from_nfo = self._resolve_by_string(title)
+        return from_folder is not None and from_nfo is not None and from_folder != from_nfo
+
+    def _resolve_by_string(self, text: str) -> int | None:
+        """К какому тайтлу приводит строка. None — ни к какому уверенно."""
+        norm = normalize_title(text)
+        if not norm:
+            return None
+
+        exact = self.index.by_norm_title.get(norm)
+        if exact and len(exact) == 1:
+            return exact[0]
+        if exact:
+            return exact[0]
+
+        found = self.index.fuzzy(norm, limit=1)
+        if not found:
+            return None
+        key, score = found[0]
+        if score < self.auto_threshold:
+            return None
+        ids = self.index.by_norm_title.get(key) or []
+        return ids[0] if ids else None
+
     def _propose(self, ctx: MatchContext) -> list[MatchResult]:
         """Все правдоподобные кандидаты, а не первый попавшийся."""
         out: list[MatchResult] = []
-        out.extend(self._propose_ids(ctx))
+        if not self.nfo_disagrees_with_folder(ctx):
+            out.extend(self._propose_ids(ctx))
         for cascade in (self._cascade_c, self._cascade_b):
             result = cascade(ctx)
             if result is not None:
@@ -557,7 +628,7 @@ class Matcher:
             return False
 
         variants = [normalize_title(t) for t in TitleIndex._all_variants(candidate)]
-        for raw in candidate_titles(ctx.nfo, ctx.folder_name):
+        for raw in self._match_titles(ctx):
             norm, _ = normalize_for_match(raw)
             if not norm:
                 continue
@@ -607,7 +678,7 @@ class Matcher:
     # ------------------------------------------------------------------ #
 
     def _cascade_b(self, ctx: MatchContext) -> MatchResult | None:
-        for raw in candidate_titles(ctx.nfo, ctx.folder_name):
+        for raw in self._match_titles(ctx):
             norm, _ = normalize_for_match(raw)
             if not norm:
                 continue
@@ -622,7 +693,7 @@ class Matcher:
 
         # Точного совпадения нет — идём в нечёткое.
         best: MatchResult | None = None
-        for raw in candidate_titles(ctx.nfo, ctx.folder_name):
+        for raw in self._match_titles(ctx):
             norm, _ = normalize_for_match(raw)
             if not norm:
                 continue
@@ -645,10 +716,24 @@ class Matcher:
             return best
         return None
 
+    def _match_titles(self, ctx: MatchContext) -> list[str]:
+        """Строки, по которым ищем тайтл.
+
+        Обычно это имя папки плюс всё, что написано в её `.nfo`. Но если `.nfo`
+        говорит о другом тайтле, чем имя папки, брать оттуда названия нельзя —
+        именно так папка «A Silent Voice - The Movie» уехала в «Meitantei Conan
+        Magic File 2»: в её `tvshow.nfo` записано именно это название, и
+        совпадение вышло **точным**.
+        """
+        if self.nfo_disagrees_with_folder(ctx):
+            name = ctx.own_name or ctx.folder_name
+            return [name] if name else []
+        return candidate_titles(ctx.nfo, ctx.folder_name)
+
     def _string_candidates(self, ctx: MatchContext) -> list[int]:
         """Идентификаторы тайтлов, похожих по названию, — основа для каскада C."""
         found: list[int] = []
-        for raw in candidate_titles(ctx.nfo, ctx.folder_name):
+        for raw in self._match_titles(ctx):
             norm, _ = normalize_for_match(raw)
             if not norm:
                 continue
