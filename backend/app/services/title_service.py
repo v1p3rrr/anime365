@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.core.db import session_scope
+from app.services.subtitle_authors import remember_authors
 from app.core.events import bus
 from app.models.catalog import Episode, Series, Translation, TranslationEmbed
 from app.services.anime365 import Anime365Client, Anime365Error
@@ -198,6 +199,11 @@ async def ensure_translations(series_id: int, force: bool = False) -> list[dict[
     if payload:
         rows_for_db = [{k: v for k, v in p.items() if not k.startswith("_")} for p in payload]
         _bulk_upsert_translations(rows_for_db)
+        # Каталог групп перевода наполняется здесь и только здесь. Отдельного
+        # обхода каталога нет намеренно: 29 тысяч тайтлов ради списка групп не
+        # стоят ни времени, ни запросов к чужому API — а так список копится
+        # сам, по мере того как пользователь открывает страницы.
+        remember_authors(rows_for_db)
 
     return payload
 

@@ -1,5 +1,13 @@
 """Импорт всех моделей, чтобы они зарегистрировались в метаданных Base."""
 
+from app.models.autodownload import (
+    AUTO_LANGS,
+    GLOBAL_MODES,
+    TITLE_MODES,
+    AutoDownloadRule,
+    SeriesAutoDownload,
+    SubtitleAuthor,
+)
 from app.models.catalog import (
     Episode,
     Genre,
@@ -26,6 +34,12 @@ from app.models.settings import DEFAULT_USER_ID, AppSetting, AppUser
 
 __all__ = [
     "ACTIVE_STATUSES",
+    "AUTO_LANGS",
+    "GLOBAL_MODES",
+    "TITLE_MODES",
+    "AutoDownloadRule",
+    "SeriesAutoDownload",
+    "SubtitleAuthor",
     "DEFAULT_USER_ID",
     "TERMINAL_STATUSES",
     "AppSetting",
