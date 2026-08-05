@@ -90,6 +90,15 @@ def season_in_title(title: str) -> int | None:
     return None
 
 
+def _without(value: str, words: set[str]) -> str:
+    """Строка без слов, общих у всей франшизы.
+
+    Сравнение по остатку отвечает на нужный вопрос — «назвал ли файл **этот**
+    спешл», — а не на бесполезный «относится ли он к той же франшизе».
+    """
+    return " ".join(word for word in value.split() if word not in words)
+
+
 def season_label_from_premiered(year: int, month: int) -> str:
     """«2012-07-02» → «Лето 2012». Декабрь относится к зиме следующего года."""
     name = _MONTH_TO_SEASON[month]
@@ -701,6 +710,21 @@ class Matcher:
         if not normalized_files:
             return None
 
+        # Слова названия франшизы общие у всех кандидатов и потому ничего не
+        # доказывают. Сравниваем **остаток**: у файла `Toradora! S00E05 - The
+        # True Meaning of Bento` это «the true meaning of bento», и он совпадает
+        # с остатком вхождения 9781. А у файла `… S00E01 [Group] Bluray-1080p`
+        # остаток — один технический мусор, и опознавать по нему нечего.
+        franchise_words = {
+            word
+            for raw in self._match_titles(ctx)
+            for word in normalize_title(raw).split()
+        }
+        file_rests = [_without(name, franchise_words) for name in normalized_files]
+        file_rests = [rest for rest in file_rests if rest]
+        if not file_rests:
+            return None
+
         best: tuple[float, int, str] | None = None
         runner_up = 0.0
         for series_id in candidates:
@@ -713,8 +737,14 @@ class Matcher:
             for variant in variants:
                 if not variant:
                     continue
-                for name in normalized_files:
-                    hit = fuzz.token_set_ratio(variant, name)
+                rest = _without(variant, franchise_words)
+                if not rest:
+                    # У кандидата нет ничего своего сверх названия франшизы —
+                    # опознавать нечем. Так отсеивается `Yuru Yuri,` (id 19093),
+                    # выигрывавший у верного спешла одной лишь краткостью.
+                    continue
+                for name in file_rests:
+                    hit = fuzz.token_set_ratio(rest, name)
                     if hit > score:
                         score, matched_variant = hit, variant
             if best is None or score > best[0]:

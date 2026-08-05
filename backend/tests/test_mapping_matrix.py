@@ -28,9 +28,10 @@ from pathlib import Path
 from sqlalchemy import delete, select
 
 from app.core.db import Base, engine, session_scope
-from app.models.catalog import Series
+from app.models.catalog import Episode, Series, Translation
 from app.models.library import EpisodeMapping, LibraryFolder, TitleMapping
 from app.services.library_scan import scan_root
+from app.services.mapping_info import ensure_primary_mapping
 from app.services.library_service import (
     _map_episodes,
     _map_folders,
@@ -479,3 +480,155 @@ class TestMovieShapes:
 
         assert _mapping(root_id)["Hoshi no Koe"] == MOVIE
         assert _episodes(MOVIE) == {1.0}
+
+
+class TestAmbiguityAndCollisions:
+    def test_specials_with_several_candidates_ask_for_confirmation(self, tmp_path: Path) -> None:
+        """Клетка: спешлы · несколько подходящих вхождений · имя не разводит.
+
+        Реальная: у K-On! четыре спешла. Когда имя файла не называет ни одного
+        из них, выбрать нечего — и решать за человека нельзя.
+        """
+        _seed_catalog()
+        with session_scope() as session:
+            second = session.get(Series, 900107)
+            if second is None:
+                second = Series(id=900107)
+                session.add(second)
+            second.title = "Kagerou Days: Fuyu no Omoide"
+            second.titles = {"romaji": "Kagerou Days: Fuyu no Omoide"}
+            second.all_titles = ["Kagerou Days: Fuyu no Omoide"]
+            second.type = "special"
+            second.year = 2019
+            second.number_of_episodes = 1
+
+        root = tmp_path / "c1"
+        title = root / "Kagerou Days"
+        _write(title, "tvshow.nfo", TVSHOW_NFO)
+        specials = title / "Specials"
+        _write(specials, "Kagerou Days S00E01 [Group] Bluray-1080p.mkv")
+
+        root_id = _persist_root(scan_root(str(root), "series"))
+        _map_folders(root_id, build_index(), "series")
+
+        # ⚠️ Отбор обязательно по корню. Папка `Kagerou Days/Specials` есть и в
+        # других клетках матрицы — база у тестов общая, и запрос по одному лишь
+        # пути подхватывал чужую привязку.
+        with session_scope() as session:
+            rows = session.execute(
+                select(TitleMapping.series_id, TitleMapping.needs_confirmation)
+                .join(LibraryFolder, TitleMapping.folder_id == LibraryFolder.id)
+                .where(
+                    LibraryFolder.root_id == root_id,
+                    LibraryFolder.rel_path == "Kagerou Days/Specials",
+                )
+            ).all()
+
+        assert rows, "папка спешлов вообще не привязалась"
+        assert all(flag for _sid, flag in rows), "выбор наугад между спешлами"
+
+    def test_own_translation_id_beats_the_folder(self, tmp_path: Path) -> None:
+        """Клетка: файл с `t{id}` чужого тайтла лежит в папке сериала.
+
+        Реальная: спешл `[Anime365] Toradora Bentou no Gokui - 01 (t924861)`
+        лежит в корне папки `Toradora!`. Он принадлежит своему вхождению.
+        """
+        _seed_catalog()
+        with session_scope() as session:
+            session.execute(delete(Translation).where(Translation.id == 950901))
+            session.execute(delete(Episode).where(Episode.id == 950902))
+            session.add(Episode(id=950902, series_id=SPECIAL, episode_num=1))
+            session.add(Translation(id=950901, series_id=SPECIAL, episode_id=950902))
+
+        root = tmp_path / "c2"
+        folder = root / "Kagerou Days"
+        _write(folder, "tvshow.nfo", TVSHOW_NFO)
+        _write(folder, "Kagerou Days S01E01 [Group] WEBDL-1080p.mkv")
+        _write(folder, "[Anime365] Kagerou Days Natsu no Omoide - 01 (t950901).mkv")
+
+        root_id = _persist_root(scan_root(str(root), "series"))
+        _map_folders(root_id, build_index(), "series")
+        _map_episodes(root_id)
+
+        assert _episodes(SHOW) == {1.0}
+        assert _episodes(SPECIAL) == {1.0}, "файл со своим t{id} остался за папкой"
+
+    def test_combined_episode_file(self, tmp_path: Path) -> None:
+        """Клетка: одна серия-склейка `S01E01-E11` вместо одиннадцати файлов.
+
+        Реальная: Wotakoi. Сейчас засчитывается как первая серия — диапазон
+        разбирается, но в связи попадает только начало.
+        """
+        root = tmp_path / "c3"
+        folder = root / "Kagerou Days"
+        _write(folder, "tvshow.nfo", TVSHOW_NFO)
+        _write(folder, "Kagerou Days S01E01-E11 - Everything [Sonarr] Bluray-1080p.mkv")
+
+        root_id = _run(root, "series")
+
+        assert _episodes(SHOW) == {1.0}
+
+    def test_same_title_in_two_folders_picks_a_primary(self, tmp_path: Path) -> None:
+        """Клетка: один тайтл лежит в двух папках · выбор основной.
+
+        Реальная: `Toradora!` и `Toradora 10th Anniversary 10bit` — один и тот
+        же сезон в разных кодеках. Обе привязки законны, но качать надо в одну.
+        """
+        root = tmp_path / "c4"
+        first = root / "Kagerou Days"
+        _write(first, "tvshow.nfo", TVSHOW_NFO)
+        for i in (1, 2, 3):
+            _write(first, f"Kagerou Days S01E0{i} [Group] WEBDL-1080p.mkv")
+        second = root / "Kagerou Days 10bit"
+        _write(second, "tvshow.nfo", TVSHOW_NFO)
+        _write(second, "Kagerou Days S01E01 [Other] Bluray-1080p.mkv")
+
+        root_id = _run(root, "series")
+
+        def primaries() -> list[tuple[str, bool]]:
+            with session_scope() as session:
+                return list(
+                    session.execute(
+                        select(LibraryFolder.rel_path, TitleMapping.is_primary)
+                        .join(TitleMapping, TitleMapping.folder_id == LibraryFolder.id)
+                        .where(
+                            LibraryFolder.root_id == root_id,
+                            TitleMapping.series_id == SHOW,
+                        )
+                    ).all()
+                )
+
+        assert len(primaries()) == 2, "обе папки должны остаться привязанными"
+
+        # ⚠️ Сразу после скана основной нет, и это устройство, а не упущение:
+        # выбор делается лениво — при открытии страницы тайтла и перед
+        # загрузкой. Тест проверяет **контракт**, а не момент времени.
+        assert sum(1 for _rel, flag in primaries() if flag) == 0
+
+        ensure_primary_mapping(SHOW)
+
+        rows = primaries()
+        assert sum(1 for _rel, flag in rows if flag) == 1, "основная должна быть одна"
+        # Побеждает та папка, где файлов больше: туда и поедут загрузки.
+        primary = next(rel for rel, flag in rows if flag)
+        assert primary == "Kagerou Days"
+
+    def test_several_seasons_flat_in_one_folder(self, tmp_path: Path) -> None:
+        """Клетка: сериалы · несколько сезонов вповалку в одной папке.
+
+        Подпапок нет, файлы идут `S01E01`, `S02E01`. Единогласия по сезону нет,
+        поэтому папка остаётся за первым сезоном — а файлы второго садятся на
+        те же номера серий. Тест фиксирует **текущее** поведение: это известная
+        граница, а не работающий случай.
+        """
+        root = tmp_path / "c5"
+        folder = root / "Kagerou Days"
+        _write(folder, "tvshow.nfo", TVSHOW_NFO)
+        _write(folder, "Kagerou Days S01E01 [Group] WEBDL-1080p.mkv")
+        _write(folder, "Kagerou Days S02E01 [Group] WEBDL-1080p.mkv")
+
+        root_id = _run(root, "series")
+
+        assert _mapping(root_id)["Kagerou Days"] == SHOW
+        # Обе первые серии засчитаны одному тайтлу — вот она, граница.
+        assert _episodes(SHOW) == {1.0}
