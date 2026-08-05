@@ -88,6 +88,10 @@ class ScannedFolder:
     # и переписывать их записи не нужно. Дети при этом всё равно обойдены —
     # изменение внутри подпапки не меняет mtime родителя.
     unchanged: bool = False
+    # Папку не удалось прочитать (права, отвалившееся монтирование). Пустой
+    # список файлов здесь означает «неизвестно», а не «пусто», поэтому такое
+    # поддерево нельзя вычищать из БД как исчезнувшее.
+    read_failed: bool = False
 
     @property
     def video_count(self) -> int:
@@ -197,7 +201,13 @@ def scan_folder(
         entries = sorted(folder.iterdir(), key=lambda p: p.name)
     except OSError as exc:
         log.warning("Не удалось прочитать %s: %s", folder, exc)
-        return ScannedFolder(rel_path=rel, name=folder.name, season_number=season_number, nfo=None)
+        return ScannedFolder(
+            rel_path=rel,
+            name=folder.name,
+            season_number=season_number,
+            nfo=None,
+            read_failed=True,
+        )
 
     try:
         current_mtime: float | None = folder.stat().st_mtime

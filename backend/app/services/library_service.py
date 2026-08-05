@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.db import session_scope
-from app.models.catalog import ScanRun, Series
+from app.models.catalog import Episode, ScanRun, Series, Translation
 from app.models.library import (
     EpisodeMapping,
     LibraryFile,
@@ -142,6 +143,55 @@ def _persist_folder(
     return existing
 
 
+def _forget_vanished_folders(session: Session, root_id: int, result: RootScanResult) -> int:
+    """Убирает из БД папки, которых на диске больше нет.
+
+    Файлы исчезнувшие удалялись, а папки — никогда, и база копила призраков.
+    Живой пример: `Girls Band Cry/Movie 1 …` и `Girls Band Cry/Movie 2 …`
+    переехали из корня сериалов в корень фильмов, но старые строки остались —
+    вместе с файлами и привязками. Те же файлы считались дважды, а привязка
+    указывала на несуществующий путь, из-за чего страница тайтла обещала
+    локальные серии, которых не открыть.
+
+    Обход каталогов идёт полностью при любом режиме (инкремент экономит только
+    на разборе файлов), поэтому «нет в результате прохода» здесь действительно
+    значит «нет на диске».
+
+    ⚠️ Кроме поддеревьев, которые не удалось прочитать: там пустой список
+    означает «неизвестно». Их не трогаем, иначе отвалившееся на секунду
+    монтирование стёрло бы половину библиотеки.
+    """
+    seen: set[str] = set()
+    unreadable: list[str] = []
+
+    def walk(folder: ScannedFolder) -> None:
+        seen.add(folder.rel_path)
+        if folder.read_failed:
+            unreadable.append(folder.rel_path + "/")
+        for child in folder.children:
+            walk(child)
+
+    for folder in result.folders:
+        walk(folder)
+
+    rows = session.execute(
+        select(LibraryFolder.id, LibraryFolder.rel_path).where(LibraryFolder.root_id == root_id)
+    ).all()
+    vanished = [
+        folder_id
+        for folder_id, rel_path in rows
+        if rel_path not in seen and not any(rel_path.startswith(p) for p in unreadable)
+    ]
+    if not vanished:
+        return 0
+
+    # Каскады уносят вложенные папки, файлы и привязки — ручные в том числе:
+    # папки нет, держать привязку к ней не за что.
+    session.execute(delete(LibraryFolder).where(LibraryFolder.id.in_(vanished)))
+    log.info("Забыто папок, исчезнувших с диска: %d", len(vanished))
+    return len(vanished)
+
+
 def _persist_root(result: RootScanResult) -> int:
     with session_scope() as session:
         root = session.execute(
@@ -161,6 +211,9 @@ def _persist_root(result: RootScanResult) -> int:
 
         for folder in result.folders:
             _persist_folder(session, root_id, folder)
+
+        session.flush()
+        _forget_vanished_folders(session, root_id, result)
 
         # Размер считаем по БД, а не по результату прохода: при инкрементальном
         # скане у неизменившихся папок size_bytes в результате нулевой, и корень
@@ -437,17 +490,122 @@ def _nfo_of(folder: LibraryFolder | None):
     return data
 
 
+def _file_role(file: LibraryFile) -> str | None:
+    if file.kind == "video":
+        return "video"
+    if file.kind == "subtitle":
+        return SUB_ROLE.get(file.lang or "", "sub_unknown")
+    return None
+
+
+def _own_downloads(session: Session, files: list[LibraryFile]) -> dict[int, tuple[int, float]]:
+    """Файлы, назвавшие себя сами: `(series_id, номер серии)` по `t{id}` в имени.
+
+    Файл `[Anime365] BanG Dream Movie Poppin Dream - 01 (t4000194).mkv` несёт
+    идентификатор перевода, а перевод в каталоге привязан к тайтлу и эпизоду.
+    Это точная связь, и она сильнее папки.
+
+    Зачем: в корне фильмов есть папка `Bang Dream!`, в которую сложены **восемь
+    разных фильмов** — «Poppin' Dream!», две части «Episode of Roselia», «FILM
+    LIVE» и прочие. Одна папка на восемь тайтлов в модели «папка → тайтл» не
+    раскладывается никак, а пять из восьми файлов знают свой тайтл сами.
+    """
+    wanted = {f.anime365_translation_id: f.id for f in files if f.anime365_translation_id}
+    if not wanted:
+        return {}
+
+    rows = session.execute(
+        select(Translation.id, Translation.series_id, Episode.episode_num)
+        .join(Episode, Translation.episode_id == Episode.id, isouter=True)
+        .where(Translation.id.in_(list(wanted)))
+    ).all()
+
+    out: dict[int, tuple[int, float]] = {}
+    for translation_id, series_id, episode_num in rows:
+        if series_id is None or episode_num is None:
+            continue
+        out[wanted[translation_id]] = (series_id, float(episode_num))
+    return out
+
+
+#: Номер части многосерийного фильма в имени папки.
+#:
+#: Свои папки мы называем «Тайтл (Год) - 2» (см. `folder_name_for_title`),
+#: у пользователя и Jellyfin встречается «Movie 2», «Part 2».
+_PART_PATTERNS = (
+    re.compile(r"(?i)\b(?:movie|part|chapter|фильм|часть)\s*(\d{1,2})\b"),
+    re.compile(r"-\s*(\d{1,2})\s*$"),
+)
+
+
+def _movie_part_number(folder_name: str) -> int | None:
+    for pattern in _PART_PATTERNS:
+        match = pattern.search(folder_name)
+        if match:
+            value = int(match.group(1))
+            if value > 0:
+                return value
+    return None
+
+
+def _episode_totals(session: Session, series_ids: set[int]) -> dict[int, int]:
+    if not series_ids:
+        return {}
+    rows = session.execute(
+        select(Series.id, Series.number_of_episodes).where(Series.id.in_(series_ids))
+    ).all()
+    return {series_id: total or 0 for series_id, total in rows}
+
+
+def _episode_for(
+    file: LibraryFile,
+    folder: LibraryFolder,
+    series_id: int,
+    totals: dict[int, int],
+) -> float:
+    """Номер серии для файла в этом тайтле.
+
+    Обычно это разобранный из имени номер. Особый случай — фильм из нескольких
+    частей: у Girls Band Cry в каталоге одно вхождение с **двумя** сериями, а на
+    диске две папки по одному видео. Каждое видео — «единственное в папке»,
+    поэтому обе части получили бы первую серию: одна затёрла бы другую, вторая
+    числилась бы отсутствующей.
+
+    Номер части берётся из имени папки («Movie 2», «Part 2», наш хвост « - 2»)
+    и только если в тайтле серий больше одной. У соседнего вхождения
+    «Girls Band Cry Movie 2» серия ровно одна, и там та же папка обязана дать
+    первую серию, а не вторую.
+    """
+    if file.episode != 1.0 or file.matched_rule_id != "single_movie":
+        return file.episode
+    if totals.get(series_id, 0) <= 1:
+        return file.episode
+    part = _movie_part_number(folder.name or "")
+    return float(part) if part else file.episode
+
+
 def _map_episodes(root_id: int) -> int:
-    """Связывает локальные файлы с сериями смапленных тайтлов."""
+    """Связывает локальные файлы с сериями.
+
+    Обходятся **все** папки корня, а не только смапленные: файл со своим
+    `t{id}` в имени опознаётся сам, даже если папка вокруг него не опознана.
+    """
     linked = 0
     with session_scope() as session:
-        rows = session.execute(
-            select(TitleMapping, LibraryFolder)
-            .join(LibraryFolder, TitleMapping.folder_id == LibraryFolder.id)
-            .where(LibraryFolder.root_id == root_id)
-        ).all()
+        folders = (
+            session.execute(select(LibraryFolder).where(LibraryFolder.root_id == root_id))
+            .scalars()
+            .all()
+        )
+        mappings: dict[int, list[int]] = {}
+        for folder_id, series_id in session.execute(
+            select(TitleMapping.folder_id, TitleMapping.series_id).where(
+                TitleMapping.folder_id.in_([f.id for f in folders] or [0])
+            )
+        ).all():
+            mappings.setdefault(folder_id, []).append(series_id)
 
-        for mapping, folder in rows:
+        for folder in folders:
             files = (
                 session.execute(select(LibraryFile).where(LibraryFile.folder_id == folder.id))
                 .scalars()
@@ -457,9 +615,17 @@ def _map_episodes(root_id: int) -> int:
             if not file_ids:
                 continue
 
+            folder_series = mappings.get(folder.id, [])
+            own = _own_downloads(session, files)
+            if not folder_series and not own:
+                continue
+            totals = _episode_totals(session, set(folder_series))
+
+            # Чистим по файлам, а не по тайтлу: файл мог сменить тайтл (папку
+            # перепривязали, `t{id}` указал на другой) — старая строка иначе
+            # осталась бы висеть, и серия числилась бы скачанной у обоих.
             session.execute(
                 delete(EpisodeMapping).where(
-                    EpisodeMapping.series_id == mapping.series_id,
                     EpisodeMapping.is_manual.is_(False),
                     EpisodeMapping.file_id.in_(file_ids),
                 )
@@ -472,7 +638,6 @@ def _map_episodes(root_id: int) -> int:
                 row[0]
                 for row in session.execute(
                     select(EpisodeMapping.file_id).where(
-                        EpisodeMapping.series_id == mapping.series_id,
                         EpisodeMapping.is_manual.is_(True),
                         EpisodeMapping.file_id.in_(file_ids),
                     )
@@ -480,27 +645,34 @@ def _map_episodes(root_id: int) -> int:
             }
 
             for file in files:
-                if file.episode is None or file.excluded_reason:
+                if file.excluded_reason or file.id in manual_files:
                     continue
-                if file.id in manual_files:
+                role = _file_role(file)
+                if role is None:
                     continue
-                if file.kind == "video":
-                    role = "video"
-                elif file.kind == "subtitle":
-                    role = SUB_ROLE.get(file.lang or "", "sub_unknown")
+
+                exact = own.get(file.id)
+                if exact is not None:
+                    targets = [(exact[0], exact[1])]
+                elif file.episode is not None:
+                    targets = [
+                        (series_id, _episode_for(file, folder, series_id, totals))
+                        for series_id in folder_series
+                    ]
                 else:
                     continue
 
-                session.add(
-                    EpisodeMapping(
-                        series_id=mapping.series_id,
-                        episode=file.episode,
-                        file_id=file.id,
-                        role=role,
-                        is_manual=False,
+                for series_id, episode in targets:
+                    session.add(
+                        EpisodeMapping(
+                            series_id=series_id,
+                            episode=episode,
+                            file_id=file.id,
+                            role=role,
+                            is_manual=False,
+                        )
                     )
-                )
-                linked += 1
+                    linked += 1
 
     return linked
 
