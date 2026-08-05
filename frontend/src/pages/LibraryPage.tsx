@@ -279,7 +279,7 @@ export function LibraryPage() {
             leftSection={<IconFolderOff size={14} />}
             rightSection={
               unmapped.data?.length ? (
-                <Badge size="xs" color="orange" circle>
+                <Badge size="xs" color="orange">
                   {unmapped.data.length}
                 </Badge>
               ) : null
@@ -291,7 +291,7 @@ export function LibraryPage() {
             value="mappings"
             rightSection={
               data?.needs_confirmation ? (
-                <Badge size="xs" color="yellow" circle>
+                <Badge size="xs" color="yellow">
                   {data.needs_confirmation}
                 </Badge>
               ) : null
@@ -304,7 +304,7 @@ export function LibraryPage() {
             leftSection={<IconQuestionMark size={14} />}
             rightSection={
               unmatchedFiles.data?.length ? (
-                <Badge size="xs" color="gray" circle>
+                <Badge size="xs" color="gray">
                   {unmatchedFiles.data.length}
                 </Badge>
               ) : null

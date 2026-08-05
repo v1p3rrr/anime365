@@ -27,8 +27,16 @@ interface Props {
 // За сколько рядов до конца просить следующую порцию.
 const LOAD_AHEAD_ROWS = 4
 
-const CARD_MIN_WIDTH = 168
+//: Ниже этой ширины карточка перестаёт читаться. 150 вместо прежних 168 —
+//: ровно чтобы на телефоне помещались две штуки: при 375 пикселях экрана за
+//: вычетом полей остаётся около 343, и прежний порог не дотягивал до двух
+//: колонок буквально пары пикселей. По одному тайтлу в ряд листать невозможно.
+const CARD_MIN_WIDTH = 150
 const GAP = 12
+
+//: Сколько колонок держим на узком экране, даже если формула даёт меньше.
+//: Ниже 300 пикселей две карточки уже не читаются — там честная одна.
+const MIN_COLUMNS_WIDTH = 300
 // Постер 2:3 при ширине колонки + текстовый блок фиксированной высоты.
 const cardHeight = (columnWidth: number) => Math.round((columnWidth * 3) / 2) + 76
 
@@ -57,7 +65,10 @@ export function CatalogGrid({
 
     const recalc = () => {
       const width = element.clientWidth
-      const count = Math.max(1, Math.floor((width + GAP) / (CARD_MIN_WIDTH + GAP)))
+      const fits = Math.floor((width + GAP) / (CARD_MIN_WIDTH + GAP))
+      // На телефоне важнее охват, чем размер карточки: одна в ряд превращает
+      // каталог в бесконечную ленту.
+      const count = Math.max(width >= MIN_COLUMNS_WIDTH ? 2 : 1, fits)
       setColumns(count)
       setColumnWidth(Math.floor((width - GAP * (count - 1)) / count))
     }

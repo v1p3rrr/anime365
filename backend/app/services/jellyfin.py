@@ -107,8 +107,16 @@ def _client(**kwargs: Any) -> httpx.AsyncClient:
     соседнего контейнера задаётся у нас в настройках, и знать о нём должен код,
     а не окружение. `trust_env=False` отключает и чтение прокси из окружения,
     и `.netrc` — для внутрисетевого запроса и то и другое лишнее.
+
+    Поведение переключается настройкой `jellyfin_via_proxy`: если Jellyfin
+    стоит в интернете и добраться до него можно только через прокси, включите
+    её, и окружение снова будет учитываться.
     """
-    return httpx.AsyncClient(trust_env=False, **kwargs)
+    from app.core.config import settings
+
+    return httpx.AsyncClient(
+        trust_env=settings.get_bool("jellyfin_via_proxy"), **kwargs
+    )
 
 
 def _auth_headers(key: str) -> dict[str, str]:

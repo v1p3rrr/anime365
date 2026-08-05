@@ -1303,15 +1303,21 @@ async def probe_one_file(file_id: int) -> dict[str, Any]:
         path = Path(root.path) / folder.rel_path / file.filename
         mtime = file.mtime
 
+    from app.services.audio import probe_media_info
+
     try:
         streams = await probe_stream_languages(path)
+        # Второй заход по тому же файлу, но за другим: кодеки, разрешение,
+        # длительность. Языки идут в маппинг, а это — человеку в окно, и
+        # смешивать их в одну структуру значило бы засорить маппинг.
+        media = await probe_media_info(path)
     except AudioError as exc:
         raise ApiError(422, errors.PROBE_FAILED, f"ffprobe не смог прочитать файл: {exc}")
 
     # Запись — тем же методом, что у фоновой джобы: одна логика на оба пути,
     # включая отметку «смотрели» при пустом результате.
     stream_probe._save(file_id, streams, mtime)
-    return {"file_id": file_id, "streams": streams}
+    return {"file_id": file_id, "streams": streams, "media": media}
 
 
 @router.post(

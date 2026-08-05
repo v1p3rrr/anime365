@@ -2,6 +2,7 @@ import { Alert, Badge, Button, Code, Group, Loader, Modal, Stack, Text } from '@
 import { notifications } from '@mantine/notifications'
 import { IconFileSearch } from '@tabler/icons-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 
 import { api } from '../api/client'
 import { ErrorState } from './ErrorState'
@@ -26,6 +27,21 @@ interface EpisodeFile {
   streams: { audio_languages?: string[]; subtitle_languages?: string[] } | null
   /** Непусто при пустых `streams` означает «смотрели, ничего не нашли». */
   probed_at: string | null
+}
+
+interface MediaStream {
+  kind: string | null
+  codec: string | null
+  language: string | null
+  title: string | null
+  resolution?: string
+  channels?: number
+}
+
+interface MediaInfo {
+  container: string | null
+  duration: number | null
+  streams: MediaStream[]
 }
 
 interface Props {
@@ -62,9 +78,16 @@ export function EpisodeFilesModal({ opened, onClose, seriesId, episode, episodeL
     enabled: opened,
   })
 
+  // Разбор не хранится в базе целиком — только языки. Кодеки и длительность
+  // держим в памяти окна: они нужны ровно здесь и сейчас, а гонять их через
+  // скан и базу ради одного взгляда незачем.
+  const [media, setMedia] = useState<Record<number, MediaInfo>>({})
+
   const probe = useMutation({
-    mutationFn: (fileId: number) => api.post<unknown>(`/library/files/${fileId}/probe`),
-    onSuccess: () => {
+    mutationFn: (fileId: number) =>
+      api.post<{ file_id: number; media: MediaInfo }>(`/library/files/${fileId}/probe`),
+    onSuccess: (result) => {
+      setMedia((prev) => ({ ...prev, [result.file_id]: result.media }))
       queryClient.invalidateQueries({ queryKey: ['episode-files', seriesId, episode] })
       notifications.show({ color: 'teal', message: t('episodeFiles.probed') })
     },
@@ -159,12 +182,12 @@ export function EpisodeFilesModal({ opened, onClose, seriesId, episode, episodeL
 
               {hasTracks}
 
-              {/* Кнопка есть у любого видео, а не только у файла без дорожек.
-                  Раньше она пряталась, как только дорожки известны, — и
-                  перепроверить файл, у которого данные пришли из `.nfo` (а там
-                  бывает чушь: у Fate HF у видеодорожки стоял язык `ita`), было
-                  нечем. */}
-              {file.kind === 'video' && (
+              {/* Кнопка у **любого** файла, включая субтитры: ffprobe читает
+                  и `.ass`, и `.srt`, а его ответ отличает настоящие субтитры от
+                  пустого или битого файла. Прятать её у файлов с известными
+                  дорожками тоже нельзя — данные из `.nfo` бывают неверными
+                  (у Fate HF у видеодорожки стоял язык `ita`). */}
+              {file.kind !== 'metadata' && (
                 <Group gap="xs">
                   {!hasTracks && (
                     <Text size="xs" c="dimmed">
@@ -184,6 +207,39 @@ export function EpisodeFilesModal({ opened, onClose, seriesId, episode, episodeL
                     {hasTracks ? t('episodeFiles.reprobe') : t('episodeFiles.probe')}
                   </Button>
                 </Group>
+              )}
+
+              {media[file.file_id] && (
+                <Stack gap={2}>
+                  <Text size="xs" c="dimmed">
+                    {[
+                      media[file.file_id].container,
+                      media[file.file_id].duration
+                        ? t('episodeFiles.duration', {
+                            // `format.duration` возвращает null на пустом входе,
+                            // но сюда мы попадаем только при непустом.
+                            value: format.duration(media[file.file_id].duration) ?? '',
+                          })
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </Text>
+                  {media[file.file_id].streams.map((stream, index) => (
+                    <Text key={index} size="xs" c="dimmed">
+                      {[
+                        stream.kind,
+                        stream.codec,
+                        stream.resolution,
+                        stream.channels ? t('episodeFiles.channels', { n: stream.channels }) : null,
+                        stream.language,
+                        stream.title,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                  ))}
+                </Stack>
               )}
             </Stack>
           )

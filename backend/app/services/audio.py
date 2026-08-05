@@ -16,6 +16,7 @@ import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 # Приведение языков переехало в отдельный модуль: словаря на три языка не
 # хватало — всё остальное он молча выбрасывал. Реэкспорт оставлен, чтобы
@@ -231,3 +232,68 @@ async def probe_stream_languages(source: Path) -> dict[str, list[str]]:
             target.append(lang)
 
     return {"audio_languages": audio, "subtitle_languages": subtitles}
+
+
+#: Что показываем о файле сверх языков.
+#:
+#: Отобрано по одному признаку: помогает ли это понять, **тот ли это файл** и
+#: **чем его смотреть**. Битрейт, номера дорожек, теги кодировщика и прочая
+#: россыпь из ffprobe сюда не идут — на экране от них только шум.
+async def probe_media_info(source: Path) -> dict[str, Any]:
+    """Кодеки, разрешение, длительность и дорожки одного файла.
+
+    Отдельно от `probe_stream_languages`, потому что задачи разные: та отвечает
+    на вопрос «какие языки», и её результат ложится в маппинг. Эта — для
+    человека, который открыл окно файла и хочет понять, что перед ним.
+
+    Работает и для субтитров: ffprobe читает `.ass` и `.srt` и говорит кодек и
+    длительность — этого хватает, чтобы отличить настоящие субтитры от пустого
+    или битого файла.
+    """
+    if not ffmpeg_available():
+        raise AudioError("В образе нет ffmpeg — разбор файла недоступен")
+
+    code, stdout, stderr = await _run(
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration,format_name,size"
+        ":stream=codec_type,codec_name,width,height,channels,sample_rate"
+        ":stream_tags=language,title",
+        "-of",
+        "json",
+        str(source),
+    )
+    if code != 0:
+        raise AudioError(f"ffprobe не смог прочитать файл: {stderr.decode(errors='replace')[:300]}")
+
+    try:
+        payload = json.loads(stdout or b"{}")
+    except json.JSONDecodeError as exc:
+        raise AudioError(f"Не разобрать ответ ffprobe: {exc}") from exc
+
+    fmt = payload.get("format") or {}
+    duration = fmt.get("duration")
+    streams: list[dict[str, Any]] = []
+    for item in payload.get("streams") or []:
+        tags = item.get("tags") or {}
+        entry: dict[str, Any] = {
+            "kind": item.get("codec_type"),
+            "codec": item.get("codec_name"),
+            "language": normalize_lang(tags.get("language")),
+            # Название дорожки авторы пишут по-разному («Русский», «Dub»), но
+            # именно оно помогает выбрать нужную, когда языков несколько.
+            "title": (tags.get("title") or "").strip() or None,
+        }
+        if item.get("width") and item.get("height"):
+            entry["resolution"] = f"{item['width']}×{item['height']}"
+        if item.get("channels"):
+            entry["channels"] = item["channels"]
+        streams.append(entry)
+
+    return {
+        "container": fmt.get("format_name"),
+        "duration": float(duration) if duration else None,
+        "streams": streams,
+    }

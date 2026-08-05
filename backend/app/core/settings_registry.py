@@ -526,6 +526,22 @@ SETTINGS: tuple[Setting, ...] = (
         ),
     ),
     Setting(
+        key="jellyfin_via_proxy",
+        type=SettingType.BOOL,
+        default=False,
+        group=SettingGroup.FEATURES,
+        label_ru="Ходить к Jellyfin через системный прокси",
+        server_only=True,
+        help_ru=(
+            "По умолчанию выключено: к Jellyfin ходим напрямую, минуя HTTP_PROXY и "
+            "ALL_PROXY из окружения. Так и надо, когда Jellyfin — соседний контейнер: "
+            "имени вроде jellyfin в NO_PROXY обычно нет, и запрос уходил во внешний "
+            "прокси, который отвечал 503, а до самого Jellyfin не доходило ничего. "
+            "Включайте, если Jellyfin стоит в интернете и добраться до него можно "
+            "только через прокси."
+        ),
+    ),
+    Setting(
         key="jellyfin_public_url",
         type=SettingType.STR,
         default="",
