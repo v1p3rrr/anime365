@@ -23,6 +23,7 @@ from app.models.library import (
 )
 from app.services.filename_rules import get_rules
 from app.services.library_scan import (
+    PARSER_REVISION,
     FolderState,
     RootScanResult,
     ScannedFolder,
@@ -203,6 +204,7 @@ def _persist_root(result: RootScanResult) -> int:
             session.add(root)
 
         root.kind = result.kind
+        root.parser_revision = PARSER_REVISION
         root.is_available = result.is_available
         root.is_writable = result.is_writable
         root.folder_count = len(result.folders)
@@ -922,6 +924,17 @@ def _known_states(root_path: str) -> dict[str, FolderState] | None:
             select(LibraryRoot).where(LibraryRoot.path == root_path)
         ).scalar_one_or_none()
         if root is None:
+            return None
+        if root.parser_revision != PARSER_REVISION:
+            # Разбор изменился — то, что лежит в базе, разобрано по-старому.
+            # Пропускать «неизменившиеся» папки нельзя: на диске они и правда
+            # не менялись, а вот прочитать их надо заново.
+            log.info(
+                "Корень %s разобран версией %s, текущая %s — полный проход",
+                root_path,
+                root.parser_revision,
+                PARSER_REVISION,
+            )
             return None
         root_id = root.id
     return load_folder_states(root_id)

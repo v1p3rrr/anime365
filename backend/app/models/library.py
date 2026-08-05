@@ -43,6 +43,9 @@ class LibraryRoot(Base):
     is_available: Mapped[bool] = mapped_column(Boolean, default=True)
 
     scanned_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Версией разбора помечается то, ЧЕМ разобрано содержимое корня. Не совпала
+    # с текущей — инкрементальному скану верить нельзя, нужен полный проход.
+    parser_revision: Mapped[int] = mapped_column(Integer, default=0)
 
     folders: Mapped[list[LibraryFolder]] = relationship(
         back_populates="root", cascade="all, delete-orphan"
