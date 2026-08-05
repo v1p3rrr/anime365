@@ -159,19 +159,29 @@ export function EpisodeFilesModal({ opened, onClose, seriesId, episode, episodeL
 
               {hasTracks}
 
-              {!hasTracks && file.kind === 'video' && (
+              {/* Кнопка есть у любого видео, а не только у файла без дорожек.
+                  Раньше она пряталась, как только дорожки известны, — и
+                  перепроверить файл, у которого данные пришли из `.nfo` (а там
+                  бывает чушь: у Fate HF у видеодорожки стоял язык `ita`), было
+                  нечем. */}
+              {file.kind === 'video' && (
                 <Group gap="xs">
-                  <Text size="xs" c="dimmed">
-                    {file.probed_at ? t('episodeFiles.probedNothing') : t('episodeFiles.noTracks')}
-                  </Text>
+                  {!hasTracks && (
+                    <Text size="xs" c="dimmed">
+                      {file.probed_at
+                        ? t('episodeFiles.probedNothing')
+                        : t('episodeFiles.noTracks')}
+                    </Text>
+                  )}
                   <Button
                     size="compact-xs"
-                    variant="light"
+                    variant={hasTracks ? 'subtle' : 'light'}
+                    color={hasTracks ? 'gray' : undefined}
                     leftSection={<IconFileSearch size={13} />}
                     loading={probe.isPending && probe.variables === file.file_id}
                     onClick={() => probe.mutate(file.file_id)}
                   >
-                    {t('episodeFiles.probe')}
+                    {hasTracks ? t('episodeFiles.reprobe') : t('episodeFiles.probe')}
                   </Button>
                 </Group>
               )}

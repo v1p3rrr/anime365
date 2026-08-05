@@ -765,6 +765,7 @@ export const ja: Dictionary = {
     noTracks: 'トラック情報がありません。',
     probedNothing: '確認済み — トラックは見つかりませんでした。',
     probe: 'ffprobe で解析',
+    reprobe: 'ffprobe で再解析',
     probed: 'トラックを検出しました',
     probeFailed: 'ファイルを解析できませんでした',
   },

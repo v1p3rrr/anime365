@@ -765,6 +765,7 @@ export const ru = {
     noTracks: 'Дорожки неизвестны.',
     probedNothing: 'Проверяли — дорожек не нашлось.',
     probe: 'Разобрать ffprobe',
+    reprobe: 'Перепроверить ffprobe',
     probed: 'Дорожки определены',
     probeFailed: 'Не удалось разобрать файл',
   },

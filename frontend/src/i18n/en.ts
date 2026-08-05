@@ -766,6 +766,7 @@ export const en: Dictionary = {
     noTracks: 'Tracks unknown.',
     probedNothing: 'Checked — no tracks found.',
     probe: 'Run ffprobe',
+    reprobe: 'Re-run ffprobe',
     probed: 'Tracks detected',
     probeFailed: 'Could not probe the file',
   },

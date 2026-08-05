@@ -94,6 +94,23 @@ def usable_key(raw: str) -> str:
     return key
 
 
+def _client(**kwargs: Any) -> httpx.AsyncClient:
+    """Клиент для походов к Jellyfin — **мимо прокси**.
+
+    ⚠️ Найдено на живом сервере. У контейнера заданы `HTTP_PROXY`/`ALL_PROXY`
+    (через них ходит всё наружу), а в `NO_PROXY` перечислены только localhost и
+    подсети хоста. Имя `jellyfin` туда не попадает, и запрос к соседнему
+    контейнеру уходил во внешний прокси: тот отвечал 503, а в логах самого
+    Jellyfin не было ни строчки — до него ничего не доходило.
+
+    Полагаться на то, что человек допишет `NO_PROXY`, здесь нельзя: адрес
+    соседнего контейнера задаётся у нас в настройках, и знать о нём должен код,
+    а не окружение. `trust_env=False` отключает и чтение прокси из окружения,
+    и `.netrc` — для внутрисетевого запроса и то и другое лишнее.
+    """
+    return httpx.AsyncClient(trust_env=False, **kwargs)
+
+
 def _auth_headers(key: str) -> dict[str, str]:
     """Заголовки авторизации Jellyfin.
 
@@ -202,9 +219,7 @@ class JellyfinClient:
             return base
         probe = "/System/Info/Public"
         try:
-            async with httpx.AsyncClient(
-                timeout=REQUEST_TIMEOUT, follow_redirects=True
-            ) as client:
+            async with _client(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
                 response = await client.get(f"{base}{probe}")
         except (httpx.HTTPError, ValueError, UnicodeError):
             # Не смогли выяснить — работаем по настроенному адресу.
@@ -242,9 +257,7 @@ class JellyfinClient:
             return None
         headers = _auth_headers(key) if key else {}
         try:
-            async with httpx.AsyncClient(
-                timeout=REQUEST_TIMEOUT, follow_redirects=True
-            ) as client:
+            async with _client(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
                 response = await client.get(f"{base}{path}", params=params, headers=headers)
         except (httpx.HTTPError, ValueError, UnicodeError) as exc:
             # Ловим шире сетевых сбоев намеренно: кривой адрес или заголовок
@@ -441,9 +454,7 @@ class JellyfinClient:
             return None
 
         try:
-            async with httpx.AsyncClient(
-                timeout=REQUEST_TIMEOUT, follow_redirects=True
-            ) as client:
+            async with _client(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
                 response = await client.post(
                     f"{base}/Collections",
                     params={"name": name, "ids": ",".join(item_ids)},
@@ -535,9 +546,7 @@ class JellyfinClient:
         if not base or not key or not item_ids:
             return False
         try:
-            async with httpx.AsyncClient(
-                timeout=REQUEST_TIMEOUT, follow_redirects=True
-            ) as client:
+            async with _client(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
                 response = await client.post(
                     f"{base}/Collections/{collection_id}/Items",
                     params={"ids": ",".join(item_ids)},
@@ -622,9 +631,7 @@ class JellyfinClient:
 
         url = f"{base}/Library/Refresh"
         try:
-            async with httpx.AsyncClient(
-                timeout=REQUEST_TIMEOUT, follow_redirects=True
-            ) as client:
+            async with _client(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
                 response = await client.post(url, headers=_auth_headers(key))
         except (httpx.HTTPError, ValueError, UnicodeError) as exc:
             detail = str(exc) or type(exc).__name__
