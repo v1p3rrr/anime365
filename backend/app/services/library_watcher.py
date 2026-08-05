@@ -49,6 +49,64 @@ class WatcherState:
     DISABLED = "disabled"
 
 
+#: Сколько секунд событие о нашей собственной записи считается «нашим».
+#:
+#: Событие от inotify приходит практически мгновенно, но между записью и
+#: доставкой стоит очередь наблюдателя. Пары секунд хватает с запасом, а держать
+#: дольше нельзя: за это время в ту же папку может лечь настоящее изменение.
+SELF_WRITE_TTL = 5.0
+
+
+class SelfWrites:
+    """Пути, которые записали мы сами, — их события не считаются изменениями.
+
+    ⚠️ Заведено по живой поломке. Сканирование вызывает `check_writable`, а тот
+    создаёт и удаляет в корне библиотеки `.a365-write-test`. inotify сообщал об
+    этом наблюдателю, наблюдатель через дебаунс запускал следующий скан, тот
+    снова трогал зонд — и так по кругу. В логах ровно каждые ~72 секунды
+    «затронуто папок 1», процессор на 101%, сканирование не заканчивалось
+    никогда.
+
+    Подавляем **только собственные служебные записи**. Скачанные файлы сюда не
+    попадают намеренно: их появление — настоящее изменение библиотеки, и
+    пересканировать папку после загрузки как раз нужно.
+    """
+
+    def __init__(self) -> None:
+        self._paths: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def remember(self, path: Path) -> None:
+        """Запомнить свою запись — и сам путь, и папку, в которой он лежит.
+
+        Папка нужна потому, что о записи в неё inotify сообщает **дважды**:
+        событием о файле и событием об изменении самой папки. Второе приходит с
+        путём папки, и по имени файла его не отфильтровать.
+        """
+        now = time.monotonic()
+        with self._lock:
+            self._paths[str(path)] = now
+            self._paths[str(path.parent)] = now
+
+    def matches(self, path_str: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            stamp = self._paths.get(path_str)
+            if stamp is None:
+                return False
+            if now - stamp > SELF_WRITE_TTL:
+                del self._paths[path_str]
+                return False
+            return True
+
+    def clear(self) -> None:
+        with self._lock:
+            self._paths.clear()
+
+
+self_writes = SelfWrites()
+
+
 @dataclass
 class WatcherStatus:
     state: str = WatcherState.DISABLED
@@ -188,10 +246,29 @@ class _DebouncingHandler(FileSystemEventHandler):
 
     def on_any_event(self, event: FileSystemEvent) -> None:
         if event.is_directory:
-            # Создание и удаление папок тоже важно: это новый или пропавший тайтл.
+            # ⚠️ «Папка изменена» не берём. Её mtime меняется от **любого**
+            # действия внутри, включая наши собственные.
+            #
+            # Из-за этого сканирование зациклилось на живом сервере: скан
+            # вызывает `check_writable`, тот создаёт и удаляет в корне
+            # `.a365-write-test`, watchdog шлёт на корень `modified`, и через
+            # дебаунс запускается следующий скан. В логах это выглядело как
+            # «затронуто папок 1» строго каждые ~72 секунды, процессор стоял на
+            # 101%, а сканирование не заканчивалось никогда.
+            #
+            # Сам файл зонда фильтр уже отсекал — событие о папке приходило
+            # отдельно и мимо фильтра. Содержательные изменения файлов ловятся
+            # ниже, по самим файлам, поэтому здесь нужны только появление,
+            # исчезновение и переименование папок.
+            if event.event_type == "modified":
+                return
+            if self_writes.matches(event.src_path):
+                return
             target = Path(event.src_path)
         else:
             if not self._interesting(event.src_path):
+                return
+            if self_writes.matches(event.src_path):
                 return
             target = Path(event.src_path).parent
 

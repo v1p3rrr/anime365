@@ -131,6 +131,12 @@ def check_writable(path: Path) -> bool:
     создать и удалить временный файл.
     """
     probe = path / ".a365-write-test"
+    # Предупреждаем наблюдателя: сейчас в корне появится и исчезнет файл, и это
+    # не изменение библиотеки. Без этого скан запускал сам себя по кругу —
+    # см. SelfWrites в library_watcher.
+    from app.services.library_watcher import self_writes
+
+    self_writes.remember(probe)
     try:
         probe.touch()
     except OSError:
