@@ -246,12 +246,38 @@ class MatchContext:
     #: Сколько видеофайлов лежит в папке. Нужен для проверки правдоподобия:
     #: тайтл с одним эпизодом не может занимать папку с 26 файлами.
     video_count: int = 0
+    #: Номер сезона из имени самой папки («Season 2»), когда `season.nfo` нет.
+    own_season: int | None = None
+    #: Номер сезона, на котором сошлись имена видеофайлов папки.
+    #:
+    #: Заполняется только при единогласии. Реальный случай: в папке
+    #: `Classroom of the Elite` лежат 17 файлов `S04E01…`, а подпапок сезонов
+    #: нет вовсе — ни `season.nfo`, ни имя папки о четвёртом сезоне не говорят,
+    #: и папка уезжала на первый сезон.
+    season_from_files: int | None = None
 
     @property
     def season_number(self) -> int | None:
         if self.season_nfo is not None and self.season_nfo.season is not None:
             return self.season_nfo.season
-        return None
+        if self.own_season is not None:
+            return self.own_season
+        return self.season_from_files
+
+    @property
+    def season_is_guessed(self) -> bool:
+        """Номер сезона взят из имён файлов, а не из метаданных.
+
+        Разница существенна для года: у `season.nfo` есть своя дата премьеры, а
+        когда сезон вычислен по файлам, год из `tvshow.nfo` относится к первому
+        сезону и никакого отношения к четвёртому не имеет. Считать его
+        ожидаемым — значит зарубить единственного правильного кандидата.
+        """
+        if self.season_nfo is not None and self.season_nfo.season is not None:
+            return False
+        if self.own_season is not None:
+            return False
+        return self.season_from_files is not None
 
     @property
     def inherits_parent(self) -> bool:
@@ -571,7 +597,13 @@ class Matcher:
         У сезонной папки берётся её собственный год — он и разводит сезоны. Год
         из `<premiered>` считается наравне с `<year>`: в `season.nfo` бывает
         только дата.
+
+        ⚠️ Когда номер сезона вычислен по именам файлов, года у нас нет: тот,
+        что лежит в `tvshow.nfo`, относится к первому сезону. Выдавать его за
+        ожидаемый нельзя — он зарубит единственного верного кандидата.
         """
+        if ctx.season_is_guessed:
+            return None
         for source in (ctx.season_nfo, ctx.own_nfo, ctx.nfo):
             if source is None:
                 continue

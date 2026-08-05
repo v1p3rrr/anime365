@@ -285,6 +285,28 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
             ).all()
         }
 
+        # Номера сезонов, на которых сошлись имена видеофайлов папки. Нужны
+        # там, где сезон не назван больше нигде: в `Classroom of the Elite`
+        # лежат 17 файлов `S04E01…` без единой подпапки, и папка уезжала на
+        # первый сезон. Единогласие обязательно — разнобой ничего не значит.
+        season_rows = session.execute(
+            select(
+                LibraryFile.folder_id,
+                LibraryFile.season_number,
+                func.count(),
+            )
+            .where(
+                LibraryFile.folder_id.in_([f.id for f in folders] or [0]),
+                LibraryFile.kind == "video",
+                LibraryFile.excluded_reason.is_(None),
+                LibraryFile.season_number.is_not(None),
+            )
+            .group_by(LibraryFile.folder_id, LibraryFile.season_number)
+        ).all()
+        seasons_seen: dict[int, set[int]] = {}
+        for folder_id, season, _count in season_rows:
+            seasons_seen.setdefault(folder_id, set()).add(int(season))
+
         # Контексты собираем здесь же: дальше объекты будут отсоединены от
         # сессии, и обращение к их полям стало бы неожиданным запросом.
         contexts: list[tuple[int, MatchContext]] = []
@@ -302,6 +324,9 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
             # родителя ей чужие. Поэтому рядом всегда передаём и собственные
             # имя с `.nfo`, а решает матчер
             # ([14-mapping-audit.md](../../../claude/14-mapping-audit.md)).
+            seen_seasons = seasons_seen.get(folder.id, set())
+            season_from_files = next(iter(seen_seasons)) if len(seen_seasons) == 1 else None
+
             title_nfo = _nfo_of(parent) if parent is not None else _nfo_of(folder)
             season_nfo = _nfo_of(folder) if parent is not None else None
             folder_name = parent.name if parent is not None else folder.name
@@ -321,6 +346,8 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
                         own_nfo=_nfo_of(folder),
                         is_child=parent is not None,
                         video_count=folder.video_count,
+                        own_season=folder.season_number,
+                        season_from_files=season_from_files,
                     ),
                 )
             )
@@ -369,6 +396,14 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
     return stats
 
 
+#: Сколько своих видео папка-контейнер имеет право держать.
+#:
+#: Ноль — чистый контейнер. Один — контейнер, в который что-то случайно упало:
+#: у `Toradora!` это спешл, попавший в корень при скачивании. Два и больше уже
+#: означают, что часть серий действительно лежит здесь.
+STRAY_VIDEO_LIMIT = 1
+
+
 def _drop_container_duplicates(session, folders: list[LibraryFolder]) -> int:
     """Снимает привязку с папки-контейнера, если её же тайтл держит подпапка.
 
@@ -382,12 +417,24 @@ def _drop_container_duplicates(session, folders: list[LibraryFolder]) -> int:
     основной осталась корневая, загрузки первого сезона легли бы рядом с
     папками сезонов, а не внутрь нужной.
 
-    Но уступает корень **не любому** потомку, а только тому, где есть файлы.
+    Но уступает корень **не любому** потомку, а только тому, где файлов больше.
     Два условия:
 
-    1. **У корня нет своих видео.** Если серии лежат прямо в папке тайтла, она
-       не контейнер, а рабочая папка — снимать с неё привязку нельзя.
-    2. **У потомка видео есть.** Пустая подпапка не лучше корня ничем.
+    1. **У корня своих видео не больше одного** (`STRAY_VIDEO_LIMIT`). Ноль —
+       чистый контейнер; один — контейнер, в который что-то случайно упало.
+       Начиная с двух это уже раскладка, и снимать привязку нельзя.
+    2. **У потомка видео больше.** Пустая подпапка не лучше корня ничем.
+
+    ⚠️ Раньше первое условие было строже: видео у корня не должно было быть
+    вовсе. На живой библиотеке этого не хватило. У `Toradora!` в корне лежит
+    **один** файл — спешл `[Anime365] Toradora Bentou no Gokui - 01
+    (t924861).mkv`, попавший туда при скачивании, — а в `Season 1` двадцать
+    девять. Одного случайного файла хватало, чтобы корень считался рабочей
+    папкой, и тайтл оставался привязан дважды: и к `Toradora!`, и к
+    `Toradora!/Season 1`.
+
+    Осиротевший файл при этом не теряется: у него в имени есть `t{id}`, и он
+    опознаётся сам ([D-88](../../../claude/09-decisions.md)).
 
     Отдельного исключения для спешлов нет — решение пользователя. Следствие:
     при раскладке «корень без видео + только `Specials`» привязка уедет на
@@ -439,7 +486,7 @@ def _drop_container_duplicates(session, folders: list[LibraryFolder]) -> int:
             folder = by_id.get(mapping.folder_id)
             if folder is None:
                 continue
-            if folder.video_count:
+            if folder.video_count > STRAY_VIDEO_LIMIT:
                 # Серии лежат прямо здесь — это рабочая папка, а не контейнер.
                 continue
 
@@ -447,7 +494,7 @@ def _drop_container_duplicates(session, folders: list[LibraryFolder]) -> int:
                 other_id != mapping.folder_id
                 and other_id in by_id
                 and is_ancestor(mapping.folder_id, by_id[other_id])
-                and by_id[other_id].video_count
+                and by_id[other_id].video_count > folder.video_count
                 for other_id in folder_ids
             )
             if has_better_descendant:
