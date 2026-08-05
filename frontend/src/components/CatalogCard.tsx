@@ -124,21 +124,20 @@ export function CatalogCard({ card, visibleBadges = DEFAULT_BADGES }: Props) {
             {visibleBadges.map((key) => {
               if (!local) return null
               const have = local[key] ?? 0
-              // Знаменатель приходит с сервера уже по правилу
-              // «максимум из плана, эпизодов в API и локального номера».
+              // Знаменатель — вышедшие серии: больше скачать неоткуда, и
+              // «10/11» у онгоинга честнее, чем «10/18» красным. План
+              // дописывается в скобках, когда он больше вышедшего, —
+              // так видно, сколько всего ждать.
+              const aired = local.aired || local.total
               return (
-                <Badge
-                  key={key}
-                  size="xs"
-                  variant="filled"
-                  color={coverageColor(have, local.total)}
-                >
+                <Badge key={key} size="xs" variant="filled" color={coverageColor(have, aired)}>
                   {BADGE_LABELS[key] ? (
                     <Flag lang={BADGE_LABELS[key]} />
                   ) : (
                     t('catalog.badgeVideo')
                   )}{' '}
-                  {have}/{local.total}
+                  {have}/{aired}
+                  {local.total > aired && `(${local.total})`}
                 </Badge>
               )
             })}

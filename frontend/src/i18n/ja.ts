@@ -736,12 +736,14 @@ export const ja: Dictionary = {
     premiered: ' ・放送開始 {date}',
     roleVideo: '映像',
     videosAndSize: '映像 {count} 件・{size}',
+    videosOnly: '映像 {count} 件',
   },
 
   bindFolder: {
     allTaken: '空きフォルダーがありません。移動するには先に元のタイトルから解除してください。',
     season: 'シーズン{n}',
     videosAndSize: '動画 {count} · {size}',
+    videosOnly: '動画 {count}',
     title: '「{title}」にフォルダーを紐付ける',
     hint: '手動の紐付けは印が付き、スキャンでも上書きされません。',
     filter: 'フォルダーのパスで絞り込み',

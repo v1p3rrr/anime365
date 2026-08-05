@@ -125,7 +125,7 @@ export function BindFolderModal({ opened, seriesId, seriesTitle, onClose }: Prop
                   </Badge>
                 )}
                 <Text size="xs" c="dimmed">
-                  {t('bindFolder.videosAndSize', { count: folder.video_count, size: format.size(folder.size_bytes) })}
+                  {t(folder.size_bytes ? 'bindFolder.videosAndSize' : 'bindFolder.videosOnly', { count: folder.video_count, size: format.size(folder.size_bytes) })}
                   {folder.nfo_title ? ` · ${folder.nfo_title}` : ''}
                 </Text>
               </Group>

@@ -736,12 +736,14 @@ export const ru = {
     premiered: ' · премьера {date}',
     roleVideo: 'видео',
     videosAndSize: '{count} видео · {size}',
+    videosOnly: '{count} видео',
   },
 
   bindFolder: {
     allTaken: 'Свободных папок нет — все уже привязаны. Чтобы перенести привязку, сначала отвяжите папку от прежнего тайтла.',
     season: 'сезон {n}',
     videosAndSize: '{count} видео · {size}',
+    videosOnly: '{count} видео',
     title: 'Привязать папку к «{title}»',
     hint: 'Ручная привязка помечается и не перетирается сканированием.',
     filter: 'Фильтр по пути папки',

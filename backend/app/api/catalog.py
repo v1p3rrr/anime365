@@ -87,6 +87,8 @@ class LocalBadges(BaseModel):
     """Что из тайтла есть локально. Знаменатель уже посчитан по правилу из ТЗ."""
 
     total: int = 0
+    # Сколько серий уже выложено. У онгоинга меньше `total`: тот считает план.
+    aired: int = 0
     video: int = 0
     sub_ru: int = 0
     sub_ja: int = 0

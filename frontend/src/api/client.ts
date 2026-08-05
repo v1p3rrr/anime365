@@ -136,6 +136,8 @@ export const api = {
 /** Что из тайтла есть локально. `total` уже посчитан на сервере. */
 export interface LocalBadges {
   total: number
+  /** Сколько серий уже выложено. У онгоинга меньше `total` — плана. */
+  aired: number
   video: number
   sub_ru: number
   sub_ja: number

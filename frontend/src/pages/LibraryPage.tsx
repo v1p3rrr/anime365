@@ -365,7 +365,7 @@ export function LibraryPage() {
                       )}
                     </Table.Td>
                     <Table.Td>{folder.video_count || '—'}</Table.Td>
-                    <Table.Td>{size(folder.size_bytes)}</Table.Td>
+                    <Table.Td>{folder.size_bytes ? size(folder.size_bytes) : '—'}</Table.Td>
                     {canEdit && (
                       <Table.Td>
                         <Button size="compact-xs" onClick={() => setMappingFolder(folder)}>

@@ -385,12 +385,13 @@ def series_badges(series_ids: list[int] | None = None) -> dict[int, dict[str, An
         out.setdefault(series_id, {})
 
     for series_id, entry in out.items():
-        entry["total"] = int(
-            max(
-                planned.get(series_id) or 0,
-                api_counts.get(series_id) or 0,
-                local_max.get(series_id, 0.0),
-            )
-        )
+        # «Вышло» и «запланировано» — разные числа, и у онгоинга разница
+        # видна: `numberOfEpisodes` это ПЛАН, а серии в API — то, что уже
+        # выложено. Знаменатель берём по вышедшим: скачать больше нельзя,
+        # и «10/11» честнее, чем «10/18» красным.
+        aired = int(max(api_counts.get(series_id) or 0, local_max.get(series_id, 0.0)))
+        planned_count = int(planned.get(series_id) or 0)
+        entry["aired"] = aired
+        entry["total"] = max(planned_count, aired)
         entry["size_bytes"] = int(sizes.get(series_id) or 0)
     return out

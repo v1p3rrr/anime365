@@ -233,7 +233,7 @@ export function MappingPanel({
                       расхождения нет, и не переголосовывает разметку. */}
                   {mapping.is_primary && <JellyfinVerdictBadge seriesId={seriesId} />}
                   <Text size="xs" c="dimmed">
-                    {t('mapping.videosAndSize', {
+                    {t(mapping.size_bytes ? 'mapping.videosAndSize' : 'mapping.videosOnly', {
                       count: mapping.video_count,
                       size: size(mapping.size_bytes),
                     })}

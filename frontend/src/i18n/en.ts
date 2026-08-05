@@ -737,12 +737,14 @@ export const en: Dictionary = {
     premiered: ' · premiered {date}',
     roleVideo: 'video',
     videosAndSize: '{count} videos · {size}',
+    videosOnly: '{count} videos',
   },
 
   bindFolder: {
     allTaken: 'No free folders — all are bound already. To move a binding, unlink the folder from its previous title first.',
     season: 'season {n}',
     videosAndSize: '{count} videos · {size}',
+    videosOnly: '{count} videos',
     title: 'Link a folder to “{title}”',
     hint: 'A manual link is marked as such and survives scanning.',
     filter: 'Filter by folder path',
