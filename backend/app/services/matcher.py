@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterable
@@ -50,6 +51,43 @@ _MONTH_TO_SEASON = {
 # быть не могут, а в нечётком поиске выигрывали у настоящего сериала —
 # «Zombie Land Saga» уезжала в «Curry Meshi x Zombieland Saga» типа cm.
 SERVICE_TYPES = frozenset({"cm", "pv", "music"})
+
+
+#: Явный номер сезона в названии каталога.
+#:
+#: Формы взяты из настоящих названий: «BanG Dream! 2nd Season», «Season 2»,
+#: «Youjo Senki II». Голая цифра в конце сюда намеренно не входит — «Girls Band
+#: Cry Movie 2» это часть фильма, а не второй сезон.
+_TITLE_SEASON_PATTERNS = (
+    re.compile(r"(?i)\b(\d{1,2})(?:st|nd|rd|th)\s+season\b"),
+    re.compile(r"(?i)\bseason\s+(\d{1,2})\b"),
+    re.compile(r"(?i)\b(\d{1,2})\s*-?\s*й\s+сезон\b"),
+)
+
+#: Римские цифры в хвосте названия: «Youjo Senki II».
+_TITLE_ROMAN = re.compile(r"(?i)\s(II|III|IV|V)\s*$")
+_ROMAN_VALUE = {"ii": 2, "iii": 3, "iv": 4, "v": 5}
+
+
+def season_in_title(title: str) -> int | None:
+    """Номер сезона, **явно названный** в самом заголовке тайтла.
+
+    Нужен там, где число серий бессильно. У папки `Bang Dream!/Season 2` было
+    тринадцать файлов, и она уехала на чиби-спиноф `Garupa☆Pico`, вышедший в тот
+    же сезон года: дата премьеры совпала, а больше сверять было нечем. Но верный
+    ответ называется «BanG Dream! **2nd Season**» — номер написан прямо в нём.
+
+    Сравнение по количеству здесь не помогло бы принципиально: скачано может
+    быть десять серий из двенадцати, а у чиби-сериала рядом их двадцать четыре.
+    """
+    for pattern in _TITLE_SEASON_PATTERNS:
+        match = pattern.search(title)
+        if match:
+            return int(match.group(1))
+    match = _TITLE_ROMAN.search(title)
+    if match:
+        return _ROMAN_VALUE[match.group(1).lower()]
+    return None
 
 
 def season_label_from_premiered(year: int, month: int) -> str:
@@ -712,6 +750,22 @@ class Matcher:
         if ctx.is_specials and candidate.type not in SPECIAL_TYPES:
             return None
 
+        # Номер сезона, названный прямо в заголовке кандидата, — самый сильный
+        # признак из имеющихся, и он не зависит от того, сколько скачано.
+        #
+        # У папки `Bang Dream!/Season 2` тринадцать файлов, и она уехала на
+        # чиби-спиноф `Garupa☆Pico`, вышедший в тот же сезон года: дата премьеры
+        # совпала, сверять было больше нечем. Верный ответ при этом называется
+        # «BanG Dream! 2nd Season» — номер написан в нём буквально.
+        #
+        # Сравнение по количеству серий тут бессильно принципиально: скачано
+        # может быть десять из двенадцати, а у чиби-сериала рядом их двадцать
+        # четыре. Поэтому решает не счёт, а совпадение явных номеров.
+        if not ctx.is_specials and ctx.season_number is not None:
+            claimed = self._season_claimed_by(candidate)
+            if claimed is not None and claimed != ctx.season_number:
+                return None
+
         title = self._title_score(ctx, candidate)
         episodes = candidate.number_of_episodes or 0
 
@@ -808,6 +862,20 @@ class Matcher:
             quarter = source.season_quarter
             if quarter:
                 return quarter[0]
+        return None
+
+    @staticmethod
+    def _season_claimed_by(candidate: SeriesCandidate) -> int | None:
+        """Номер сезона, названный в любом из написаний кандидата.
+
+        Смотрим все варианты, а не одно: «2nd Season» стоит в romaji, а русское
+        название той же записи звучит как «2 сезон». Достаточно одного
+        написания, чтобы номер считался объявленным.
+        """
+        for variant in TitleIndex._all_variants(candidate):
+            claimed = season_in_title(variant)
+            if claimed is not None:
+                return claimed
         return None
 
     def _ids_agree(self, ctx: MatchContext, series_id: int) -> bool:
@@ -1005,6 +1073,22 @@ class Matcher:
         candidates = filtered or candidates
         if len(candidates) == 1:
             return candidates[0].id
+
+        # Номер сезона, названный в заголовке. Идёт раньше квартала премьеры,
+        # потому что чиби-спиноф выходит **в тот же квартал**, что и настоящий
+        # сезон: у `Bang Dream!/Season 2` дата премьеры совпала и с
+        # «2nd Season», и с «Garupa☆Pico», и выбор пал на второго.
+        #
+        # Числом серий это не развести: скачано может быть десять из
+        # двенадцати, а у спинофа их двадцать четыре.
+        if not ctx.is_specials and ctx.season_number is not None:
+            claiming = [
+                c for c in candidates if self._season_claimed_by(c) == ctx.season_number
+            ]
+            if claiming:
+                candidates = claiming
+                if len(candidates) == 1:
+                    return candidates[0].id
 
         # Квартал премьеры — самый сильный признак после типа.
         quarter = None

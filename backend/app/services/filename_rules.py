@@ -299,12 +299,18 @@ _SEASON_PATTERNS = (
 )
 
 
+def _unwrap(match: re.Match[str]) -> str:
+    """Оставляет содержимое скобок, убирая сами скобки."""
+    return f" {match.group(0)[1:-1]} "
+
+
 def clean_title(value: str, rules: RuleSet | None = None) -> str:
     """Убирает технический хвост и скобочные блоки, оставляя само название."""
     rules = rules or get_rules()
     text = value
     for pattern in rules.technical_noise:
         text = pattern.sub(" ", text)
+
     text = _BRACKETS_RE.sub(" ", text)
     text = text.replace("_", " ")
     return _SPACES_RE.sub(" ", text).strip(" -–—.")
@@ -363,7 +369,24 @@ def normalize_title(value: str) -> str:
 
 
 def normalize_for_match(value: str, rules: RuleSet | None = None) -> tuple[str, int | None]:
-    """Полная подготовка названия к сопоставлению: чистка, сезон, нормализация."""
+    """Полная подготовка названия к сопоставлению: чистка, сезон, нормализация.
+
+    ⚠️ Пустой результат — это провал: искать по нему нечего, и папка молча
+    остаётся ни с чем. Так `[Oshi no Ko]` терялся целиком, а третий сезон уезжал
+    на первый.
+
+    Обе чистки по отдельности безобидны и обе нужны: скобки убирают релизный тег
+    `[Ohys-Raws]`, выделение сезона отделяет «Season 3» от названия. Беда
+    возникает, когда после них не остаётся ничего — у `[Oshi no Ko] 3rd Season`
+    название целиком в скобках, а хвост забирает сезон. Поэтому проверяем
+    результат и, если он пуст, повторяем без вырезания скобок.
+    """
     cleaned = clean_title(value, rules)
     without_season, season = extract_season(cleaned)
-    return normalize_title(without_season), season
+    normalized = normalize_title(without_season)
+    if normalized:
+        return normalized, season
+
+    # Скобки оказались не тегом, а самим названием — берём их содержимое.
+    without_season, season_again = extract_season(_BRACKETS_RE.sub(_unwrap, value))
+    return normalize_title(without_season), season if season is not None else season_again
