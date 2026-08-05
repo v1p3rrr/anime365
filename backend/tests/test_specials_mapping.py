@@ -256,3 +256,54 @@ class TestSpecialIsNamedInTheFileName:
         # Найдётся спешл франшизы, но не `Mini Yuri`: его название не начинается
         # с «Yuru Yuri», а кандидатов набирает именно префикс.
         assert result is None or result.series_id != 21401
+
+
+class TestRealYuruYuriCase:
+    """Замер, опровергнувший первоначальный порог.
+
+    Файл `YuruYuri Happy Go Lily S00E01 - Love Paradox Eternal …` против
+    вариантов названия вхождения 9888 даёт 64,9 — общее там только хвост. При
+    пороге 70 верный ответ отвергался. Ближайший конкурент при этом набирает
+    32,8, то есть лидер очевиден, и решать должен отрыв, а не абсолютная
+    величина.
+
+    Варианты названий настоящие, из ответа `/api/series/9888`.
+    """
+
+    INDEX = TitleIndex(
+        [
+            series(260, "Yuru Yuri", year=2011, anilist=10495),
+            series(
+                9888,
+                "Yuru Yuri: Doushite, Tomaranai, Tokimeki, Dokidoki, Paradox, Eternal",
+                type_="special",
+                year=2011,
+                episodes=1,
+                extra=[
+                    "YuruYuri: For Whatever Reason, Never Ending, "
+                    "Heart Throbbing, Pitter-patter, Paradox, Eternal",
+                    "Yuru Yuri Special",
+                ],
+            ),
+            series(19093, "Yuru Yuri,", type_="ova", year=2019, episodes=1),
+        ]
+    )
+
+    def test_picks_the_special_named_in_the_file(self) -> None:
+        ctx = MatchContext(
+            folder_name="Yuru Yuri",
+            scope="series",
+            nfo=_show_nfo(10495, "Yuru Yuri"),
+            own_name="Specials",
+            is_child=True,
+            own_season=0,
+            video_count=1,
+            file_names=[
+                "YuruYuri Happy Go Lily S00E01 - Love Paradox Eternal [Doki] Bluray-1080p"
+            ],
+        )
+
+        result = Matcher(self.INDEX).match(ctx)
+
+        assert result is not None
+        assert result.series_id == 9888, "верный спешл отвергался слишком высоким порогом"
