@@ -18,7 +18,14 @@
 
 from __future__ import annotations
 
-from app.services.matcher import MatchContext, Matcher, SeriesCandidate, TitleIndex, season_in_title
+from app.services.matcher import (
+    MatchContext,
+    Matcher,
+    MatchSource,
+    SeriesCandidate,
+    TitleIndex,
+    season_in_title,
+)
 from app.services.nfo_parser import NfoData
 
 
@@ -255,3 +262,85 @@ class TestEmphasisMarks:
         result = self._match("Haikyuu!!")
 
         assert result is not None and result.series_id == 32
+
+
+class TestKOnBySignalsOtherThanMarks:
+    """Что развело бы K-On, если бы хвостовых знаков не было вовсе.
+
+    Данные настоящие: в каталоге `588 K-On! (2009, 13 серий)` и
+    `2921 K-On!! (2010, 26 серий)`. Названия после нормализации сливаются в
+    «k on», поэтому строка бесполезна — но она и не единственная.
+    """
+
+    INDEX = TitleIndex(
+        [
+            series(588, "K-On!", year=2009, season="Весна 2009", episodes=13),
+            series(2921, "K-On!!", year=2010, season="Весна 2010", episodes=26),
+        ]
+    )
+
+    @staticmethod
+    def _season_folder(number: int, premiered: str, videos: int):
+        from app.services.nfo_parser import NfoData
+
+        show = NfoData(kind="tvshow", path="tvshow.nfo")
+        show.title = "K-On!"
+        show.year = 2009
+        show.anilist_id = 5680
+        season_nfo = NfoData(kind="season", path="season.nfo")
+        season_nfo.season = number
+        season_nfo.premiered = premiered
+        return MatchContext(
+            folder_name="K-On!",
+            scope="series",
+            nfo=show,
+            season_nfo=season_nfo,
+            own_name=f"Season {number}",
+            is_child=True,
+            video_count=videos,
+            local_episode_count=videos,
+        )
+
+    def test_premiere_date_alone_resolves_the_seasons(self) -> None:
+        """Штатная раскладка Jellyfin: `season.nfo` с датой у каждого сезона.
+
+        Хвостовые знаки здесь не нужны вовсе — у обеих папок имя одинаковое
+        («Season 1» и «Season 2»), а решает квартал премьеры.
+        """
+        first = Matcher(self.INDEX).match(self._season_folder(1, "2009-04-03", 13))
+        second = Matcher(self.INDEX).match(self._season_folder(2, "2010-04-07", 26))
+
+        assert first is not None and first.series_id == 588
+        assert second is not None and second.series_id == 2921
+
+    def test_parent_ids_do_not_drag_the_second_season_to_the_first(self) -> None:
+        """`anilistid` из `tvshow.nfo` указывает на первый сезон — и блокируется."""
+        result = Matcher(self.INDEX).match(self._season_folder(2, "2010-04-07", 26))
+
+        assert result is not None
+        assert result.source is not MatchSource.ANILIST_ID
+        assert result.series_id == 2921
+
+    def test_marks_are_needed_only_without_season_nfo(self) -> None:
+        """А вот когда даты нет, остаются только знаки.
+
+        Так выглядит папка вне схемы Jellyfin: релиз назван прямо `K-On!!`,
+        никакого `season.nfo` рядом нет.
+        """
+        from app.services.nfo_parser import NfoData
+
+        nfo = NfoData(kind="tvshow", path="tvshow.nfo")
+        nfo.title = "K-On!!"
+        ctx = MatchContext(
+            folder_name="K-On!!",
+            scope="series",
+            nfo=nfo,
+            own_name="K-On!!",
+            is_child=False,
+            video_count=26,
+            local_episode_count=26,
+        )
+
+        result = Matcher(self.INDEX).match(ctx)
+
+        assert result is not None and result.series_id == 2921
