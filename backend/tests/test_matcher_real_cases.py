@@ -419,3 +419,85 @@ class TestRemakeSharesTheJapaneseTitle:
 
         result = Matcher(index).match(ctx)
         assert result is not None and result.series_id == 2400
+
+
+class TestNicknameCannotClaimASeason:
+    """Народное прозвище не описывает структуру сезонов.
+
+    Живой случай, найденный пользователем. У «Стального алхимика: Братство»
+    среди `allTitles` в Anime365 лежит `Fullmetal Alchemist 2nd Season` — но
+    это **ремейк**, а не второй сезон, и Jellyfin кладёт его в `Season 1`.
+
+    Проверка «номер сезона, названный в заголовке кандидата» читала весь список
+    псевдонимов, находила там двойку, сравнивала с папкой `Season 1` и
+    отвергала **всех** кандидатов разом — включая точный `anilistid` со
+    стопроцентной уверенностью. Папка с 64 сериями оставалась вовсе без
+    привязки.
+
+    Проверено на живых данных: похожесть названия у верного кандидата 100,
+    год совпадает, число серий совпадает — и всё равно отказ.
+    """
+
+    #: Как это лежит на сервере на самом деле (прочитано в `tvshow.nfo`).
+    SHOW = "Fullmetal Alchemist - Brotherhood"
+    NFO_TITLE = "Hagane no Renkinjutsushi: FULLMETAL ALCHEMIST"
+
+    def _index(self) -> TitleIndex:
+        return TitleIndex(
+            [
+                series(
+                    2400,
+                    "Hagane no Renkinjutsushi (2009)",
+                    year=2009,
+                    episodes=64,
+                    anilist=5114,
+                    mal=5114,
+                    # Тот самый псевдоним, из-за которого всё разваливалось.
+                    extra=[
+                        "Fullmetal Alchemist Brotherhood",
+                        "Fullmetal Alchemist 2nd Season",
+                        "FMAB",
+                    ],
+                ),
+                series(4389, "Fullmetal Alchemist", year=2003, episodes=51, anilist=121),
+            ]
+        )
+
+    def test_season_one_folder_keeps_its_identifier(self) -> None:
+        result = Matcher(self._index()).match(
+            MatchContext(
+                folder_name=self.SHOW,
+                scope="series",
+                nfo=nfo(
+                    title=self.NFO_TITLE,
+                    original_title="鋼の錬金術師 FULLMETAL ALCHEMIST",
+                    year=2009,
+                    anilist_id=5114,
+                    shikimori_id=5114,
+                ),
+                season_nfo=nfo("season", premiered="2009-04-05"),
+                own_name="Season 1",
+                own_season=1,
+                is_child=True,
+                video_count=64,
+                local_episode_count=64,
+            )
+        )
+
+        assert result is not None, "папка с 64 сериями осталась без привязки"
+        assert result.series_id == 2400
+
+    def test_a_canonical_season_number_still_vetoes(self) -> None:
+        """Обратная сторона: у `BanG Dream! 2nd Season` номер в самом romaji.
+
+        Ради этого случая проверка и заведена, и ослабить её нельзя.
+        """
+        index = TitleIndex(
+            [
+                series(700, "BanG Dream! 2nd Season", year=2019, episodes=13),
+                series(701, "Garupa Pico", year=2019, episodes=26, type_="ona"),
+            ]
+        )
+        claimed = Matcher(index)._season_claimed_by(index.by_id[700])
+
+        assert claimed == 2
