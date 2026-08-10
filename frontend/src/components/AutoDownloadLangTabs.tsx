@@ -86,7 +86,7 @@ export function AutoDownloadLangTabs({
             onClick={() => {
               onSave(current, value)
               // Черновик снимаем сразу: иначе после сохранения кнопка
-              // остаётся活ной и предлагает сохранить то же самое.
+              // остаётся активной и предлагает сохранить то же самое.
               setDraft((rest) => {
                 const next = { ...rest }
                 delete next[current]

@@ -10,6 +10,8 @@ import { AuthorPriorityList } from './AuthorPriorityList'
 export interface LangDraft {
   mode: string
   priorities: string[]
+  /** Группы, от которых не качаем никогда. */
+  blacklist: string[]
   /** `null` — наследовать общее. У глобальной настройки `null` не бывает. */
   allow_any_fallback: boolean | null
   allow_any: boolean | null
@@ -147,6 +149,27 @@ export function AutoDownloadLangPanel({
         'autodownload.ignoreEmbedded',
         'autodownload.ignoreEmbeddedHint',
       )}
+
+      <Divider />
+
+      {/* Чёрный список ниже всего и не гаснет ни от одного переключателя:
+          запрет действует всегда, включая режим «любая группа». Иначе
+          разрешение протащило бы сюда именно то, от чего отписались. */}
+      <Stack gap={4}>
+        <Text size="sm" fw={500}>
+          {t('autodownload.blacklist')}
+        </Text>
+        <Text size="xs" c="dimmed">
+          {t('autodownload.blacklistHint')}
+        </Text>
+        <AuthorPriorityList
+          lang={lang}
+          value={value.blacklist}
+          onChange={(blacklist) => patch({ blacklist })}
+          disabled={off}
+          unordered
+        />
+      </Stack>
     </Stack>
   )
 }

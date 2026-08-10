@@ -56,8 +56,7 @@ import { useSeriesTypeLabel } from '../i18n/seriesType'
 import { useT, type TranslationKey } from '../i18n'
 import { useSeasonLabel } from '../i18n/season'
 import { TitleAutoDownloadModal } from '../components/TitleAutoDownloadModal'
-import { LANG_BY_TYPE } from '../components/AutoDownloadTab'
-import type { AutoLang } from '../api/autodownload'
+import { useSubtitleLangs } from '../components/AutoDownloadTab'
 import { LangTag } from '../components/Flag'
 import { useApiError } from '../i18n/apiError'
 import { useTitleName } from '../i18n/titles'
@@ -104,11 +103,9 @@ export function TitlePage() {
   const { t } = useT()
   const seasonLabel = useSeasonLabel()
   const [autoDownloadOpen, setAutoDownloadOpen] = useState(false)
-  // Вкладки языков в окне автозагрузки — только те, что человек
-  // не выключил у себя в настройках субтитров.
-  const autoLangs = (['ru', 'en', 'ja'] as AutoLang[]).filter((lang) =>
-    prefs.types.some((type) => LANG_BY_TYPE[type] === lang),
-  )
+  // Вкладки языков в окне автозагрузки — только те, что человек не выключил
+  // у себя в настройках субтитров. Тот же хук, что и во вкладке библиотеки.
+  const autoLangs = useSubtitleLangs()
   const seriesTypeLabel = useSeriesTypeLabel()
   const apiError = useApiError()
   const titleName = useTitleName()

@@ -13,6 +13,8 @@ export interface LangRule {
   mode: GlobalMode
   /** Нормализованные имена групп: выше — приоритетнее. */
   priorities: string[]
+  /** Группы, от которых не качаем никогда. Сильнее любого разрешения. */
+  blacklist: string[]
   /** Из списка никого не нашлось — взять любую группу. */
   allow_any_fallback: boolean
   /** Список не используется вовсе. Значения при этом сохраняются. */
@@ -38,6 +40,8 @@ export interface AuthorSuggestion {
 export interface SeriesLangRule {
   mode: TitleMode
   priorities: string[]
+  /** Пустой — наследовать общий, как и приоритеты. */
+  blacklist: string[]
   allow_any_fallback: boolean | null
   allow_any: boolean | null
   ignore_embedded: boolean | null
@@ -45,6 +49,7 @@ export interface SeriesLangRule {
 
 export interface EffectiveRule {
   priorities: string[]
+  blacklist: string[]
   allow_any_fallback: boolean
   allow_any: boolean
   ignore_embedded: boolean
@@ -72,6 +77,20 @@ export interface ConfiguredSeries {
   languages: Partial<Record<AutoLang, { mode: TitleMode; has_own_list: boolean }>>
 }
 
+/** Серия, к которой субтитров не нашлось. */
+export interface Miss {
+  id: number
+  series_id: number
+  title_ru: string | null
+  title_romaji: string | null
+  episode: number
+  lang: AutoLang
+  /** Сколько раз проверяли. Десятки попыток — повод выкинуть запись. */
+  checks: number
+  first_missed_at: string | null
+  last_checked_at: string | null
+}
+
 export interface RunResult {
   /** Сколько тайтлов дали находки. У одиночного запуска поля нет. */
   series?: number
@@ -96,7 +115,16 @@ export const autodownloadApi = {
     api.put<SeriesSettings>(`/autodownload/series/${seriesId}/${lang}`, payload),
   clearSeries: (seriesId: number, lang: AutoLang) =>
     api.del<SeriesSettings>(`/autodownload/series/${seriesId}/${lang}`),
-  runAll: () => api.post<RunResult>('/autodownload/run', {}),
+  /**
+   * Охват выбирается при нажатии, а не берётся из глобального режима: язык
+   * может стоять в режиме «всем», но пройтись разово хочется лишь по тем
+   * тайтлам, где приоритеты заданы руками.
+   */
+  runAll: (onlyConfigured = false) =>
+    api.post<RunResult>(`/autodownload/run?only_configured=${onlyConfigured}`, {}),
+  misses: () => api.get<{ misses: Miss[] }>('/autodownload/misses'),
+  dismissMiss: (id: number) => api.del<{ dismissed: number }>(`/autodownload/misses/${id}`),
+  retryMisses: () => api.post<RunResult>('/autodownload/misses/retry', {}),
   runSeries: (seriesId: number) =>
     api.post<RunResult>(`/autodownload/series/${seriesId}/run`, {}),
 }

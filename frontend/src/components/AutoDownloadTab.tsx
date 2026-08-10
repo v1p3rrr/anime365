@@ -5,24 +5,24 @@ import {
   Card,
   Group,
   Loader,
+  Menu,
   Stack,
-  Tabs,
   Text,
   Title,
 } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
-import { IconInfoCircle, IconSearch } from '@tabler/icons-react'
+import { IconChevronDown, IconInfoCircle, IconSearch } from '@tabler/icons-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { autodownloadApi, type AutoLang, type LangRule } from '../api/autodownload'
 import { usePermissions } from '../hooks/usePermissions'
 import { usePreferences } from '../stores/preferences'
 import { useT } from '../i18n'
-import { Flag } from './Flag'
 import { PosterThumb } from './PosterThumb'
-import { AutoDownloadLangPanel, type LangDraft } from './AutoDownloadLangPanel'
+import { AutoDownloadLangTabs } from './AutoDownloadLangTabs'
+import { AutoDownloadMisses } from './AutoDownloadMisses'
+import type { LangDraft } from './AutoDownloadLangPanel'
 import classes from './StripedRows.module.css'
 
 /** Какой язык субтитров стоит за каким типом перевода в настройках человека. */
@@ -32,19 +32,22 @@ const LANG_BY_TYPE: Record<string, AutoLang> = {
   sub_ja: 'ja',
 }
 
-function useSubtitleLangs(): AutoLang[] {
-  // Языки берём из пользовательских настроек: показывать вкладку языка,
-  // который человек у себя выключил, значит предлагать настроить то, чего он
-  // видеть не хочет. Порядок фиксированный, а не порядок в настройках, —
-  // иначе вкладки менялись бы местами при правке фильтров каталога.
+/**
+ * Языки, включённые у человека в настройках субтитров.
+ *
+ * Порядок фиксированный, а не порядок в настройках: иначе вкладки менялись бы
+ * местами при правке фильтров каталога.
+ */
+export function useSubtitleLangs(): AutoLang[] {
   const { prefs } = usePreferences()
   const enabled = new Set(prefs.types.map((type) => LANG_BY_TYPE[type]).filter(Boolean))
   return (['ru', 'en', 'ja'] as AutoLang[]).filter((lang) => enabled.has(lang))
 }
 
-const EMPTY: LangRule = {
+const EMPTY: LangDraft = {
   mode: 'off',
   priorities: [],
+  blacklist: [],
   allow_any_fallback: false,
   allow_any: false,
   ignore_embedded: false,
@@ -56,14 +59,15 @@ const EMPTY: LangRule = {
  * Настройка раздельная по языкам — это решение пользователя: русские субтитры
  * можно хотеть всем подряд, английские только там, где включил сам, а японские
  * не качать вовсе.
+ *
+ * Сами вкладки языков вынесены в общий компонент: тот же самый стоит в окне на
+ * странице тайтла. Две почти одинаковые копии пришлось бы чинить дважды.
  */
 export function AutoDownloadTab() {
   const { t } = useT()
   const { can } = usePermissions()
   const queryClient = useQueryClient()
   const langs = useSubtitleLangs()
-  const [active, setActive] = useState<AutoLang>(langs[0] ?? 'ru')
-  const [draft, setDraft] = useState<Partial<Record<AutoLang, LangDraft>>>({})
 
   const rules = useQuery({
     queryKey: ['autodownload-rules'],
@@ -80,6 +84,7 @@ export function AutoDownloadTab() {
       autodownloadApi.setRule(lang, {
         mode: value.mode as LangRule['mode'],
         priorities: value.priorities,
+        blacklist: value.blacklist,
         allow_any_fallback: Boolean(value.allow_any_fallback),
         allow_any: Boolean(value.allow_any),
         ignore_embedded: Boolean(value.ignore_embedded),
@@ -91,7 +96,7 @@ export function AutoDownloadTab() {
   })
 
   const run = useMutation({
-    mutationFn: autodownloadApi.runAll,
+    mutationFn: (onlyConfigured: boolean) => autodownloadApi.runAll(onlyConfigured),
     onSuccess: (result) => {
       notifications.show({
         color: result.skipped ? 'yellow' : 'teal',
@@ -103,65 +108,56 @@ export function AutoDownloadTab() {
             }),
         autoClose: 8000,
       })
+      queryClient.invalidateQueries({ queryKey: ['autodownload-misses'] })
     },
   })
 
   if (rules.isLoading) return <Loader size="sm" />
-  if (langs.length === 0) {
-    return <Alert color="blue">{t('autodownload.noLanguages')}</Alert>
-  }
-
-  const current = draft[active] ?? {
-    ...(rules.data?.rules[active] ?? EMPTY),
-  }
 
   return (
     <Stack gap="md">
       <Group justify="space-between" wrap="wrap" gap="xs">
         <Title order={4}>{t('autodownload.title')}</Title>
         {can('downloads') && (
-          <Button
-            variant="light"
-            leftSection={<IconSearch size={16} />}
-            loading={run.isPending}
-            onClick={() => run.mutate()}
-          >
-            {t('autodownload.runAll')}
-          </Button>
+          // Охват выбирается при нажатии, а не берётся из глобального режима:
+          // язык может стоять в режиме «всем», но пройтись разово хочется лишь
+          // по тем тайтлам, где приоритеты заданы руками.
+          <Menu position="bottom-end">
+            <Menu.Target>
+              <Button
+                variant="light"
+                leftSection={<IconSearch size={16} />}
+                rightSection={<IconChevronDown size={14} />}
+                loading={run.isPending}
+              >
+                {t('autodownload.runAll')}
+              </Button>
+            </Menu.Target>
+            <Menu.Dropdown>
+              <Menu.Item onClick={() => run.mutate(false)}>
+                {t('autodownload.runScopeAll')}
+              </Menu.Item>
+              <Menu.Item onClick={() => run.mutate(true)}>
+                {t('autodownload.runScopeConfigured')}
+              </Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
         )}
       </Group>
       <Text size="xs" c="dimmed">
         {t('autodownload.runAllHint')}
       </Text>
 
-      <Tabs value={active} onChange={(value) => value && setActive(value as AutoLang)}>
-        <Tabs.List>
-          {langs.map((lang) => (
-            <Tabs.Tab key={lang} value={lang} leftSection={<Flag lang={lang} />}>
-              {lang.toUpperCase()}
-            </Tabs.Tab>
-          ))}
-        </Tabs.List>
+      <AutoDownloadLangTabs
+        langs={langs}
+        saved={(lang) => ({ ...EMPTY, ...(rules.data?.rules[lang] ?? {}) })}
+        onSave={(lang, value) => save.mutate({ lang, value })}
+        saving={save.isPending}
+        modes={rules.data?.modes ?? ['off', 'configured', 'all']}
+        modePrefix="mode"
+      />
 
-        <Tabs.Panel value={active} pt="sm">
-          <AutoDownloadLangPanel
-            lang={active}
-            value={current}
-            modes={rules.data?.modes ?? ['off', 'configured', 'all']}
-            modePrefix="mode"
-            onChange={(next) => setDraft({ ...draft, [active]: next })}
-          />
-          <Group justify="flex-end" mt="sm">
-            <Button
-              loading={save.isPending}
-              disabled={!draft[active]}
-              onClick={() => save.mutate({ lang: active, value: current })}
-            >
-              {t('common.save')}
-            </Button>
-          </Group>
-        </Tabs.Panel>
-      </Tabs>
+      <AutoDownloadMisses />
 
       <Card withBorder padding="sm">
         <Title order={5} mb="xs">

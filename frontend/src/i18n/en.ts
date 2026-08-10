@@ -253,6 +253,18 @@ export const en: Dictionary = {
   },
 
   autodownload: {
+    blacklist: 'Blocklist',
+    blacklistHint: 'Subtitles from these groups are never downloaded. A block beats any permission, including “allow any group”',
+    emptyBlacklist: 'The blocklist is empty',
+    runScopeAll: 'Every title',
+    runScopeConfigured: 'Only titles set up by hand',
+    missesTitle: 'No subtitles found',
+    missesEmpty: 'None yet: everything checked so far had a translation',
+    missesRetry: 'Recheck now',
+    missEpisode: 'episode {episode}',
+    missChecksHint: 'How many times we have checked. Many attempts over a long stretch is a reason to drop the record',
+    missDismiss: 'Stop looking for this episode',
+    titleHint: 'An empty list means “use the global one”, not “nobody”. Remove yours and the global setting comes back',
     title: 'Subtitle auto-download',
     mode: 'When to download',
     modeOff: 'Off',

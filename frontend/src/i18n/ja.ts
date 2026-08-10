@@ -252,6 +252,18 @@ export const ja: Dictionary = {
   },
 
   autodownload: {
+    blacklist: 'ブロックリスト',
+    blacklistHint: 'これらのグループの字幕は決してダウンロードしません。禁止は「任意のグループを許可」を含むあらゆる許可より優先されます',
+    emptyBlacklist: 'ブロックリストは空です',
+    runScopeAll: 'すべての作品',
+    runScopeConfigured: '個別に設定した作品のみ',
+    missesTitle: '字幕が見つかりません',
+    missesEmpty: 'まだありません。確認したものはすべて翻訳が見つかりました',
+    missesRetry: '今すぐ再確認',
+    missEpisode: '第 {episode} 話',
+    missChecksHint: 'これまでの確認回数。長期間にわたり回数が多い場合は削除を検討してください',
+    missDismiss: 'このエピソードの検索をやめる',
+    titleHint: '空のリストは「共通設定を使う」であり「誰も使わない」ではありません。独自リストを削除すると共通設定に戻ります',
     title: '字幕の自動ダウンロード',
     mode: 'ダウンロードの範囲',
     modeOff: '無効',

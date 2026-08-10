@@ -30,6 +30,14 @@ interface Props {
   onChange: (next: string[]) => void
   /** Список погашен переключателем «любая группа»: значения сохраняются. */
   disabled?: boolean
+  /**
+   * Порядок ничего не значит — прячем номера и стрелки.
+   *
+   * Так работает чёрный список: запрет либо есть, либо нет, и «первый
+   * запрещённее второго» не значит ничего. Стрелки там были бы приглашением
+   * к бессмысленному действию.
+   */
+  unordered?: boolean
 }
 
 /**
@@ -43,7 +51,13 @@ interface Props {
  * обязательно: каталог групп копится по мере открытия тайтлов, и нужной там
  * может ещё не быть — а пользователь про неё уже знает.
  */
-export function AuthorPriorityList({ lang, value, onChange, disabled }: Props) {
+export function AuthorPriorityList({
+  lang,
+  value,
+  onChange,
+  disabled,
+  unordered,
+}: Props) {
   const { t } = useT()
   const [draft, setDraft] = useState('')
 
@@ -130,36 +144,42 @@ export function AuthorPriorityList({ lang, value, onChange, disabled }: Props) {
 
       {value.length === 0 ? (
         <Text size="xs" c="dimmed">
-          {t('autodownload.emptyList')}
+          {unordered ? t('autodownload.emptyBlacklist') : t('autodownload.emptyList')}
         </Text>
       ) : (
         <Stack gap={2} opacity={disabled ? 0.5 : 1}>
           {value.map((key, index) => (
             <Group key={key} className={classes.row} gap="xs" wrap="nowrap">
-              <Badge size="sm" variant="light" circle>
-                {index + 1}
-              </Badge>
+              {!unordered && (
+                <Badge size="sm" variant="light" circle>
+                  {index + 1}
+                </Badge>
+              )}
               <Text size="sm" style={{ flex: 1, wordBreak: 'break-word' }}>
                 {label(key)}
               </Text>
-              <ActionIcon
-                variant="subtle"
-                size="sm"
-                disabled={disabled || index === 0}
-                onClick={() => move(index, -1)}
-                aria-label={t('autodownload.moveUp')}
-              >
-                <IconArrowUp size={15} />
-              </ActionIcon>
-              <ActionIcon
-                variant="subtle"
-                size="sm"
-                disabled={disabled || index === value.length - 1}
-                onClick={() => move(index, 1)}
-                aria-label={t('autodownload.moveDown')}
-              >
-                <IconArrowDown size={15} />
-              </ActionIcon>
+              {!unordered && (
+                <>
+                  <ActionIcon
+                    variant="subtle"
+                    size="sm"
+                    disabled={disabled || index === 0}
+                    onClick={() => move(index, -1)}
+                    aria-label={t('autodownload.moveUp')}
+                  >
+                    <IconArrowUp size={15} />
+                  </ActionIcon>
+                  <ActionIcon
+                    variant="subtle"
+                    size="sm"
+                    disabled={disabled || index === value.length - 1}
+                    onClick={() => move(index, 1)}
+                    aria-label={t('autodownload.moveDown')}
+                  >
+                    <IconArrowDown size={15} />
+                  </ActionIcon>
+                </>
+              )}
               <ActionIcon
                 variant="subtle"
                 size="sm"
