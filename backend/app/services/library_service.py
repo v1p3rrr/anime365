@@ -333,6 +333,20 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
         ).all():
             names_seen.setdefault(folder_id, []).append(Path(filename).stem)
 
+        # Подпапки, где нет видео, но есть субтитры: их привязка осмысленна —
+        # субтитры надо к чему-то отнести.
+        with_subtitles = {
+            folder_id
+            for (folder_id,) in session.execute(
+                select(LibraryFile.folder_id)
+                .where(
+                    LibraryFile.folder_id.in_([f.id for f in folders] or [0]),
+                    LibraryFile.kind == "subtitle",
+                )
+                .distinct()
+            ).all()
+        }
+
         # Контексты собираем здесь же: дальше объекты будут отсоединены от
         # сессии, и обращение к их полям стало бы неожиданным запросом.
         contexts: list[tuple[int, MatchContext]] = []
@@ -357,8 +371,19 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
             season_nfo = _nfo_of(folder) if parent is not None else None
             folder_name = parent.name if parent is not None else folder.name
 
-            # Папка тайтла без видео и без подпапок с видео — мапить нечего,
-            # но сама привязка полезна (пустые папки в библиотеке встречаются).
+            # ⚠️ Пустая ПОДПАПКА не мапится вовсе.
+            #
+            # У папки тайтла пустота осмысленна: тайтл заведён, файлов пока нет,
+            # и привязка нужна, чтобы загрузки знали куда идти. А подпапка без
+            # единого видео не описывает ничего — тайтл уже назван родителем.
+            #
+            # Живые примеры из библиотеки: `…/Extras`, `Toradora!/Specials/BD
+            # Scans`. Там лежат картинки и сканы, а нечёткое сравнение всё
+            # равно что-то находило: `BD Scans` уезжали на `MM! Specials` с
+            # похожестью 76. Это чистый шум в списке «требует подтверждения».
+            if parent is not None and not folder.video_count and folder.id not in with_subtitles:
+                continue
+
             contexts.append(
                 (
                     folder.id,

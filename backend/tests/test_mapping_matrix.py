@@ -906,3 +906,51 @@ class TestRemainingCombinations:
         assert _mapping(movie_id_root)["Hoshi no Koe"] == MOVIE
         assert _episodes(SHOW) == {1.0, 2.0}
         assert _episodes(MOVIE) == {1.0}
+
+
+class TestEmptySubfolders:
+    """Подпапка без единого файла не описывает ничего.
+
+    Живой случай из библиотеки: `Toradora!/Specials/BD Scans` и разные
+    `…/Extras` — остатки от переносов, где лежат сканы и обложки. Видео там
+    нет, но нечёткое сравнение всё равно находило кандидата: `BD Scans`
+    уезжали на `MM! Specials` с похожестью 76 и попадали в список «требует
+    подтверждения».
+
+    У папки ТАЙТЛА пустота осмысленна — тайтл заведён, файлов пока нет, и
+    привязка нужна загрузкам. У подпапки нет: тайтл уже назван родителем.
+    """
+
+    def test_an_empty_subfolder_is_not_mapped(self, tmp_path) -> None:
+        root = tmp_path / "пустая-подпапка"
+        show = root / "Kagerou Days"
+        (show / "BD Scans").mkdir(parents=True)
+        (show / "Season 1").mkdir()
+        (show / "Season 1" / "Kagerou Days S01E01.mkv").write_bytes(b"x")
+
+        mapped = _mapping(_run(root, "series"))
+
+        assert not any("BD Scans" in path for path in mapped), (
+            "пустая подпапка попала в привязки и создала шум"
+        )
+
+    def test_a_subfolder_with_only_subtitles_is_still_mapped(self, tmp_path) -> None:
+        """Субтитры без видео — законный случай, их надо к чему-то отнести."""
+        root = tmp_path / "только-субтитры"
+        show = root / "Kagerou Days"
+        subs = show / "Season 1"
+        subs.mkdir(parents=True)
+        (subs / "Kagerou Days S01E01.ru.ass").write_text("dummy", encoding="utf-8")
+
+        mapped = _mapping(_run(root, "series"))
+
+        assert any("Season 1" in path for path in mapped)
+
+    def test_an_empty_title_folder_is_still_mapped(self, tmp_path) -> None:
+        """Пустая папка тайтла остаётся: загрузкам нужно знать, куда класть."""
+        root = tmp_path / "пустой-тайтл"
+        (root / "Kagerou Days").mkdir(parents=True)
+
+        mapped = _mapping(_run(root, "series"))
+
+        assert any(path.endswith("Kagerou Days") for path in mapped)
