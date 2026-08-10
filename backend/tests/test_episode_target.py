@@ -48,7 +48,12 @@ def two_folders(tmp_path):
         session.add(root)
         session.flush()
 
-        common = LibraryFolder(root_id=root.id, rel_path="Тайтл", name="Тайтл")
+        # Серии лежат прямо в папке тайтла и сезонных подпапок нет — значит
+        # загрузка идёт к соседям, а не в новую `Season 1`. Здесь проверяется
+        # приоритет назначения серии, и раскладка не должна в это вмешиваться.
+        common = LibraryFolder(
+            root_id=root.id, rel_path="Тайтл", name="Тайтл", video_count=5
+        )
         special = LibraryFolder(
             root_id=root.id, rel_path="Тайтл — особая серия", name="особая"
         )

@@ -106,6 +106,150 @@ def _layout_with_part(series, series_id: int, episode: float | None) -> tuple[bo
     return is_movie, int(episode)
 
 
+#: Типы тайтла, которым место в `Specials`, а не в сезонной подпапке.
+#:
+#: `ona` сюда не входит: веб-сериалы это полноценные сезоны.
+SPECIAL_SERIES_TYPES = frozenset({"special", "tv_special", "ova"})
+
+#: Имя подпапки для спешлов. Так их называет Jellyfin, и так они уже лежат в
+#: библиотеке пользователя (`Toradora!/Specials`).
+SPECIALS_FOLDER = "Specials"
+
+
+def desired_season_folder(series_id: int) -> str | None:
+    """Как называется подпапка сезона для этого тайтла.
+
+    Раскладка по сезонным подпапкам — решение пользователя, и она совпадает с
+    тем, как раскладывают Sonarr и Jellyfin: `Show/Season 1`, `Show/Season 2`,
+    `Show/Specials`. Держать серии прямо в папке шоу тоже допустимо, но тогда
+    сезоны перемешиваются, а докачанное невозможно отличить от остального.
+
+    В Anime365 каждый сезон — **отдельный тайтл**, поэтому номер берём из его
+    названия («Grand Blue Season 3» → 3). Не назван — считаем первым: у шоу с
+    единственным сезоном так и есть, а ошибиться здесь дёшево.
+
+    Фильмы возвращают `None`: у них сезонов нет, каждая часть живёт своей
+    папкой в корне фильмов.
+    """
+    from app.services.matcher import season_in_title
+
+    with session_scope() as session:
+        series = session.get(Series, series_id)
+        if series is None:
+            return None
+        if _resolve_layout(series, series_id):
+            return None
+        if (series.type or "") in SPECIAL_SERIES_TYPES:
+            return SPECIALS_FOLDER
+        titles = dict(series.titles or {})
+
+    for value in titles.values():
+        if not value:
+            continue
+        claimed = season_in_title(value)
+        if claimed is not None:
+            return f"Season {claimed}"
+    return "Season 1"
+
+
+def _root_uses_season_folders(folder: LibraryFolder) -> bool:
+    """Есть ли у этой папки шоу хоть одна сезонная подпапка."""
+    with session_scope() as session:
+        rows = session.execute(
+            select(LibraryFolder.season_number).where(
+                LibraryFolder.parent_id == folder.id
+            )
+        ).scalars().all()
+    return any(number is not None for number in rows)
+
+
+def _folder_has_own_videos(folder: LibraryFolder) -> bool:
+    return (folder.video_count or 0) > 0
+
+
+def _ensure_season_subfolder(
+    folder: LibraryFolder, root: LibraryRoot, series_id: int
+) -> tuple[LibraryFolder, LibraryRoot]:
+    """Подпапка сезона внутри папки шоу — существующая или новая.
+
+    ⚠️ Заводим её не всегда. Если в самой папке шоу уже лежат серии, а
+    сезонных подпапок нет, то новая подпапка **разорвала** бы сезон на два
+    места: часть файлов осталась бы в корне. Jellyfin такое переживёт, а вот
+    наш сканер увидит две папки на один сезон — ровно те двойники, что уже
+    доставляют хлопот в библиотеке.
+
+    Поэтому правило простое: подпапку создаём, когда папка шоу либо пуста
+    (новый тайтл), либо уже раскладывается по сезонам. Иначе кладём к соседям.
+    """
+    name = desired_season_folder(series_id)
+    if name is None:
+        return folder, root
+
+    # Папка уже сама является сезонной — ничего искать не надо.
+    if folder.season_number is not None or folder.rel_path.endswith(f"/{name}"):
+        return folder, root
+
+    if _folder_has_own_videos(folder) and not _root_uses_season_folders(folder):
+        log.info(
+            "Тайтл %s: серии лежат прямо в %s, подпапку %s не заводим",
+            series_id,
+            folder.rel_path,
+            name,
+        )
+        return folder, root
+
+    rel_path = f"{folder.rel_path}/{name}" if folder.rel_path else name
+    target = Path(root.path) / rel_path
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.error("Не удалось создать подпапку сезона %s: %s", target, exc)
+        return folder, root
+
+    number = None if name == SPECIALS_FOLDER else int(name.rsplit(" ", 1)[1])
+    with session_scope() as session:
+        child = session.execute(
+            select(LibraryFolder).where(
+                LibraryFolder.root_id == root.id, LibraryFolder.rel_path == rel_path
+            )
+        ).scalar_one_or_none()
+        if child is None:
+            child = LibraryFolder(
+                root_id=root.id,
+                parent_id=folder.id,
+                rel_path=rel_path,
+                name=name,
+                season_number=0 if name == SPECIALS_FOLDER else number,
+                video_count=0,
+            )
+            session.add(child)
+            session.flush()
+
+        # Привязку переносим на подпапку: загрузки должны идти туда же, где
+        # лежат файлы, иначе следующая серия снова уедет в корень.
+        exists = session.execute(
+            select(TitleMapping).where(
+                TitleMapping.series_id == series_id, TitleMapping.folder_id == child.id
+            )
+        ).scalar_one_or_none()
+        if exists is None:
+            session.add(
+                TitleMapping(
+                    series_id=series_id,
+                    folder_id=child.id,
+                    source="created",
+                    confidence=100.0,
+                    matched_on="подпапка сезона создана при загрузке",
+                    is_manual=False,
+                    is_primary=True,
+                )
+            )
+        session.expunge(child)
+
+    log.info("Тайтл %s: серии пойдут в %s", series_id, rel_path)
+    return child, root
+
+
 def _primary_folder(series_id: int) -> tuple[LibraryFolder, LibraryRoot] | None:
     """Основная папка тайтла — куда складывать скачанное."""
     # Импорт локальный: mapping_info тянет за собой модели библиотеки, а те —
@@ -280,7 +424,10 @@ def ensure_target_folder(
 
     existing = _primary_folder(series_id)
     if existing is not None:
-        return existing
+        folder, root = existing
+        if not root.is_writable:
+            return existing
+        return _ensure_season_subfolder(folder, root, series_id)
 
     with session_scope() as session:
         series = session.get(Series, series_id)
@@ -359,7 +506,12 @@ def ensure_target_folder(
             )
 
     log.info("Создана папка для тайтла %s: %s", series_id, target)
-    return _primary_folder(series_id)
+    created = _primary_folder(series_id)
+    if created is None:
+        return None
+    # Папка только что заведена и пуста, поэтому подпапку сезона делаем сразу:
+    # разрывать нечего, а раскладка получается такой же, как у Sonarr.
+    return _ensure_season_subfolder(created[0], created[1], series_id)
 
 
 def _existing_video_for_episode(folder_id: int, episode: float) -> str | None:
