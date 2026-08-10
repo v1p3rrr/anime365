@@ -199,7 +199,7 @@ cd frontend && npm install && npm run dev
 cd backend && python -m pytest -q
 ```
 
-Тестов 1072, все проходят.
+Тестов 1079, все проходят.
 
 ## Документация
 

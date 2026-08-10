@@ -5,6 +5,7 @@ import {
   Button,
   Group,
   Stack,
+  Switch,
   Text,
   Tooltip,
 } from '@mantine/core'
@@ -60,6 +61,10 @@ export function AuthorPriorityList({
 }: Props) {
   const { t } = useT()
   const [draft, setDraft] = useState('')
+  // Регулярное выражение вместо имени группы. Приставка `re:` — та же, что
+  // понимает сервер; хранить два вида записи в одном списке проще, чем
+  // заводить второй список и дублировать в нём порядок.
+  const [asRegex, setAsRegex] = useState(false)
 
   const suggestions = useQuery({
     queryKey: ['autodownload-authors', lang],
@@ -75,6 +80,12 @@ export function AuthorPriorityList({
   const add = (name: string) => {
     const trimmed = name.trim()
     if (!trimmed) return
+    if (asRegex) {
+      const entry = `re:${trimmed}`
+      if (!chosen.has(entry)) onChange([...value, entry])
+      setDraft('')
+      return
+    }
     const match = known.find(
       (item) => item.name.toLowerCase() === trimmed.toLowerCase(),
     )
@@ -94,8 +105,10 @@ export function AuthorPriorityList({
     onChange(next)
   }
 
-  const label = (key: string) =>
-    known.find((item) => item.key === key)?.name ?? key
+  const isRegex = (entry: string) => entry.startsWith('re:')
+
+  const label = (entry: string) =>
+    isRegex(entry) ? entry.slice(3) : known.find((item) => item.key === entry)?.name ?? entry
 
   return (
     <Stack gap={6}>
@@ -142,6 +155,15 @@ export function AuthorPriorityList({
         </Button>
       </Group>
 
+      <Switch
+        size="xs"
+        disabled={disabled}
+        checked={asRegex}
+        onChange={(event) => setAsRegex(event.currentTarget.checked)}
+        label={t('autodownload.asRegex')}
+        description={t('autodownload.asRegexHint')}
+      />
+
       {value.length === 0 ? (
         <Text size="xs" c="dimmed">
           {unordered ? t('autodownload.emptyBlacklist') : t('autodownload.emptyList')}
@@ -155,7 +177,19 @@ export function AuthorPriorityList({
                   {index + 1}
                 </Badge>
               )}
-              <Text size="sm" style={{ flex: 1, wordBreak: 'break-word' }}>
+              {isRegex(key) && (
+                <Badge size="xs" variant="light" color="grape">
+                  {t('autodownload.regexBadge')}
+                </Badge>
+              )}
+              <Text
+                size="sm"
+                style={{
+                  flex: 1,
+                  wordBreak: 'break-word',
+                  fontFamily: isRegex(key) ? 'monospace' : undefined,
+                }}
+              >
                 {label(key)}
               </Text>
               {!unordered && (

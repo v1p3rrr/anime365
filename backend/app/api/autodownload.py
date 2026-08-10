@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -34,7 +35,12 @@ from app.models.autodownload import (
 from app.models.catalog import Series
 from app.services import autodownload
 from app.services.autodownload_rules import configured_series_ids, resolve_for_series
-from app.services.subtitle_authors import normalize_author, suggest_authors
+from app.services.subtitle_authors import (
+    is_regex,
+    normalize_author,
+    regex_pattern,
+    suggest_authors,
+)
 
 router = APIRouter(prefix="/autodownload", tags=["autodownload"])
 
@@ -78,15 +84,38 @@ class SeriesUpdate(BaseModel):
 
 
 def _clean_priorities(values: list[str]) -> list[str]:
-    """Нормализованные имена без повторов, порядок сохраняется.
+    """Записи списка без повторов, порядок сохраняется.
+
+    Обычное имя приводится к нормализованному виду — так `Crunchyroll` и
+    `Crunchyroll [1080p]` остаются одной группой. Регулярное выражение
+    (приставка `re:`) сохраняется дословно: нормализовать его бессмысленно,
+    оно и написано под исходные строки.
 
     Повторы убираем молча: человек мог выбрать группу из подсказки и следом
-    вписать её же руками, а два одинаковых пункта в списке приоритетов не
-    значат ничего.
+    вписать её же руками, а два одинаковых пункта не значат ничего.
+
+    Неверный шаблон — отказ с понятным текстом, а не молча пропущенная строка:
+    иначе список выглядел бы сохранённым, а работал бы не так.
     """
     out: list[str] = []
     for value in values:
-        key = normalize_author(value)
+        raw = (value or "").strip()
+        if not raw:
+            continue
+        if is_regex(raw):
+            try:
+                re.compile(regex_pattern(raw))
+            except re.error as exc:
+                raise ApiError(
+                    400,
+                    errors.SETTINGS_INVALID,
+                    f"Неверное регулярное выражение: {regex_pattern(raw)}",
+                    reason=str(exc),
+                ) from exc
+            if raw not in out:
+                out.append(raw)
+            continue
+        key = normalize_author(raw)
         if key and key not in out:
             out.append(key)
     return out

@@ -253,6 +253,9 @@ export const en: Dictionary = {
   },
 
   autodownload: {
+    asRegex: 'Regular expression',
+    asRegexHint: 'The value is a pattern, not a name. Checked against both the original group spelling and the normalized one',
+    regexBadge: 'pattern',
     blacklist: 'Blocklist',
     blacklistHint: 'Subtitles from these groups are never downloaded. A block beats any permission, including “allow any group”',
     emptyBlacklist: 'The blocklist is empty',

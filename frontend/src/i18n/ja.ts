@@ -252,6 +252,9 @@ export const ja: Dictionary = {
   },
 
   autodownload: {
+    asRegex: '正規表現',
+    asRegexHint: '入力値を名前ではなくパターンとして扱います。元の表記と正規化後の表記の両方に照合します',
+    regexBadge: 'パターン',
     blacklist: 'ブロックリスト',
     blacklistHint: 'これらのグループの字幕は決してダウンロードしません。禁止は「任意のグループを許可」を含むあらゆる許可より優先されます',
     emptyBlacklist: 'ブロックリストは空です',

@@ -17,6 +17,7 @@ from app.core.db import session_scope
 from app.models.autodownload import SubtitleAuthor
 from app.services.subtitle_authors import (
     display_name,
+    entry_matches,
     normalize_author,
     remember_authors,
     suggest_authors,
@@ -187,3 +188,62 @@ class TestSuggestions:
         order = [row["key"] for row in suggest_authors("ru")]
 
         assert order.index("частая группа") < order.index("редкая группа")
+
+
+class TestRegexEntries:
+    """Запись списка может быть шаблоном, а не именем группы.
+
+    Просьба пользователя. Имя удобно, пока группа пишется одинаково; шаблон
+    нужен там, где написаний много и заранее их не перечислить.
+    """
+
+    def test_a_plain_entry_matches_the_normalized_key(self) -> None:
+        assert entry_matches("crunchyroll", "Crunchyroll [10bit]", "crunchyroll")
+
+    def test_a_plain_entry_does_not_match_a_stranger(self) -> None:
+        assert not entry_matches("wakanim", "Crunchyroll", "crunchyroll")
+
+    def test_a_pattern_matches_the_normalized_form(self) -> None:
+        assert entry_matches("re:^crunchy", "Crunchyroll [10bit]", "crunchyroll")
+
+    def test_a_pattern_can_reach_what_normalization_drops(self) -> None:
+        """Ради этого шаблон и сверяется с исходным написанием тоже."""
+        assert entry_matches(r"re:\[10bit\]", "Crunchyroll [10bit]", "crunchyroll")
+
+    def test_a_pattern_is_case_insensitive(self) -> None:
+        assert entry_matches("re:CRUNCHY", "Crunchyroll", "crunchyroll")
+
+    def test_a_broken_pattern_matches_nothing(self) -> None:
+        """Битый шаблон не должен ронять подбор — он просто ни с чем не сходится."""
+        assert not entry_matches("re:[", "Crunchyroll", "crunchyroll")
+
+
+class TestBackfill:
+    """Каталог дособирается из переводов, сохранённых до его появления.
+
+    Живой случай: у пользователя страница тайтла показывала перевод от
+    Crunchyroll, а подсказка оставалась пустой. Переводы кэшируются надолго,
+    повторный заход берёт их из базы, не обращаясь к API, — а наполнение
+    каталога висело только на пути загрузки.
+    """
+
+    def test_stored_translations_reach_the_catalogue(self) -> None:
+        from app.models.catalog import Series, Translation
+        from app.services.subtitle_authors import backfill_from_stored_translations
+
+        _wipe("группа из базы")
+        with session_scope() as session:
+            session.merge(Series(id=930_001, title="Backfill", type="tv"))
+            session.merge(
+                Translation(
+                    id=930_101,
+                    series_id=930_001,
+                    type_kind="sub",
+                    type_lang="ru",
+                    authors_summary="Группа Из Базы",
+                )
+            )
+
+        backfill_from_stored_translations()
+
+        assert "группа из базы" in [row["key"] for row in suggest_authors("ru")]

@@ -36,7 +36,7 @@ from app.models.library import EpisodeMapping, LibraryFile, LibraryFolder, Libra
 from app.services.autodownload_rules import Resolved, resolve_for_series
 from app.services.languages import normalize_lang
 from app.services.library_scan import detect_subtitle_language
-from app.services.subtitle_authors import normalize_author
+from app.services.subtitle_authors import entry_matches, normalize_author
 
 log = logging.getLogger(__name__)
 
@@ -318,8 +318,14 @@ def rank_candidates(candidates: list[dict], resolved: Resolved) -> list[dict]:
     # любого разрешения: иначе тумблер «любая группа» протащил бы сюда именно
     # то, от чего отписались.
     if resolved.blacklist:
-        banned = set(resolved.blacklist)
-        candidates = [item for item in candidates if item["key"] not in banned]
+        candidates = [
+            item
+            for item in candidates
+            if not any(
+                entry_matches(entry, item["authors"], item["key"])
+                for entry in resolved.blacklist
+            )
+        ]
 
     if resolved.allow_any:
         return generic(candidates)
@@ -328,8 +334,10 @@ def rank_candidates(candidates: list[dict], resolved: Resolved) -> list[dict]:
     # кандидатов — так группа, которой в списке нет, не может обогнать ту,
     # что в нём есть, ни по какой другой причине.
     ranked: list[dict] = []
-    for key in resolved.priorities:
-        matched = [item for item in candidates if item["key"] == key]
+    for entry in resolved.priorities:
+        matched = [
+            item for item in candidates if entry_matches(entry, item["authors"], item["key"])
+        ]
         ranked.extend(sorted(matched, key=lambda item: (-item["priority"], item["id"])))
 
     if not ranked and resolved.allow_any_fallback:
@@ -398,11 +406,11 @@ async def plan_for_series(
             if chosen is None:
                 misses.append((episode, lang))
                 continue
-            reason = (
-                "any"
-                if resolved.allow_any
-                else ("priority" if chosen["key"] in resolved.priorities else "fallback")
+            from_list = any(
+                entry_matches(entry, chosen["authors"], chosen["key"])
+                for entry in resolved.priorities
             )
+            reason = "any" if resolved.allow_any else ("priority" if from_list else "fallback")
             plan.append(
                 Choice(
                     episode=episode,
