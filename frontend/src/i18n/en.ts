@@ -20,6 +20,7 @@ export const en: Dictionary = {
     features: 'Advanced',
   },
   settingLabel: {
+    autodownload_settle_minutes: 'How long to wait after a file appears, minutes',
     autodownload_interval_hours: 'How often to look for subtitles, hours',
     autodownload_window_days: 'How many days to keep rechecking an episode',
     admin_login: 'The name you sign in with. A user with this name is created at startup and always stays an administrator, so an unchecked box cannot lock you out. Its password comes from the setting below.',
@@ -58,8 +59,9 @@ export const en: Dictionary = {
     jellyfin_api_key: 'Jellyfin API key',
   },
   settingHelp: {
+    autodownload_settle_minutes: 'We do not go looking for subtitles the moment a video shows up, for two reasons. First, the file may still be copying, and "appeared" does not mean "finished". Second, subtitles are often dropped in by hand right after the video — rush it and a second file with the same translation from another group lands next to it. Half an hour covers both and costs nothing: the episode waits longer for a translation anyway.',
     autodownload_interval_hours: 'Subtitles are almost always published later than the video itself: an episode arrives from Sonarr in the evening, the translation shows up a day or two later. One check at the moment the file appears is therefore not enough, and episodes without subtitles are rechecked on a schedule. 0 disables the scheduled check; the check on new files and the "search now" button remain.',
-    autodownload_window_days: 'The recheck is deliberately time-limited. If no translation exists a month after the file appeared, it most likely never will, while requests across the whole library would go on forever. Counted from the file timestamp on disk. Older episodes are not abandoned: the "search the whole library" button checks everything with no time limit.',
+    autodownload_window_days: 'This answers a different question than the settings above: those decide which episodes take part at all, this one decides how long we keep coming back to a participating episode that still has no translation. If none exists a month after the file appeared, it most likely never will, while requests to the site would go on forever. Counted from the file timestamp on disk. The "search the whole library" button ignores this limit.',
     admin_login: 'The name you sign in with. A user with this name is created at startup and always stays an administrator, so an unchecked box cannot lock you out. Its password comes from the setting below.',
     base_url: 'Chosen from the list of known mirrors. embed always returns links to smotret-anime.org, so the host of download links is rewritten to the selected one.',
     mirrors: 'Comma-separated. Server-side only: it cannot be changed from the UI — that is the SSRF guard.',

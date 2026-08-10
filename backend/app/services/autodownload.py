@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.db import session_scope
 from app.models.catalog import Episode, Translation
 from app.models.library import EpisodeMapping, LibraryFile
@@ -52,33 +53,63 @@ class Choice:
     reason: str
 
 
-def episodes_with_video(
-    series_id: int, within_days: int | None = None
-) -> dict[float, int | None]:
-    """Серии, у которых на диске есть видео: номер → id файла.
+def episodes_with_video(series_id: int) -> dict[float, tuple[int | None, float | None]]:
+    """Серии, у которых на диске есть видео: номер → (id файла, время файла).
 
     Именно по разметке серий, а не по числу файлов в папке: файл может лежать
     в папке и не быть привязан ни к одной серии (мусор, трейлер, склейка), и
     качать субтитры к такому нечему.
-
-    `within_days` ограничивает выборку недавно появившимися сериями. Нужно
-    расписанию: перепроверять всю библиотеку каждые несколько часов значило бы
-    вечно спрашивать чужой сайт о переводах, которых нет и не будет. Время
-    берём у файла на диске — другого «когда серия появилась» у нас нет, а
-    Сонарр кладёт файл ровно в момент появления.
     """
-    stmt = select(EpisodeMapping.episode, EpisodeMapping.file_id).where(
-        EpisodeMapping.series_id == series_id,
-        EpisodeMapping.role == VIDEO_ROLE,
-    )
-    if within_days is not None and within_days > 0:
-        edge = (datetime.utcnow() - timedelta(days=within_days)).timestamp()
-        stmt = stmt.join(LibraryFile, EpisodeMapping.file_id == LibraryFile.id).where(
-            LibraryFile.mtime >= edge
-        )
     with session_scope() as session:
-        rows = session.execute(stmt).all()
-    return {float(episode): file_id for episode, file_id in rows}
+        rows = session.execute(
+            select(EpisodeMapping.episode, EpisodeMapping.file_id, LibraryFile.mtime)
+            .join(LibraryFile, EpisodeMapping.file_id == LibraryFile.id, isouter=True)
+            .where(
+                EpisodeMapping.series_id == series_id,
+                EpisodeMapping.role == VIDEO_ROLE,
+            )
+        ).all()
+    return {float(episode): (file_id, mtime) for episode, file_id, mtime in rows}
+
+
+def _in_automatic_scope(mtime: float | None, resolved: Resolved, now: datetime) -> bool:
+    """Попадает ли серия в автоматический проход.
+
+    Требование пользователя, и оно про доверие: включение автоскачивания **не
+    должно** задним числом выкачивать субтитры ко всей библиотеке. Поэтому сам
+    по себе факт «файл лежит, субтитров нет» права на скачивание не даёт —
+    его даёт только появление файла уже при включённом автоскачивании.
+
+    Всё, что лежало раньше, ждёт кнопки «искать по всей библиотеке».
+
+    ⚠️ Здесь могло быть ещё одно правило — «догонять недавно вышедшие серии»,
+    но оно снято: определить дату эфира по каждой серии нечем. У Anime365
+    `firstUploadedDateTime` — момент попадания файла на сайт (у Yuru Yuri
+    2011 года там 2015-й, а у Fate/stay night вовсе заглушки `2000-01-01`),
+    у Шикимори поэпизодных дат в API нет, а `<aired>` в `.nfo` есть только
+    там, где файл уже разобрал Jellyfin. Правило, работающее у части серий и
+    молчащее у остальных, хуже отсутствующего: его поведение не объяснить.
+    """
+    if mtime is None:
+        # Про файл ничего не известно. В автоматический проход не берём:
+        # ошибиться здесь в сторону лишней загрузки неприятнее, чем в сторону
+        # пропуска, а кнопка никуда не делась.
+        return False
+
+    appeared = datetime.utcfromtimestamp(mtime)
+
+    # Файл ещё не отстоялся: может дописываться, а субтитры к нему могли
+    # положить руками следом. См. `autodownload_settle_minutes`.
+    settle = settings.get_int("autodownload_settle_minutes")
+    if settle > 0 and now - appeared < timedelta(minutes=settle):
+        return False
+
+    if resolved.enabled_at is not None and appeared < resolved.enabled_at:
+        return False
+
+    # Сколько ещё возвращаться к серии, у которой перевода пока нет.
+    window = settings.get_int("autodownload_window_days")
+    return window <= 0 or now - appeared <= timedelta(days=window)
 
 
 def _sidecar_languages(series_id: int) -> dict[float, set[str]]:
@@ -123,26 +154,33 @@ def _embedded_languages(file_ids: list[int]) -> dict[int, set[str]]:
 
 
 def missing_episodes(
-    series_id: int, resolved: Resolved, within_days: int | None = None
+    series_id: int, resolved: Resolved, automatic: bool = False
 ) -> list[float]:
     """Серии, к которым субтитров этого языка заведомо нет.
 
     Возвращает только те, у которых есть локальное видео: остальным качать
     нечего по определению.
+
+    `automatic=True` — проход по расписанию: он берёт не всё подряд, а только
+    прошедшее правила из `_in_automatic_scope`. Кнопка зовёт без этого флага и
+    проверяет всё, что лежит.
     """
-    videos = episodes_with_video(series_id, within_days)
+    videos = episodes_with_video(series_id)
     if not videos:
         return []
 
+    now = datetime.utcnow()
     sidecars = _sidecar_languages(series_id)
     embedded = (
         {}
         if resolved.ignore_embedded
-        else _embedded_languages([fid for fid in videos.values() if fid])
+        else _embedded_languages([fid for fid, _ in videos.values() if fid])
     )
 
     missing = []
-    for episode, file_id in sorted(videos.items()):
+    for episode, (file_id, mtime) in sorted(videos.items()):
+        if automatic and not _in_automatic_scope(mtime, resolved, now):
+            continue
         if resolved.lang in sidecars.get(episode, set()):
             continue
         if file_id is not None and resolved.lang in embedded.get(file_id, set()):
@@ -252,7 +290,7 @@ async def _first_soft_subtitle(candidates: list[dict]) -> dict | None:
     return None
 
 
-async def plan_for_series(series_id: int, within_days: int | None = None) -> list[Choice]:
+async def plan_for_series(series_id: int, automatic: bool = False) -> list[Choice]:
     """Что нужно скачать этому тайтлу прямо сейчас. Ничего не ставит в очередь."""
     rules = resolve_for_series(series_id)
     if not rules:
@@ -260,7 +298,7 @@ async def plan_for_series(series_id: int, within_days: int | None = None) -> lis
 
     plan: list[Choice] = []
     for lang, resolved in rules.items():
-        missing = missing_episodes(series_id, resolved, within_days)
+        missing = missing_episodes(series_id, resolved, automatic)
         if not missing:
             continue
         by_episode = _candidates(series_id, lang)
@@ -289,7 +327,7 @@ async def plan_for_series(series_id: int, within_days: int | None = None) -> lis
 
 
 async def run_for_series(
-    series_id: int, user_id: int = 1, within_days: int | None = None
+    series_id: int, user_id: int = 1, automatic: bool = False
 ) -> dict:
     """Считает план и ставит его в очередь загрузок.
 
@@ -299,7 +337,7 @@ async def run_for_series(
     """
     from app.services.download_queue import QueueError, enqueue
 
-    plan = await plan_for_series(series_id, within_days)
+    plan = await plan_for_series(series_id, automatic)
     queued = 0
     for choice in plan:
         try:
@@ -337,7 +375,7 @@ def series_with_files() -> list[int]:
         return sorted(rows)
 
 
-async def run_for_all(user_id: int = 1, within_days: int | None = None) -> dict:
+async def run_for_all(user_id: int = 1, automatic: bool = False) -> dict:
     """Проход по всей библиотеке.
 
     Два разных вызывающих, и разница между ними — в `within_days`:
@@ -359,7 +397,7 @@ async def run_for_all(user_id: int = 1, within_days: int | None = None) -> dict:
     planned = queued = touched = 0
     for series_id in series_with_files():
         try:
-            result = await run_for_series(series_id, user_id, within_days)
+            result = await run_for_series(series_id, user_id, automatic)
         except Exception:
             log.exception("Автоскачивание: тайтл %s обработать не удалось", series_id)
             continue

@@ -377,43 +377,71 @@ class TestPlan:
         assert resolve_for_series(SERIES) == {}
 
 
-class TestRecheckWindow:
-    """Расписание перепроверяет только недавние серии, кнопка — все.
+class TestAutomaticScope:
+    """Автоматический проход берёт только то, что появилось при нём.
 
-    Без окна каждые несколько часов мы обходили бы всю библиотеку, спрашивая
-    чужой сайт о переводах, которых нет и не будет.
+    Требование пользователя, и оно про доверие: включение автоскачивания не
+    должно задним числом выкачивать субтитры ко всей библиотеке. На старое
+    есть отдельная кнопка, и она этих ограничений не знает.
     """
 
     @staticmethod
-    def _aged(episode: float, days: float) -> None:
-        """Видеофайл, появившийся столько-то дней назад."""
+    def _aged(episode: float, *, minutes: float = 0, days: float = 0) -> None:
+        """Видеофайл, появившийся столько-то времени назад."""
         import time
 
         file_id = _video(episode)
         with session_scope() as session:
-            session.get(LibraryFile, file_id).mtime = time.time() - days * 86400
+            session.get(LibraryFile, file_id).mtime = time.time() - minutes * 60 - days * 86400
 
-    def test_an_old_episode_is_outside_the_window(self) -> None:
-        self._aged(1, days=90)
+    @staticmethod
+    def _rule_since(days_ago: float) -> Resolved:
+        from datetime import datetime, timedelta
 
-        assert episodes_with_video(SERIES, within_days=30) == {}
+        return _rule(
+            priorities=["kazoku"],
+            enabled_at=datetime.utcnow() - timedelta(days=days_ago),
+        )
 
-    def test_a_fresh_episode_is_inside(self) -> None:
-        self._aged(1, days=2)
+    def test_a_file_from_before_enabling_is_skipped(self) -> None:
+        """Тот самый случай: файлы лежали, автоскачивание включили потом."""
+        self._aged(1, days=10)
 
-        assert list(episodes_with_video(SERIES, within_days=30)) == [1.0]
+        assert missing_episodes(SERIES, self._rule_since(1), automatic=True) == []
 
-    def test_without_a_window_everything_counts(self) -> None:
-        """Кнопка «искать по всей библиотеке» не должна терять старое."""
-        self._aged(1, days=90)
+    def test_the_button_takes_it_anyway(self) -> None:
+        """Кнопка «искать по всей библиотеке» границы не знает."""
+        self._aged(1, days=10)
 
-        assert list(episodes_with_video(SERIES)) == [1.0]
+        assert missing_episodes(SERIES, self._rule_since(1)) == [1.0]
 
-    def test_zero_means_no_limit(self) -> None:
-        """Ноль в настройке — «не ограничивать», а не «ничего не брать»."""
-        self._aged(1, days=90)
+    def test_a_file_that_arrived_after_enabling_is_taken(self) -> None:
+        self._aged(1, days=1)
 
-        assert list(episodes_with_video(SERIES, within_days=0)) == [1.0]
+        assert missing_episodes(SERIES, self._rule_since(5), automatic=True) == [1.0]
+
+    def test_a_fresh_file_has_to_settle_first(self) -> None:
+        """Файл может ещё копироваться, а субтитры к нему — приехать следом."""
+        self._aged(1, minutes=2)
+
+        assert missing_episodes(SERIES, self._rule_since(5), automatic=True) == []
+
+    def test_after_settling_it_is_taken(self) -> None:
+        self._aged(1, minutes=90)
+
+        assert missing_episodes(SERIES, self._rule_since(5), automatic=True) == [1.0]
+
+    def test_a_long_unanswered_episode_stops_being_rechecked(self) -> None:
+        """Перевода нет третий месяц — спрашивать сайт вечно незачем."""
+        self._aged(1, days=200)
+
+        assert missing_episodes(SERIES, self._rule_since(365), automatic=True) == []
+
+    def test_without_an_enabling_mark_only_the_recheck_window_applies(self) -> None:
+        """Старые записи отметки не имеют — ограничивать их этой границей нечем."""
+        self._aged(1, days=1)
+
+        assert missing_episodes(SERIES, _rule(priorities=["kazoku"]), automatic=True) == [1.0]
 
 
 class TestWholeLibraryPass:

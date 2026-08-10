@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
@@ -123,16 +124,26 @@ def set_rule(lang: str, payload: RuleUpdate) -> dict[str, Any]:
         )
 
     with session_scope() as session:
-        session.merge(
-            AutoDownloadRule(
-                lang=lang,
-                mode=payload.mode,
-                priorities=_clean_priorities(payload.priorities),
-                allow_any_fallback=payload.allow_any_fallback,
-                allow_any=payload.allow_any,
-                ignore_embedded=payload.ignore_embedded,
-            )
-        )
+        row = session.get(AutoDownloadRule, lang)
+        was_off = row is None or (row.mode or "off") == "off"
+        if row is None:
+            row = AutoDownloadRule(lang=lang)
+            session.add(row)
+
+        # Отметка «когда включили» ставится только на переходе из выключенного.
+        # Правка списка приоритетов у работающего языка не должна сдвигать
+        # границу: иначе каждое сохранение переставало бы считать своими файлы,
+        # приехавшие с прошлого раза.
+        if payload.mode != "off" and was_off:
+            row.enabled_at = datetime.utcnow()
+        elif payload.mode == "off":
+            row.enabled_at = None
+
+        row.mode = payload.mode
+        row.priorities = _clean_priorities(payload.priorities)
+        row.allow_any_fallback = payload.allow_any_fallback
+        row.allow_any = payload.allow_any
+        row.ignore_embedded = payload.ignore_embedded
     return get_rules()
 
 

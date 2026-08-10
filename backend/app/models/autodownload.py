@@ -117,6 +117,14 @@ class AutoDownloadRule(Base):
     #: Нужен там, где теги дорожек врут (у `Fate HF I` видео помечено `ita`).
     ignore_embedded: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    #: Когда язык последний раз включили.
+    #:
+    #: Граница между «файл приехал уже при работающем автоскачивании» и «файл
+    #: лежал раньше». Требование пользователя: включение галки не должно
+    #: задним числом выкачивать субтитры ко всей библиотеке — на это есть
+    #: отдельная кнопка. Без отметки времени отличить одно от другого нечем.
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime)
+
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

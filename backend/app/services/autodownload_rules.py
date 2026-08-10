@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from sqlalchemy import select
 
@@ -49,6 +50,10 @@ class Resolved:
     #: Откуда взялся список — нужно интерфейсу, чтобы показать «свой» или
     #: «общий», и отчётам, чтобы объяснить решение.
     from_series: bool = False
+    #: Когда язык включили. Файлы, лежавшие раньше, автоматически не качаются —
+    #: на них есть отдельная кнопка. `None` означает «включили давно, отметки
+    #: не осталось»: тогда ограничение по этой границе не применяется.
+    enabled_at: datetime | None = None
 
     @property
     def usable(self) -> bool:
@@ -119,6 +124,7 @@ def _combine(
 
     return Resolved(
         lang=lang,
+        enabled_at=rule.enabled_at if rule else None,
         priorities=priorities,
         allow_any_fallback=inherit("allow_any_fallback"),
         allow_any=inherit("allow_any"),
