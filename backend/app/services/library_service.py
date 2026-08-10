@@ -381,7 +381,22 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
             # Scans`. Там лежат картинки и сканы, а нечёткое сравнение всё
             # равно что-то находило: `BD Scans` уезжали на `MM! Specials` с
             # похожестью 76. Это чистый шум в списке «требует подтверждения».
-            if parent is not None and not folder.video_count and folder.id not in with_subtitles:
+            # ⚠️ Подпапка, ЗАЯВИВШАЯ номер сезона, остаётся даже пустой.
+            #
+            # Пустая `Season 2` — это заявление структуры: «сезон живёт здесь».
+            # Отбросив её, мы при загрузке второго сезона не нашли бы привязки
+            # и завели рядом НОВУЮ папку, хотя нужная уже есть. В Anime365
+            # каждый сезон — отдельный тайтл, поэтому такая привязка и есть
+            # единственная связь сезона с его местом на диске.
+            #
+            # Отбрасываем только то, что не заявляет ничего и ничего не
+            # содержит: `BD Scans`, `Bonus` и прочие остатки переносов.
+            if (
+                parent is not None
+                and not folder.video_count
+                and folder.id not in with_subtitles
+                and folder.season_number is None
+            ):
                 continue
 
             contexts.append(

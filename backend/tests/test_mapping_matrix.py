@@ -143,6 +143,13 @@ def _episodes(series_id: int) -> set[float]:
         }
 
 
+def _tmp() -> str:
+    """Свой каталог на каждый вызов: тестовая база общая."""
+    import tempfile
+
+    return tempfile.mkdtemp(prefix="a365-map-")
+
+
 def _write(folder: Path, name: str, text: str = "") -> None:
     folder.mkdir(parents=True, exist_ok=True)
     if text:
@@ -954,3 +961,25 @@ class TestEmptySubfolders:
         mapped = _mapping(_run(root, "series"))
 
         assert any(path.endswith("Kagerou Days") for path in mapped)
+
+    def test_an_empty_season_subfolder_is_still_mapped(self) -> None:
+        """Пустая `Season N` — заявление структуры, а не мусор.
+
+        Вопрос пользователя, и он попал в дыру первой версии правила: если
+        отбросить пустую подпапку сезона, то при загрузке этого сезона привязки
+        не найдётся и рядом заведётся НОВАЯ папка, хотя нужная уже есть.
+
+        В Anime365 каждый сезон — отдельный тайтл, поэтому такая привязка и
+        есть единственная связь сезона с его местом на диске.
+        """
+        root = Path(_tmp()) / "пустой-сезон"
+        show = root / "Kagerou Days"
+        (show / "Season 2").mkdir(parents=True)
+        _write(show, "tvshow.nfo", TVSHOW_NFO)
+        _write(show / "Season 2", "season.nfo", _season_nfo(2, "2021-01-10"))
+
+        mapped = _mapping(_run(root, "series"))
+
+        assert any("Season 2" in path for path in mapped), (
+            "пустая папка сезона потеряла привязку — загрузки уедут в новую папку"
+        )
