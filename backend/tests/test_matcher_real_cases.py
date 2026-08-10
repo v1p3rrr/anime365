@@ -501,3 +501,88 @@ class TestNicknameCannotClaimASeason:
         claimed = Matcher(index)._season_claimed_by(index.by_id[700])
 
         assert claimed == 2
+
+
+class TestStructureBeatsWrongMetadata:
+    """Структура папок вернее метаданных: их пишет Jellyfin, и он ошибается.
+
+    Живой случай — `Honzuki no Gekokujou`. В `tvshow.nfo` весь сериал назван
+    записью **OVA** (`anilistid` указывает на неё), а у второго сезона в
+    `season.nfo` стоит премьера 2026 года вместо 2020-го. Оба поля неверны, и
+    оба приходят от Jellyfin. Верной остаётся только структура: имя тайтла плюс
+    номер сезона в подпапке.
+    """
+
+    SHOW = "Honzuki no Gekokujou"
+    #: Заголовок из `.nfo` — тот самый, ошибочный.
+    OVA_TITLE = "Honzuki no Gekokujou: Shisho ni Naru Tame ni wa Shudan wo Erandeiraremasen OVA"
+
+    def _index(self) -> TitleIndex:
+        base = "Honzuki no Gekokujou: Shisho ni Naru Tame ni wa Shudan wo Erandeiraremasen"
+        return TitleIndex(
+            [
+                series(20860, base, year=2019, episodes=14),
+                series(21614, f"{base} 2nd Season", year=2020, episodes=12),
+                series(21619, self.OVA_TITLE, year=2020, episodes=1, type_="ova"),
+                series(35534, f"{base} - Ryoushu no Youjo", year=2026, episodes=24),
+            ]
+        )
+
+    def _season(self, number: int, videos: int, premiered: str | None) -> MatchContext:
+        return MatchContext(
+            folder_name=self.SHOW,
+            scope="series",
+            nfo=nfo(title=self.OVA_TITLE, year=2020, anilist_id=113811),
+            season_nfo=nfo("season", premiered=premiered) if premiered else nfo("season"),
+            own_name=f"Season {number}",
+            own_season=number,
+            is_child=True,
+            video_count=videos,
+            local_episode_count=videos,
+        )
+
+    def test_a_wrong_premiered_date_does_not_veto_the_named_season(self) -> None:
+        """Второй сезон назван в самом заголовке кандидата — дате его не отнять.
+
+        До исправления верный кандидат отвергался по несовпадению года, а
+        сезон доставался спинофу 2026 года, у которого дата совпала с
+        ошибочной.
+        """
+        result = Matcher(self._index()).match(self._season(2, 12, "2026-04-04"))
+
+        assert result is not None, "второй сезон остался без привязки"
+        assert result.series_id == 21614
+
+    def test_a_numbered_season_is_never_an_ova(self) -> None:
+        """Номер сезона в имени папки — заявление структуры. OVA сезоном не бывает."""
+        result = Matcher(self._index()).match(self._season(4, 2, None))
+
+        assert result is None or result.series_id != 21619
+
+    def test_a_wrong_year_still_vetoes_an_unnamed_candidate(self) -> None:
+        """Послабление даётся только тому, кто назвал свой номер.
+
+        Иначе проверка года перестала бы разводить сезоны вовсе, а ради этого
+        она и заведена.
+        """
+        index = TitleIndex(
+            [
+                series(1, "Some Show", year=2015, episodes=12),
+                series(2, "Some Show Continues", year=2021, episodes=12),
+            ]
+        )
+        result = Matcher(index).match(
+            MatchContext(
+                folder_name="Some Show",
+                scope="series",
+                nfo=nfo(title="Some Show", year=2015),
+                season_nfo=nfo("season", premiered="2021-01-01"),
+                own_name="Season 2",
+                own_season=2,
+                is_child=True,
+                video_count=12,
+                local_episode_count=12,
+            )
+        )
+
+        assert result is None or result.series_id != 1, "первый сезон 2015 года не подходит"
