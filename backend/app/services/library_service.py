@@ -347,6 +347,9 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
             ).all()
         }
 
+        # Папки, которые мапить нечем: их прежние привязки снимаются.
+        skipped: list[int] = []
+
         # Контексты собираем здесь же: дальше объекты будут отсоединены от
         # сессии, и обращение к их полям стало бы неожиданным запросом.
         contexts: list[tuple[int, MatchContext]] = []
@@ -397,6 +400,13 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
                 and folder.id not in with_subtitles
                 and folder.season_number is None
             ):
+                # ⚠️ Не просто пропускаем: привязку надо СНЯТЬ.
+                #
+                # Удаление старого идёт только по списку обработанных папок, и
+                # пропущенная сохраняла бы прежнюю привязку навсегда. Именно так
+                # `Toradora!/Specials/BD Scans` продолжала висеть на
+                # `MM! Specials` после того, как правило её отсекло.
+                skipped.append(folder.id)
                 continue
 
             contexts.append(
@@ -424,6 +434,14 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
 
     # ---- 3. Пишем порциями. Пара «удалить старое, вставить новое» для каждой
     # папки остаётся внутри одной транзакции.
+    if skipped:
+        with session_scope() as session:
+            session.execute(
+                delete(TitleMapping).where(
+                    TitleMapping.folder_id.in_(skipped),
+                    TitleMapping.is_manual.is_(False),
+                )
+            )
     for start in range(0, len(matched), MAPPING_WRITE_BATCH):
         batch = matched[start : start + MAPPING_WRITE_BATCH]
         with session_scope() as session:

@@ -983,3 +983,49 @@ class TestEmptySubfolders:
         assert any("Season 2" in path for path in mapped), (
             "пустая папка сезона потеряла привязку — загрузки уедут в новую папку"
         )
+
+    def test_a_stale_mapping_on_an_empty_subfolder_is_removed(self) -> None:
+        """Пропустить папку мало — прежнюю привязку надо снять.
+
+        Ошибка, найденная пользователем после сборки: `BD Scans` продолжала
+        висеть на `MM! Specials` даже после того, как правило её отсекло.
+        Причина в том, что удаление старых привязок идёт **только по списку
+        обработанных папок**, а пропущенная в него не попадала — и сохраняла
+        прежнюю привязку навсегда.
+
+        Привязку ставим руками: важно поведение очистки, а не то, согласится
+        ли матчер завести её сам.
+        """
+        root = Path(_tmp()) / "устаревшая-привязка"
+        show = root / "Kagerou Days"
+        scans = show / "Specials" / "BD Scans"
+        scans.mkdir(parents=True)
+        _write(show, "tvshow.nfo", TVSHOW_NFO)
+        _write(scans, "cover.jpg", "x")
+
+        root_id = _run(root, "series")
+
+        with session_scope() as session:
+            folder = session.execute(
+                select(LibraryFolder).where(
+                    LibraryFolder.root_id == root_id,
+                    LibraryFolder.rel_path.like("%BD Scans%"),
+                )
+            ).scalar_one()
+            session.add(
+                TitleMapping(
+                    series_id=SHOW,
+                    folder_id=folder.id,
+                    source="fuzzy",
+                    confidence=76.0,
+                    is_manual=False,
+                )
+            )
+
+        assert any("BD Scans" in path for path in _mapping(root_id)), "не удалось подготовить"
+
+        _map_folders(root_id, build_index(), "series")
+
+        assert not any("BD Scans" in path for path in _mapping(root_id)), (
+            "привязка осталась на папке, которую больше не мапим"
+        )
