@@ -1,0 +1,36 @@
+#!/bin/sh
+# Пересчитывает оглавления документов перед коммитом.
+#
+# Зачем. Номера строк в оглавлениях сдвигает любая вставленная строка, а
+# поломка молчаливая: ссылка просто уводит не туда. Раньше это ловил только
+# `backend/tests/test_docs_toc.py`, то есть уже после коммита.
+#
+# ⚠️ В коммит доносятся ТОЛЬКО те файлы, которые в нём и так были. Дописывать
+# сюда всё изменившееся нельзя: так в коммит попало бы соседнее, чего человек
+# не собирался отправлять.
+#
+# Включается один раз на машину:
+#     git config core.hooksPath scripts/hooks
+
+set -e
+
+staged_md=$(git diff --cached --name-only --diff-filter=ACM | grep '\.md$' || true)
+[ -z "$staged_md" ] && exit 0
+
+python scripts/update_docs_toc.py >/dev/null 2>&1 || {
+    echo "pre-commit: не удалось пересчитать оглавления" >&2
+    exit 1
+}
+
+changed=0
+for file in $staged_md; do
+    [ -f "$file" ] || continue
+    if ! git diff --quiet -- "$file"; then
+        git add -- "$file"
+        changed=1
+    fi
+done
+
+[ "$changed" = "1" ] && echo "pre-commit: оглавления пересчитаны и добавлены в коммит"
+
+exit 0
