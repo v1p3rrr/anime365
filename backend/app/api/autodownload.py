@@ -25,6 +25,7 @@ from app.core.errors import ApiError
 from app.core.permissions import CurrentUser, Permission, require
 from app.models.autodownload import (
     AUTO_LANGS,
+    AutoDownloadMiss,
     GLOBAL_MODES,
     TITLE_MODES,
     AutoDownloadRule,
@@ -53,6 +54,8 @@ class RuleUpdate(BaseModel):
     #: Имена групп в том виде, в каком их ввёл человек. Нормализацию делает
     #: сервер: иначе список, набранный руками, не совпал бы с каталогом.
     priorities: list[str] = Field(default_factory=list)
+    #: Группы, от которых не качаем никогда. Сильнее любого разрешения.
+    blacklist: list[str] = Field(default_factory=list)
     allow_any_fallback: bool = False
     allow_any: bool = False
     ignore_embedded: bool = False
@@ -67,6 +70,8 @@ class SeriesUpdate(BaseModel):
 
     mode: str = Field("default")
     priorities: list[str] = Field(default_factory=list)
+    #: Пустой — наследовать общий, как и приоритеты.
+    blacklist: list[str] = Field(default_factory=list)
     allow_any_fallback: bool | None = None
     allow_any: bool | None = None
     ignore_embedded: bool | None = None
@@ -101,6 +106,7 @@ def get_rules() -> dict[str, Any]:
                 lang: {
                     "mode": (rows[lang].mode if lang in rows else "off"),
                     "priorities": list(rows[lang].priorities or []) if lang in rows else [],
+                    "blacklist": list(rows[lang].blacklist or []) if lang in rows else [],
                     "allow_any_fallback": bool(
                         rows[lang].allow_any_fallback if lang in rows else False
                     ),
@@ -141,6 +147,7 @@ def set_rule(lang: str, payload: RuleUpdate) -> dict[str, Any]:
 
         row.mode = payload.mode
         row.priorities = _clean_priorities(payload.priorities)
+        row.blacklist = _clean_priorities(payload.blacklist)
         row.allow_any_fallback = payload.allow_any_fallback
         row.allow_any = payload.allow_any
         row.ignore_embedded = payload.ignore_embedded
@@ -229,6 +236,7 @@ def series_settings(series_id: int) -> dict[str, Any]:
             lang: {
                 "mode": rows[lang].mode,
                 "priorities": list(rows[lang].priorities or []),
+                "blacklist": list(rows[lang].blacklist or []),
                 "allow_any_fallback": rows[lang].allow_any_fallback,
                 "allow_any": rows[lang].allow_any,
                 "ignore_embedded": rows[lang].ignore_embedded,
@@ -245,6 +253,7 @@ def series_settings(series_id: int) -> dict[str, Any]:
         "effective": {
             lang: {
                 "priorities": resolved.priorities,
+                "blacklist": resolved.blacklist,
                 "allow_any_fallback": resolved.allow_any_fallback,
                 "allow_any": resolved.allow_any,
                 "ignore_embedded": resolved.ignore_embedded,
@@ -280,6 +289,7 @@ def set_series(series_id: int, lang: str, payload: SeriesUpdate) -> dict[str, An
             session.add(row)
         row.mode = payload.mode
         row.priorities = _clean_priorities(payload.priorities)
+        row.blacklist = _clean_priorities(payload.blacklist)
         row.allow_any_fallback = payload.allow_any_fallback
         row.allow_any = payload.allow_any
         row.ignore_embedded = payload.ignore_embedded
@@ -304,13 +314,92 @@ def clear_series(series_id: int, lang: str) -> dict[str, Any]:
 
 
 @router.post("/run", dependencies=[Depends(require(Permission.DOWNLOADS))])
-async def run_all(user: CurrentUser = Depends(require(Permission.DOWNLOADS))) -> dict[str, Any]:
-    """Поиск по всей библиотеке, без ограничения по сроку.
+async def run_all(
+    only_configured: Annotated[
+        bool, Query(description="Только тайтлы с собственной настройкой")
+    ] = False,
+    user: CurrentUser = Depends(require(Permission.DOWNLOADS)),
+) -> dict[str, Any]:
+    """Поиск по библиотеке. Человек нажал осознанно — ограничений по сроку нет.
 
-    Человек нажал осознанно и ждёт полного результата, поэтому окно
-    перепроверки здесь не применяется — в отличие от расписания.
+    Охват выбирается при нажатии, а не берётся из глобального режима: язык
+    может стоять в режиме «всем», но пройтись разово хочется лишь по тем
+    тайтлам, где приоритеты заданы руками.
     """
-    return await autodownload.run_for_all(user_id=user.id)
+    return await autodownload.run_for_all(user_id=user.id, only_configured=only_configured)
+
+
+@router.get("/misses", dependencies=[Depends(require(Permission.DOWNLOADS))])
+def misses() -> dict[str, Any]:
+    """Серии, к которым субтитров не нашлось.
+
+    Список нужен человеку, а не программе: по числу попыток и дате первого
+    промаха видно, стоит ли ещё ждать перевода. Лишнее выкидывается руками —
+    незачем годами спрашивать сайт о том, чего заведомо не будет.
+    """
+    with session_scope() as session:
+        rows = (
+            session.execute(
+                select(AutoDownloadMiss)
+                .where(AutoDownloadMiss.dismissed.is_(False))
+                .order_by(AutoDownloadMiss.first_missed_at.desc())
+                .limit(500)
+            )
+            .scalars()
+            .all()
+        )
+        titles = {
+            row.id: row
+            for row in session.execute(
+                select(Series).where(Series.id.in_({r.series_id for r in rows}))
+            ).scalars()
+        } if rows else {}
+
+        return {
+            "misses": [
+                {
+                    "id": row.id,
+                    "series_id": row.series_id,
+                    "title_ru": getattr(titles.get(row.series_id), "title_ru", None),
+                    "title_romaji": (
+                        getattr(titles.get(row.series_id), "titles", None) or {}
+                    ).get("romaji"),
+                    "episode": row.episode,
+                    "lang": row.lang,
+                    "checks": row.checks,
+                    "first_missed_at": row.first_missed_at.isoformat()
+                    if row.first_missed_at
+                    else None,
+                    "last_checked_at": row.last_checked_at.isoformat()
+                    if row.last_checked_at
+                    else None,
+                }
+                for row in rows
+            ]
+        }
+
+
+@router.delete("/misses/{miss_id}", dependencies=[Depends(require(Permission.DOWNLOADS))])
+def dismiss_miss(miss_id: int) -> dict[str, Any]:
+    """Выкинуть запись: больше не проверяем.
+
+    Помечаем, а не удаляем: удалённую строку следующий же проход завёл бы
+    заново, и отписаться было бы нельзя.
+    """
+    with session_scope() as session:
+        row = session.get(AutoDownloadMiss, miss_id)
+        if row is None:
+            raise ApiError(404, errors.NOT_FOUND, "Запись не найдена")
+        row.dismissed = True
+    return {"dismissed": miss_id}
+
+
+@router.post("/misses/retry", dependencies=[Depends(require(Permission.DOWNLOADS))])
+async def retry_all(
+    user: CurrentUser = Depends(require(Permission.DOWNLOADS)),
+) -> dict[str, Any]:
+    """Перепроверить весь список сейчас, не дожидаясь расписания."""
+    return await autodownload.retry_misses(user_id=user.id)
 
 
 @router.post(

@@ -24,20 +24,27 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
+
+from pathlib import Path
 
 from app.core.config import settings
 from app.core.db import session_scope
+from app.models.autodownload import AutoDownloadMiss
 from app.models.catalog import Episode, Translation
-from app.models.library import EpisodeMapping, LibraryFile
+from app.models.library import EpisodeMapping, LibraryFile, LibraryFolder, LibraryRoot
 from app.services.autodownload_rules import Resolved, resolve_for_series
 from app.services.languages import normalize_lang
+from app.services.library_scan import detect_subtitle_language
 from app.services.subtitle_authors import normalize_author
 
 log = logging.getLogger(__name__)
 
 #: Роль файла с видео в разметке серий.
 VIDEO_ROLE = "video"
+
+#: Расширения, которые считаем субтитрами при проверке на диске.
+SUBTITLE_SUFFIXES = frozenset({".ass", ".ssa", ".srt", ".sub", ".vtt"})
 
 
 @dataclass(frozen=True)
@@ -189,6 +196,66 @@ def missing_episodes(
     return missing
 
 
+def _subtitle_language(path: Path) -> str | None:
+    """Язык файла субтитров: сначала по имени, затем по содержимому.
+
+    Порядок тот же, что у сканера, и менять его нельзя. Имя надёжнее: суффикс
+    `.ru` ставят осознанно. Содержимое — запасной путь для файлов без суффикса,
+    и стоит он чтения с диска, поэтому идёт вторым.
+
+    Хвост берётся у основы имени: `Show S01E01.anime365_Kazoku.ru.ass` → `ru`.
+    """
+    tail = path.stem.rsplit(".", 1)
+    if len(tail) == 2:
+        found = normalize_lang(tail[1])
+        if found:
+            return found
+    return detect_subtitle_language(path)
+
+
+def _subtitles_on_disk(file_id: int | None, lang: str) -> tuple[bool, bool]:
+    """Смотрит на диск прямо сейчас: `(видео есть, субтитры языка есть)`.
+
+    Индекс библиотеки отражает последний скан, а между сканами файл могли
+    удалить или положить рядом субтитры руками. Перед постановкой в очередь
+    это дешевле проверить, чем потом разбирать лишнюю загрузку.
+
+    Проверка идёт по соседям видеофайла: Jellyfin подхватывает субтитры только
+    при совпадении основы имени, поэтому и наши, и чужие лежат ровно там же.
+    """
+    if file_id is None:
+        return False, False
+
+    with session_scope() as session:
+        row = session.execute(
+            select(LibraryFile.filename, LibraryFolder.rel_path, LibraryRoot.path)
+            .join(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
+            .join(LibraryRoot, LibraryFolder.root_id == LibraryRoot.id)
+            .where(LibraryFile.id == file_id)
+        ).one_or_none()
+    if row is None:
+        return False, False
+
+    filename, rel_path, root = row
+    video = Path(root) / rel_path / filename
+    try:
+        if not video.is_file():
+            return False, False
+        stem = video.stem
+        for neighbour in video.parent.iterdir():
+            if neighbour.suffix.lower() not in SUBTITLE_SUFFIXES:
+                continue
+            if not neighbour.name.startswith(stem):
+                continue
+            if _subtitle_language(neighbour) == lang:
+                return True, True
+    except OSError:
+        # Диск недоступен (сеть отвалилась, права). Молча качать в такой
+        # ситуации нельзя: мы не знаем, что там лежит.
+        return False, False
+    return True, False
+
+
 def _candidates(series_id: int, lang: str) -> dict[float, list[dict]]:
     """Субтитры этого языка, разложенные по номерам серий.
 
@@ -247,6 +314,13 @@ def rank_candidates(candidates: list[dict], resolved: Resolved) -> list[dict]:
     def generic(items: list[dict]) -> list[dict]:
         return sorted(items, key=lambda item: (-item["priority"], item["id"]))
 
+    # Чёрный список — раньше всего остального. Запрет обязан быть сильнее
+    # любого разрешения: иначе тумблер «любая группа» протащил бы сюда именно
+    # то, от чего отписались.
+    if resolved.blacklist:
+        banned = set(resolved.blacklist)
+        candidates = [item for item in candidates if item["key"] not in banned]
+
     if resolved.allow_any:
         return generic(candidates)
 
@@ -290,24 +364,39 @@ async def _first_soft_subtitle(candidates: list[dict]) -> dict | None:
     return None
 
 
-async def plan_for_series(series_id: int, automatic: bool = False) -> list[Choice]:
-    """Что нужно скачать этому тайтлу прямо сейчас. Ничего не ставит в очередь."""
+async def plan_for_series(
+    series_id: int, automatic: bool = False
+) -> tuple[list[Choice], list[tuple[float, str]]]:
+    """Что скачать и к чему не нашлось. Ничего не ставит в очередь.
+
+    Второй список — пары «серия, язык», для которых перебор разрешённых групп
+    исчерпан. Туда же попадают случаи, когда все кандидаты оказались хардсабом:
+    скачать его нечем, значит найденным он не считается.
+    """
     rules = resolve_for_series(series_id)
     if not rules:
-        return []
+        return [], []
 
     plan: list[Choice] = []
+    misses: list[tuple[float, str]] = []
     for lang, resolved in rules.items():
         missing = missing_episodes(series_id, resolved, automatic)
         if not missing:
             continue
         by_episode = _candidates(series_id, lang)
+        videos = episodes_with_video(series_id)
         for episode in missing:
-            ranked = rank_candidates(by_episode.get(episode, []), resolved)
-            if not ranked:
+            # Последняя проверка — по диску, а не по индексу: файл могли
+            # удалить, а субтитры положить руками уже после скана.
+            file_id = videos.get(episode, (None, None))[0]
+            has_video, has_subs = _subtitles_on_disk(file_id, lang)
+            if not has_video or has_subs:
                 continue
-            chosen = await _first_soft_subtitle(ranked)
+
+            ranked = rank_candidates(by_episode.get(episode, []), resolved)
+            chosen = await _first_soft_subtitle(ranked) if ranked else None
             if chosen is None:
+                misses.append((episode, lang))
                 continue
             reason = (
                 "any"
@@ -323,7 +412,7 @@ async def plan_for_series(series_id: int, automatic: bool = False) -> list[Choic
                     reason=reason,
                 )
             )
-    return plan
+    return plan, misses
 
 
 async def run_for_series(
@@ -337,7 +426,8 @@ async def run_for_series(
     """
     from app.services.download_queue import QueueError, enqueue
 
-    plan = await plan_for_series(series_id, automatic)
+    plan, misses = await plan_for_series(series_id, automatic)
+    remember_misses(series_id, misses)
     queued = 0
     for choice in plan:
         try:
@@ -349,6 +439,8 @@ async def run_for_series(
             continue
         if result.get("created"):
             queued += 1
+        # Нашли и поставили — запись о промахе больше не нужна.
+        clear_miss(series_id, choice.episode, choice.lang)
 
     if plan:
         log.info(
@@ -375,7 +467,9 @@ def series_with_files() -> list[int]:
         return sorted(rows)
 
 
-async def run_for_all(user_id: int = 1, automatic: bool = False) -> dict:
+async def run_for_all(
+    user_id: int = 1, automatic: bool = False, only_configured: bool = False
+) -> dict:
     """Проход по всей библиотеке.
 
     Два разных вызывающих, и разница между ними — в `within_days`:
@@ -389,13 +483,20 @@ async def run_for_all(user_id: int = 1, automatic: bool = False) -> dict:
     ответить по любому из сотен переводов, и терять из-за этого весь проход
     неправильно.
     """
-    from app.services.autodownload_rules import any_language_enabled
+    from app.services.autodownload_rules import any_language_enabled, configured_series_ids
 
     if not any_language_enabled():
         return {"series": 0, "planned": 0, "queued": 0, "skipped": "автоскачивание выключено"}
 
+    # «Только настроенным» — это охват кнопки, а не глобальный режим: человек
+    # может держать язык в режиме «всем», но разово пройтись лишь по тем
+    # тайтлам, где настроил приоритеты сам.
+    configured = set(configured_series_ids()) if only_configured else None
+
     planned = queued = touched = 0
     for series_id in series_with_files():
+        if configured is not None and series_id not in configured:
+            continue
         try:
             result = await run_for_series(series_id, user_id, automatic)
         except Exception:
@@ -408,6 +509,105 @@ async def run_for_all(user_id: int = 1, automatic: bool = False) -> dict:
 
     log.info(
         "Автоскачивание: проход завершён — тайтлов с находками %d, выбрано %d, поставлено %d",
+        touched,
+        planned,
+        queued,
+    )
+    return {"series": touched, "planned": planned, "queued": queued}
+
+
+def remember_misses(series_id: int, misses: list[tuple[float, str]]) -> None:
+    """Запоминает серии, к которым субтитров не нашлось.
+
+    Не удалять и заводить заново, а обновлять счётчик: по числу попыток и дате
+    первого промаха человек решает, стоит ли ещё ждать перевода или запись
+    пора выкинуть.
+
+    ⚠️ Выкинутые вручную (`dismissed`) не воскрешаем. Иначе следующий же
+    проход вернул бы в список ровно то, от чего человек только что отписался.
+    """
+    if not misses:
+        return
+    now = datetime.utcnow()
+    with session_scope() as session:
+        for episode, lang in misses:
+            row = session.execute(
+                select(AutoDownloadMiss).where(
+                    AutoDownloadMiss.series_id == series_id,
+                    AutoDownloadMiss.episode == episode,
+                    AutoDownloadMiss.lang == lang,
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                session.add(
+                    AutoDownloadMiss(
+                        series_id=series_id,
+                        episode=episode,
+                        lang=lang,
+                        first_missed_at=now,
+                        last_checked_at=now,
+                        checks=1,
+                    )
+                )
+                continue
+            if row.dismissed:
+                continue
+            row.last_checked_at = now
+            row.checks = (row.checks or 0) + 1
+
+
+def clear_miss(series_id: int, episode: float, lang: str) -> None:
+    """Перевод нашёлся — запись о промахе больше не нужна."""
+    with session_scope() as session:
+        session.execute(
+            delete(AutoDownloadMiss).where(
+                AutoDownloadMiss.series_id == series_id,
+                AutoDownloadMiss.episode == episode,
+                AutoDownloadMiss.lang == lang,
+            )
+        )
+
+
+def pending_misses() -> list[int]:
+    """Тайтлы, у которых есть неотброшенные записи о ненайденных субтитрах."""
+    with session_scope() as session:
+        rows = session.execute(
+            select(AutoDownloadMiss.series_id)
+            .where(AutoDownloadMiss.dismissed.is_(False))
+            .distinct()
+        ).scalars()
+        return sorted(rows)
+
+
+async def retry_misses(user_id: int = 1) -> dict:
+    """Повторный проход по тем сериям, где субтитров не нашлось.
+
+    Отдельно от обычного прохода и с более редким расписанием: там мы ищем
+    новое, здесь — ждём, когда появится то, чего пока нет. Каждый день
+    перебирать одно и то же дороже, чем раз в сутки.
+
+    Ограничение «только новые файлы» здесь не применяется: серия уже попала в
+    список, то есть её однажды признали своей, и терять её из-за возраста
+    файла было бы странно.
+    """
+    series_ids = pending_misses()
+    if not series_ids:
+        return {"series": 0, "planned": 0, "queued": 0}
+
+    planned = queued = touched = 0
+    for series_id in series_ids:
+        try:
+            result = await run_for_series(series_id, user_id, automatic=False)
+        except Exception:
+            log.exception("Повтор автоскачивания: тайтл %s не удался", series_id)
+            continue
+        if result["planned"]:
+            touched += 1
+        planned += result["planned"]
+        queued += result["queued"]
+
+    log.info(
+        "Повтор автоскачивания: тайтлов %d, выбрано %d, поставлено %d",
         touched,
         planned,
         queued,

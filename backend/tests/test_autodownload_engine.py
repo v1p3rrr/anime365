@@ -13,12 +13,19 @@
 from __future__ import annotations
 
 import asyncio
+import pathlib
+import shutil
+import tempfile
 
 import pytest
 from sqlalchemy import delete, select
 
 from app.core.db import session_scope
-from app.models.autodownload import AutoDownloadRule, SeriesAutoDownload
+from app.models.autodownload import (
+    AutoDownloadMiss,
+    AutoDownloadRule,
+    SeriesAutoDownload,
+)
 from app.models.catalog import Episode, Series, Translation
 from app.models.library import EpisodeMapping, LibraryFile, LibraryFolder, LibraryRoot
 from app.services.autodownload import (
@@ -30,7 +37,11 @@ from app.services.autodownload import (
 from app.services.autodownload_rules import Resolved, resolve_for_series
 
 SERIES = 960_001
-ROOT = "/test/autodownload"
+
+# ⚠️ Корень настоящий, а не выдуманный путь. Движок перед постановкой в
+# очередь смотрит на диск: файл могли удалить, а субтитры положить руками
+# между сканами. На записях в базе без файлов эта проверка не отработает.
+ROOT = str(pathlib.Path(tempfile.gettempdir()) / "a365-autodownload-tests")
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +49,9 @@ def clean():
     def wipe() -> None:
         with session_scope() as session:
             session.execute(delete(AutoDownloadRule))
+            session.execute(
+                delete(AutoDownloadMiss).where(AutoDownloadMiss.series_id == SERIES)
+            )
             session.execute(
                 delete(SeriesAutoDownload).where(SeriesAutoDownload.series_id == SERIES)
             )
@@ -50,15 +64,25 @@ def clean():
             if root is not None:
                 session.execute(delete(LibraryFolder).where(LibraryFolder.root_id == root.id))
 
+    def wipe_disk() -> None:
+        shutil.rmtree(pathlib.Path(ROOT), ignore_errors=True)
+
     wipe()
+    wipe_disk()
     with session_scope() as session:
         session.merge(Series(id=SERIES, title="Autodownload Test", type="tv"))
     yield
     wipe()
+    wipe_disk()
 
 
 def _folder() -> int:
-    """Одна папка на тест: файлы тайтла лежат рядом, а не в разных."""
+    """Одна папка на тест: файлы тайтла лежат рядом, а не в разных.
+
+    Каталог заводится и на диске: проверка перед постановкой в очередь идёт
+    по настоящим файлам.
+    """
+    pathlib.Path(ROOT, "Autodownload").mkdir(parents=True, exist_ok=True)
     with session_scope() as session:
         root = session.execute(
             select(LibraryRoot).where(LibraryRoot.path == ROOT)
@@ -90,13 +114,15 @@ def _video(
     повторяются, и запрос цепляет строки соседних проверок.
     """
     folder_id = _folder()
+    name = f"Show S01E{int(episode):02d}.mkv"
+    pathlib.Path(ROOT, "Autodownload", name).write_bytes(b"x" * 10)
     with session_scope() as session:
         streams = None
         if probed:
             streams = {"audio_languages": ["jpn"], "subtitle_languages": subtitle_languages or []}
         row = LibraryFile(
             folder_id=folder_id,
-            filename=f"Show S01E{int(episode):02d}.mkv",
+            filename=name,
             kind="video",
             size_bytes=100,
             mtime=1.0,
@@ -113,10 +139,12 @@ def _video(
 
 def _sidecar(episode: float, lang: str) -> None:
     folder_id = _folder()
+    name = f"Show S01E{int(episode):02d}.{lang}.ass"
+    pathlib.Path(ROOT, "Autodownload", name).write_text("dummy", encoding="utf-8")
     with session_scope() as session:
         row = LibraryFile(
             folder_id=folder_id,
-            filename=f"Show S01E{int(episode):02d}.{lang}.ass",
+            filename=name,
             kind="subtitle",
             lang=lang,
             size_bytes=10,
@@ -316,7 +344,7 @@ class TestPlan:
         _video(1)
         _translation(101, 1, "Kazoku")
 
-        assert asyncio.run(plan_for_series(SERIES)) == []
+        assert asyncio.run(plan_for_series(SERIES))[0] == []
 
     def test_a_chosen_translation_matches_the_priority_list(self, monkeypatch) -> None:
         self._softsubs(monkeypatch)
@@ -328,7 +356,7 @@ class TestPlan:
                 AutoDownloadRule(lang="ru", mode="all", priorities=["wakanim", "kazoku"])
             )
 
-        plan = asyncio.run(plan_for_series(SERIES))
+        plan, _ = asyncio.run(plan_for_series(SERIES))
 
         assert [(c.episode, c.translation_id, c.reason) for c in plan] == [
             (1.0, 102, "priority")
@@ -349,7 +377,7 @@ class TestPlan:
                 AutoDownloadRule(lang="ru", mode="all", priorities=["wakanim", "kazoku"])
             )
 
-        plan = asyncio.run(plan_for_series(SERIES))
+        plan, _ = asyncio.run(plan_for_series(SERIES))
 
         assert [c.translation_id for c in plan] == [101]
 
@@ -361,7 +389,7 @@ class TestPlan:
         with session_scope() as session:
             session.merge(AutoDownloadRule(lang="ru", mode="all", priorities=["kazoku"]))
 
-        plan = asyncio.run(plan_for_series(SERIES))
+        plan, _ = asyncio.run(plan_for_series(SERIES))
 
         assert [c.episode for c in plan] == [1.0]
 
@@ -373,7 +401,7 @@ class TestPlan:
             session.merge(AutoDownloadRule(lang="ru", mode="all", priorities=["kazoku"]))
             session.add(SeriesAutoDownload(series_id=SERIES, lang="ru", mode="off"))
 
-        assert asyncio.run(plan_for_series(SERIES)) == []
+        assert asyncio.run(plan_for_series(SERIES))[0] == []
         assert resolve_for_series(SERIES) == {}
 
 
@@ -473,3 +501,158 @@ class TestWholeLibraryPass:
 
         # Падение внутри тайтла не должно поднимать исключение наружу.
         assert asyncio.run(engine.run_for_all())["queued"] == 0
+
+
+class TestBlacklist:
+    """Запрет сильнее любого разрешения — иначе он ничего не значит."""
+
+    ITEMS = [
+        {"id": 1, "key": "kazoku", "authors": "Kazoku", "priority": 0},
+        {"id": 2, "key": "wakanim", "authors": "Wakanim", "priority": 5},
+    ]
+
+    def test_a_banned_group_never_wins(self) -> None:
+        ranked = rank_candidates(
+            self.ITEMS, _rule(priorities=["wakanim", "kazoku"], blacklist=["wakanim"])
+        )
+
+        assert [item["id"] for item in ranked] == [1]
+
+    def test_allow_any_does_not_smuggle_a_banned_group_in(self) -> None:
+        """Тот случай, ради которого запрет и проверяется первым."""
+        ranked = rank_candidates(self.ITEMS, _rule(allow_any=True, blacklist=["wakanim"]))
+
+        assert [item["id"] for item in ranked] == [1]
+
+    def test_fallback_does_not_smuggle_it_either(self) -> None:
+        ranked = rank_candidates(
+            self.ITEMS,
+            _rule(priorities=["никого"], allow_any_fallback=True, blacklist=["wakanim"]),
+        )
+
+        assert [item["id"] for item in ranked] == [1]
+
+    def test_banning_everyone_leaves_nothing(self) -> None:
+        ranked = rank_candidates(
+            self.ITEMS, _rule(allow_any=True, blacklist=["wakanim", "kazoku"])
+        )
+
+        assert ranked == []
+
+
+class TestMisses:
+    """Не нашли — запомнили. Иначе повторять было бы нечего."""
+
+    @staticmethod
+    def _hardsub_only(monkeypatch) -> None:
+        async def fake_embed(translation_id: int, **kwargs):
+            return {"has_subtitles": False}
+
+        monkeypatch.setattr("app.services.title_service.get_embed", fake_embed)
+
+    def test_hardsub_only_counts_as_not_found(self, monkeypatch) -> None:
+        """Скачать хардсаб нечем, значит найденным он не считается."""
+        self._hardsub_only(monkeypatch)
+        _video(1)
+        _translation(101, 1, "Kazoku")
+        with session_scope() as session:
+            session.merge(AutoDownloadRule(lang="ru", mode="all", priorities=["kazoku"]))
+
+        plan, misses = asyncio.run(plan_for_series(SERIES))
+
+        assert plan == []
+        assert misses == [(1.0, "ru")]
+
+    def test_no_candidates_at_all_counts_too(self) -> None:
+        _video(1)
+        with session_scope() as session:
+            session.merge(AutoDownloadRule(lang="ru", mode="all", priorities=["kazoku"]))
+
+        _, misses = asyncio.run(plan_for_series(SERIES))
+
+        assert misses == [(1.0, "ru")]
+
+    def test_a_dismissed_record_is_not_resurrected(self) -> None:
+        """Иначе следующий проход вернул бы то, от чего человек отписался."""
+        from app.services.autodownload import remember_misses
+
+        remember_misses(SERIES, [(1.0, "ru")])
+        with session_scope() as session:
+            row = session.execute(
+                select(AutoDownloadMiss).where(AutoDownloadMiss.series_id == SERIES)
+            ).scalar_one()
+            row.dismissed = True
+            first_checks = row.checks
+
+        remember_misses(SERIES, [(1.0, "ru")])
+
+        with session_scope() as session:
+            row = session.execute(
+                select(AutoDownloadMiss).where(AutoDownloadMiss.series_id == SERIES)
+            ).scalar_one()
+            assert row.dismissed is True
+            assert row.checks == first_checks, "счётчик у отброшенной расти не должен"
+
+    def test_repeated_misses_raise_the_counter(self) -> None:
+        from app.services.autodownload import remember_misses
+
+        remember_misses(SERIES, [(1.0, "ru")])
+        remember_misses(SERIES, [(1.0, "ru")])
+
+        with session_scope() as session:
+            row = session.execute(
+                select(AutoDownloadMiss).where(AutoDownloadMiss.series_id == SERIES)
+            ).scalar_one()
+
+        assert row.checks == 2
+
+    def test_a_found_translation_clears_the_record(self) -> None:
+        from app.services.autodownload import clear_miss, remember_misses
+
+        remember_misses(SERIES, [(1.0, "ru")])
+        clear_miss(SERIES, 1.0, "ru")
+
+        with session_scope() as session:
+            found = session.execute(
+                select(AutoDownloadMiss).where(AutoDownloadMiss.series_id == SERIES)
+            ).scalar_one_or_none()
+
+        assert found is None
+
+
+class TestDiskCheck:
+    """Индекс отражает последний скан, а файл могли трогать после него."""
+
+    def test_a_deleted_video_is_not_downloaded_for(self, monkeypatch) -> None:
+        async def fake_embed(translation_id: int, **kwargs):
+            return {"has_subtitles": True}
+
+        monkeypatch.setattr("app.services.title_service.get_embed", fake_embed)
+        _video(1)
+        _translation(101, 1, "Kazoku")
+        with session_scope() as session:
+            session.merge(AutoDownloadRule(lang="ru", mode="all", priorities=["kazoku"]))
+        # Запись в базе осталась, файла больше нет.
+        pathlib.Path(ROOT, "Autodownload", "Show S01E01.mkv").unlink()
+
+        plan, misses = asyncio.run(plan_for_series(SERIES))
+
+        assert plan == []
+        assert misses == [], "к пропавшему файлу и промаха быть не должно"
+
+    def test_subtitles_added_by_hand_stop_us(self, monkeypatch) -> None:
+        """Между сканами субтитры могли положить руками."""
+        async def fake_embed(translation_id: int, **kwargs):
+            return {"has_subtitles": True}
+
+        monkeypatch.setattr("app.services.title_service.get_embed", fake_embed)
+        _video(1)
+        _translation(101, 1, "Kazoku")
+        with session_scope() as session:
+            session.merge(AutoDownloadRule(lang="ru", mode="all", priorities=["kazoku"]))
+        # В индексе этого файла нет — он появился после скана.
+        pathlib.Path(ROOT, "Autodownload", "Show S01E01.ru.ass").write_text("x", encoding="utf-8")
+
+        plan, _ = asyncio.run(plan_for_series(SERIES))
+
+        assert plan == []

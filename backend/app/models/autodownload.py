@@ -22,6 +22,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -106,7 +107,18 @@ class AutoDownloadRule(Base):
     #: может быть вписано руками и не встречаться в `SubtitleAuthor` вовсе.
     priorities: Mapped[list] = mapped_column(JSON, default=list)
 
+    #: Группы, от которых субтитры не качаем никогда.
+    #:
+    #: Проверяется РАНЬШЕ списка приоритетов и раньше разрешения «любая
+    #: группа»: запрет должен быть сильнее любого разрешения, иначе тумблер
+    #: «любая» протащил бы сюда именно то, от чего отписались.
+    blacklist: Mapped[list] = mapped_column(JSON, default=list)
+
     #: Из списка ничего не нашлось — взять любую доступную группу.
+    #:
+    #: Выключен по умолчанию, и это важно: без него список работает как точный
+    #: фильтр, и «никого из списка» означает «субтитры не найдены», а не
+    #: «возьмём первого попавшегося».
     allow_any_fallback: Mapped[bool] = mapped_column(Boolean, default=False)
 
     #: Список не используется вовсе: годится любая группа. Значения списка при
@@ -150,6 +162,9 @@ class SeriesAutoDownload(Base):
 
     priorities: Mapped[list] = mapped_column(JSON, default=list)
 
+    #: Свой чёрный список. Пустой — наследовать общий, как и приоритеты.
+    blacklist: Mapped[list] = mapped_column(JSON, default=list)
+
     #: `None` — наследовать глобальное значение. Именно `None`, а не `False`:
     #: без третьего состояния «не задано» неотличимо от «выключено», и
     #: глобальную настройку было бы нечем унаследовать.
@@ -158,3 +173,40 @@ class SeriesAutoDownload(Base):
     ignore_embedded: Mapped[bool | None] = mapped_column(Boolean)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AutoDownloadMiss(Base):
+    """Серия, к которой субтитры искали и не нашли.
+
+    Отдельная очередь, а не флаг у файла: запись переживает и пересканирование
+    библиотеки, и правку настроек, и её надо уметь показать человеку списком —
+    чтобы он мог выкинуть то, чего заведомо не будет, и не гонять трафик
+    впустую.
+
+    «Не нашли» означает именно исчерпанный перебор: среди разрешённых групп
+    подходящего перевода нет. Хардсаб сюда тоже относится — скачать его нечем,
+    поэтому найденным он не считается.
+    """
+
+    __tablename__ = "autodownload_miss"
+    __table_args__ = (
+        UniqueConstraint("series_id", "episode", "lang", name="uq_autodownload_miss"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    series_id: Mapped[int] = mapped_column(
+        ForeignKey("series.id", ondelete="CASCADE"), index=True
+    )
+    episode: Mapped[float] = mapped_column(Float, index=True)
+    lang: Mapped[str] = mapped_column(String(8), index=True)
+
+    #: Когда столкнулись впервые — по нему видно, насколько давно ждём.
+    first_missed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    #: Сколько раз проверяли. Показывается в списке: десятки попыток — повод
+    #: выкинуть запись руками.
+    checks: Mapped[int] = mapped_column(Integer, default=1)
+
+    #: Выкинуто человеком: больше не проверяем. Не удаляем строку, а помечаем —
+    #: иначе следующий же проход завёл бы её заново.
+    dismissed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)

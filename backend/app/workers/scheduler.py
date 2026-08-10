@@ -129,6 +129,21 @@ async def _autodownload_job() -> None:
         log.exception("Автоскачивание субтитров не удалось")
 
 
+async def _autodownload_retry_job() -> None:
+    """Повтор по сериям, к которым субтитров не нашлось.
+
+    Отдельная джоба и более редкое расписание: обычный проход ищет новое, а
+    здесь мы ждём появления того, чего пока нет. Перебирать одно и то же
+    каждый час дороже, чем раз в сутки.
+    """
+    if library_scanner.running:
+        return
+    try:
+        await autodownload.retry_misses()
+    except Exception:
+        log.exception("Повтор автоскачивания не удался")
+
+
 def _library_job() -> None:
     """Сверочное сканирование библиотеки.
 
@@ -235,6 +250,15 @@ def start_scheduler() -> AsyncIOScheduler:
             _autodownload_job,
             IntervalTrigger(hours=settings.get_int("autodownload_interval_hours")),
             id="autodownload",
+            max_instances=1,
+            coalesce=True,
+        )
+
+    if settings.get_int("autodownload_retry_hours") > 0:
+        scheduler.add_job(
+            _autodownload_retry_job,
+            IntervalTrigger(hours=settings.get_int("autodownload_retry_hours")),
+            id="autodownload_retry",
             max_instances=1,
             coalesce=True,
         )

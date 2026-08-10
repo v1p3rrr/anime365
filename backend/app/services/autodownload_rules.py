@@ -41,6 +41,8 @@ class Resolved:
     lang: str
     #: Упорядоченный список нормализованных имён групп: выше — приоритетнее.
     priorities: list[str] = field(default_factory=list)
+    #: Группы, от которых не качаем никогда. Сильнее любого разрешения.
+    blacklist: list[str] = field(default_factory=list)
     #: Из списка ничего не нашлось — взять любую доступную группу.
     allow_any_fallback: bool = False
     #: Список игнорируется целиком: годится любая группа.
@@ -115,6 +117,12 @@ def _combine(
     own = list(series.priorities or []) if series else []
     priorities = own or (list(rule.priorities or []) if rule else [])
 
+    # Чёрный список наследуется так же: свой перекрывает общий, пустой значит
+    # «взять общий». Складывать их не стали — иначе снять унаследованный запрет
+    # у отдельного тайтла было бы нечем.
+    own_black = list(series.blacklist or []) if series else []
+    blacklist = own_black or (list(rule.blacklist or []) if rule else [])
+
     def inherit(name: str) -> bool:
         # `None` у тайтла — «не задано». Без третьего состояния «не задано»
         # было бы неотличимо от «выключено», и наследовать стало бы нечего.
@@ -126,6 +134,7 @@ def _combine(
         lang=lang,
         enabled_at=rule.enabled_at if rule else None,
         priorities=priorities,
+        blacklist=blacklist,
         allow_any_fallback=inherit("allow_any_fallback"),
         allow_any=inherit("allow_any"),
         ignore_embedded=inherit("ignore_embedded"),

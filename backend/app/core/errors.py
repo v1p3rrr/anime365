@@ -70,6 +70,8 @@ USER_EXISTS = "user_exists"
 USER_NOT_FOUND = "user_not_found"
 #: Пароль выдан временно: работать нельзя, пока не задан свой.
 PASSWORD_CHANGE_REQUIRED = "password_change_required"
+#: Запись, которую просили изменить, не найдена.
+NOT_FOUND = "not_found"
 CANNOT_REMOVE_LAST_ADMIN = "cannot_remove_last_admin"
 
 # --- Настройки ---------------------------------------------------------------
