@@ -1060,8 +1060,7 @@ class Matcher:
             result.needs_confirmation = True
         return score, result
 
-    @staticmethod
-    def _expected_year(ctx: MatchContext) -> int | None:
+    def _expected_year(self, ctx: MatchContext) -> int | None:
         """Год, которому должен соответствовать тайтл.
 
         У сезонной папки берётся её собственный год — он и разводит сезоны. Год
@@ -1073,6 +1072,28 @@ class Matcher:
         ожидаемый нельзя — он зарубит единственного верного кандидата.
         """
         if ctx.season_is_guessed:
+            return None
+
+        # ⚠️ `.nfo` описывает чужой тайтл — значит и год в нём чужой.
+        #
+        # Мы уже отказываемся предлагать его идентификаторы ([D-86]), но год
+        # продолжали брать, и он отвергал верного кандидата. Живой случай:
+        # у папки `Kagerou Daze - In a Day's` нет `movie.nfo`, а `tvshow.nfo`
+        # описывает постороннее аниме 2021 года. Фильму расхождение в годах не
+        # прощается (у него ровно один год выхода), и верный кандидат 2016 года
+        # отвергался — папка оставалась без привязки вовсе.
+        #
+        # Собственную дату сезона это не трогает: `season.nfo` описывает именно
+        # эту подпапку, и к спору «имя папки против названия в `.nfo`» отношения
+        # не имеет.
+        if self.nfo_disagrees_with_folder(ctx):
+            source = ctx.season_nfo
+            if source is not None:
+                if source.year:
+                    return source.year
+                quarter = source.season_quarter
+                if quarter:
+                    return quarter[0]
             return None
 
         # У сезона со вторым и дальше номером годится только **его собственная**

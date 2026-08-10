@@ -586,3 +586,87 @@ class TestStructureBeatsWrongMetadata:
         )
 
         assert result is None or result.series_id != 1, "первый сезон 2015 года не подходит"
+
+
+class TestYearFromAForeignNfo:
+    """`.nfo` про чужой тайтл — значит и год в нём чужой.
+
+    Живой случай: у папки `Kagerou Daze - In a Day's` в корне фильмов нет
+    `movie.nfo`, а `tvshow.nfo` описывает постороннее аниме 2021 года — след
+    того, что Jellyfin когда-то сканировал фильмы как библиотеку сериалов.
+
+    Идентификаторы такого `.nfo` мы не предлагаем давно, а вот год продолжали
+    брать. Фильму расхождение в годах не прощается — у него ровно один год
+    выхода, — и верный кандидат 2016 года отвергался. Папка оставалась без
+    привязки вовсе, хотя её имя совпадает с названием каталога почти дословно.
+    """
+
+    def _index(self) -> TitleIndex:
+        return TitleIndex(
+            [
+                series(15029, "Kagerou Daze: In a Day's", year=2016, episodes=1, type_="movie"),
+                series(
+                    9999,
+                    "Sekai Saikou no Ansatsusha, Isekai Kizoku ni Tensei suru",
+                    year=2021,
+                    episodes=12,
+                ),
+            ]
+        )
+
+    def _folder(self) -> MatchContext:
+        return MatchContext(
+            folder_name="Kagerou Daze - In a Day's",
+            scope="movie",
+            nfo=nfo(
+                title="Sekai Saikou no Ansatsusha, Isekai Kizoku ni Tensei suru",
+                year=2021,
+            ),
+            own_name="Kagerou Daze - In a Day's",
+            own_nfo=nfo(
+                title="Sekai Saikou no Ansatsusha, Isekai Kizoku ni Tensei suru",
+                year=2021,
+            ),
+            video_count=2,
+            local_episode_count=2,
+        )
+
+    def test_the_movie_is_found_by_its_folder_name(self) -> None:
+        result = Matcher(self._index()).match(self._folder())
+
+        assert result is not None, "папка осталась без привязки"
+        assert result.series_id == 15029
+
+    def test_the_mismatch_is_flagged(self) -> None:
+        """Молча брать своё вместо разметки нельзя — человек должен увидеть."""
+        result = Matcher(self._index()).match(self._folder())
+
+        assert result is not None
+        assert result.needs_confirmation is True
+
+    def test_a_matching_nfo_still_supplies_the_year(self) -> None:
+        """Послабление касается только расходящегося `.nfo`.
+
+        Когда `.nfo` про тот же тайтл, что и папка, его год работает как
+        прежде и по-прежнему отвергает фильм другого года.
+        """
+        index = TitleIndex(
+            [
+                series(1, "Some Movie", year=2016, episodes=1, type_="movie"),
+                series(2, "Some Movie", year=1999, episodes=1, type_="movie"),
+            ]
+        )
+        result = Matcher(index).match(
+            MatchContext(
+                folder_name="Some Movie",
+                scope="movie",
+                nfo=nfo(title="Some Movie", year=2016),
+                own_name="Some Movie",
+                own_nfo=nfo(title="Some Movie", year=2016),
+                video_count=1,
+                local_episode_count=1,
+            )
+        )
+
+        assert result is not None
+        assert result.series_id == 1, "год из согласного .nfo обязан разводить одноимённые фильмы"
