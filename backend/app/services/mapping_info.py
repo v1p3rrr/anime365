@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.core.db import session_scope
 from app.models.catalog import Episode, Series
@@ -196,6 +196,18 @@ def ensure_primary_mapping(series_id: int) -> int | None:
     исходного релиза.
 
     Ручной выбор пользователя не пересматривается.
+
+    ⚠️ Пишем `UPDATE … WHERE id = …`, а не через изменение объектов сессии.
+    Разница не стилистическая. Зовут это из обработчика страницы тайтла, а
+    сканирование библиотеки в тот же момент имеет полное право снять привязку и
+    завести новую. ORM в такой ситуации проверяет, что её UPDATE задел ровно
+    одну строку, не находит её и падает: на сервере пользователя
+    `GET /api/series/40024` отдал 500 с `StaleDataError: UPDATE statement on
+    table 'title_mapping' expected to update 1 row(s); 0 were matched`.
+
+    Прямой UPDATE к исчезнувшей строке равнодушен — обновит ноль строк и пойдёт
+    дальше. Это ровно то поведение, которое здесь нужно: привязки уже нет,
+    назначать её основной незачем, а страницу ронять тем более.
     """
     contributions = get_per_folder_counts(series_id)
 
@@ -219,10 +231,14 @@ def ensure_primary_mapping(series_id: int) -> int | None:
             episodes_here = sum(contributions.get(folder.id, {}).values())
             return (episodes_here, folder.video_count, folder.size_bytes)
 
-        best = max(rows, key=rank)
+        best_id = max(rows, key=rank)[0].id
         for mapping, _ in rows:
-            mapping.is_primary = mapping.id == best[0].id
-        return best[0].id
+            session.execute(
+                update(TitleMapping)
+                .where(TitleMapping.id == mapping.id)
+                .values(is_primary=mapping.id == best_id)
+            )
+        return best_id
 
 
 def set_primary_mapping(series_id: int, mapping_id: int) -> bool:

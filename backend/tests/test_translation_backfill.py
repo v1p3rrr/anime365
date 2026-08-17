@@ -180,8 +180,13 @@ class TestTheSameScanLinksTheFile:
 
     def test_nothing_to_do_is_not_an_error(self, monkeypatch) -> None:
         async def empty() -> dict:
-            return {"unknown": 0, "series": set(), "loaded": 0}
+            return {"unknown": 0, "series": set(), "loaded": 0, "hopeless": 0}
 
         monkeypatch.setattr("app.services.translation_backfill.backfill", empty)
 
-        assert _backfill_own_downloads() == {"unknown": 0, "loaded": 0, "relinked": 0}
+        assert _backfill_own_downloads() == {
+            "unknown": 0,
+            "loaded": 0,
+            "hopeless": 0,
+            "relinked": 0,
+        }

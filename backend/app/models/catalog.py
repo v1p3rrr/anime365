@@ -266,6 +266,34 @@ class TranslationEmbed(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class TranslationMiss(Base):
+    """Идентификатор перевода из имени файла, который так и не нашёлся.
+
+    ⚠️ Заведена по живой поломке. Досбор берёт `t{id}` из имён файлов и
+    догружает тайтл целиком, но у перевода, **удалённого с сайта**, ответ
+    приходит, тайтл грузится, а самого перевода в его списке нет. Идентификатор
+    остаётся неизвестным, и следующий скан начинает всё сначала. На сервере
+    пользователя это выглядело как «неизвестных идентификаторов 1 → загружено 1»
+    каждые две минуты, бесконечно: один файл
+    `RU [Anime365] Bocchi the Rock Movie - 02 (t5286141).ass` держал вечный
+    поход в сеть.
+
+    Отсюда таблица: помним, что по идентификатору уже ходили, и не повторяем
+    чаще раза в сутки. Файл при этом не страдает — он привязывается по папке,
+    просто без точной связи по переводу.
+    """
+
+    __tablename__ = "translation_miss"
+
+    translation_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    # not_found — сайт не знает такого перевода;
+    # not_in_series — тайтл ответил, но перевода в его списке нет;
+    # error — сеть или отказ API, стоит попробовать ещё раз.
+    reason: Mapped[str] = mapped_column(String(32), default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_try_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class ScanRun(Base):
     """История фоновых джоб — для индикаторов в UI и для диагностики."""
 

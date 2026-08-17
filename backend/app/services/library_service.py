@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -248,12 +249,38 @@ def _persist_root(result: RootScanResult) -> int:
 #: секунды; всё остальное в это время (загрузки, интерфейс) продолжает жить.
 MAPPING_WRITE_BATCH = 50
 
+#: Через сколько сопоставленных папок отпускать интерпретатор.
+#:
+#: Двадцать пять — это около трёх секунд счёта, после которых обработчики
+#: запросов получают гарантированное окно. Цена: `sleep(0)` двадцать четыре раза
+#: на весь корень, то есть неизмеримо мало на фоне самого счёта.
+MATCH_YIELD_EVERY = 25
 
-def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
-    """Проставляет маппинг для всех папок корня.
+
+def _map_folders(
+    root_id: int,
+    index: TitleIndex,
+    scope: str,
+    only_folder_ids: set[int] | None = None,
+) -> dict[str, int]:
+    """Проставляет маппинг для папок корня. `only_folder_ids` — сузить до них.
 
     Сезонные подпапки мапятся отдельно от папки тайтла: в Anime365 каждый сезон
     это отдельный тайтл. Ручные привязки не трогаются.
+
+    ## Почему появилось сужение
+
+    Сопоставление — самая дорогая часть скана: примерно 0,12 с на папку (замер в
+    комментарии ниже), то есть на 591 папке живой библиотеки около семидесяти
+    секунд. Обход диска на её фоне занимает семь. Пока это делалось на каждый
+    скан целиком, появление **одного** субтитра запускало пересчёт всей
+    библиотеки, а наблюдатель за файловой системой запускал следующий скан сразу
+    после предыдущего: на сервере пользователя проходы шли подряд по 118 секунд,
+    непрерывно, всё время работы автоскачивания.
+
+    Пересчитывать при этом нужно только то, что изменилось. Список папок для
+    пересчёта даёт сам инкрементальный обход (`_touched_folder_ids`), а сверочный
+    проход по расписанию по-прежнему идёт целиком: `only_folder_ids=None`.
 
     ## Почему в три прохода, а не в один
 
@@ -283,17 +310,27 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
 
     # ---- 1. Читаем всё, что нужно для счёта, и отпускаем базу.
     with session_scope() as session:
+        # ⚠️ Папки читаем ВСЕ, даже когда пересчитываем часть: подпапка берёт
+        # название и `.nfo` у родителя, и без родителя в `by_id` она выглядела бы
+        # папкой тайтла — то есть сузив выборку, мы бы сузили и смысл.
+        # Сужается ниже только список тех, кого пересчитываем.
         folders = (
             session.execute(select(LibraryFolder).where(LibraryFolder.root_id == root_id))
             .scalars()
             .all()
         )
         by_id = {f.id: f for f in folders}
+        targets = (
+            folders
+            if only_folder_ids is None
+            else [f for f in folders if f.id in only_folder_ids]
+        )
+        target_ids = [f.id for f in targets] or [0]
         manual_ids = {
             row[0]
             for row in session.execute(
                 select(TitleMapping.folder_id).where(
-                    TitleMapping.folder_id.in_([f.id for f in folders]),
+                    TitleMapping.folder_id.in_(target_ids),
                     TitleMapping.is_manual.is_(True),
                 )
             ).all()
@@ -310,7 +347,7 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
                 func.count(),
             )
             .where(
-                LibraryFile.folder_id.in_([f.id for f in folders] or [0]),
+                LibraryFile.folder_id.in_(target_ids),
                 LibraryFile.kind == "video",
                 LibraryFile.excluded_reason.is_(None),
                 LibraryFile.season_number.is_not(None),
@@ -326,7 +363,7 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
         names_seen: dict[int, list[str]] = {}
         for folder_id, filename in session.execute(
             select(LibraryFile.folder_id, LibraryFile.filename).where(
-                LibraryFile.folder_id.in_([f.id for f in folders] or [0]),
+                LibraryFile.folder_id.in_(target_ids),
                 LibraryFile.kind == "video",
                 LibraryFile.excluded_reason.is_(None),
             )
@@ -340,7 +377,7 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
             for (folder_id,) in session.execute(
                 select(LibraryFile.folder_id)
                 .where(
-                    LibraryFile.folder_id.in_([f.id for f in folders] or [0]),
+                    LibraryFile.folder_id.in_(target_ids),
                     LibraryFile.kind == "subtitle",
                 )
                 .distinct()
@@ -353,7 +390,7 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
         # Контексты собираем здесь же: дальше объекты будут отсоединены от
         # сессии, и обращение к их полям стало бы неожиданным запросом.
         contexts: list[tuple[int, MatchContext]] = []
-        for folder in folders:
+        for folder in targets:
             if folder.id in manual_ids:
                 # Ручная привязка — решение пользователя, автоскан её не перетирает.
                 stats["manual_kept"] += 1
@@ -430,7 +467,22 @@ def _map_folders(root_id: int, index: TitleIndex, scope: str) -> dict[str, int]:
             )
 
     # ---- 2. Считаем без единого обращения к базе. Самая долгая часть.
-    matched = [(folder_id, matcher.match(ctx)) for folder_id, ctx in contexts]
+    #
+    # ⚠️ И самая вредная для отзывчивости: это чистый питоновский счёт в том же
+    # процессе, что обслуживает запросы, то есть он держит GIL. Пока проход шёл
+    # по всем 591 папке, открытие библиотеки занимало 22 секунды вместо
+    # миллисекунд ([D-154](../../../claude/09-decisions.md)).
+    #
+    # Сужение выборки (D-155) убирает это для обычного скана — считать чаще
+    # всего нечего. Но суточный сверочный проход по-прежнему считает всё, и
+    # попасть на него открытием страницы можно. Поэтому раз в несколько папок
+    # отпускаем интерпретатор: обработчику запроса хватает и такого окна, а
+    # проход теряет доли секунды на весь корень.
+    matched: list[tuple[int, Any]] = []
+    for position, (folder_id, ctx) in enumerate(contexts, start=1):
+        matched.append((folder_id, matcher.match(ctx)))
+        if position % MATCH_YIELD_EVERY == 0:
+            time.sleep(0)
 
     # ---- 3. Пишем порциями. Пара «удалить старое, вставить новое» для каждой
     # папки остаётся внутри одной транзакции.
@@ -887,8 +939,84 @@ def _backfill_own_downloads() -> dict[str, Any]:
     return {
         "unknown": result.get("unknown", 0),
         "loaded": result.get("loaded", 0),
+        # Сколько идентификаторов так и не нашлось: по ним мы вернёмся не раньше
+        # чем через сутки, и в истории сканов это должно быть видно.
+        "hopeless": result.get("hopeless", 0),
         "relinked": relinked,
     }
+
+
+#: По сколько значений подставлять в `IN (…)`.
+#:
+#: У SQLite есть потолок на число параметров запроса (в старых сборках 999), а
+#: папок в библиотеке бывает больше. Дробим сами, чтобы не зависеть от сборки.
+IN_CHUNK = 500
+
+#: Сводка маппинга для прохода, где пересчитывать было нечего.
+#:
+#: Ключи те же, что у настоящей: история сканов читается глазами, и «поле
+#: пропало» там неотличимо от «ничего не нашли».
+EMPTY_MAPPING_STATS: dict[str, Any] = {
+    "auto": 0,
+    "suggested": 0,
+    "unmatched": 0,
+    "manual_kept": 0,
+    "dropped_container": 0,
+    "unchanged": True,
+}
+
+
+def _touched_folder_ids(root_id: int, result: RootScanResult) -> set[int]:
+    """Папки, которые надо пересопоставить после инкрементального обхода.
+
+    Берём разобранные заново (`unchanged=False`) **и их прямых детей**. Дети
+    обязательны: подпапка сезона берёт название и `.nfo` у родителя, поэтому
+    переписанный Jellyfin `tvshow.nfo` меняет смысл не только самой папки
+    тайтла, но и каждого её сезона. В обратную сторону это не работает — папка
+    тайтла считает только собственные файлы, — поэтому родителей не добавляем.
+
+    Пустой результат означает ровно то, что написано: на диске ничего не
+    изменилось, и пересопоставлять нечего.
+    """
+    changed: set[str] = set()
+
+    def walk(folder: ScannedFolder) -> None:
+        if not folder.unchanged:
+            changed.add(folder.rel_path)
+        for child in folder.children:
+            walk(child)
+
+    for folder in result.folders:
+        walk(folder)
+
+    if not changed:
+        return set()
+
+    paths = sorted(changed)
+    ids: set[int] = set()
+    with session_scope() as session:
+        for start in range(0, len(paths), IN_CHUNK):
+            ids.update(
+                session.execute(
+                    select(LibraryFolder.id).where(
+                        LibraryFolder.root_id == root_id,
+                        LibraryFolder.rel_path.in_(paths[start : start + IN_CHUNK]),
+                    )
+                ).scalars()
+            )
+
+        children: set[int] = set()
+        known = sorted(ids)
+        for start in range(0, len(known), IN_CHUNK):
+            children.update(
+                session.execute(
+                    select(LibraryFolder.id).where(
+                        LibraryFolder.parent_id.in_(known[start : start + IN_CHUNK])
+                    )
+                ).scalars()
+            )
+
+    return ids | children
 
 
 class LibraryScanner:
@@ -920,12 +1048,31 @@ class LibraryScanner:
         status, error = "ok", None
         try:
             rules = get_rules()
-            index = build_index()
+
+            # Индекс каталога строится по 29 тысячам тайтлов и нужен только
+            # тому, кого действительно пересопоставляют. Скан, запущенный
+            # появлением одного файла, чаще всего не пересопоставляет никого —
+            # и тогда индекс не строится вовсе.
+            index: TitleIndex | None = None
+
+            def title_index() -> TitleIndex:
+                nonlocal index
+                if index is None:
+                    index = build_index()
+                return index
 
             for kind, key in (("series", "series_root"), ("movie", "movies_root")):
                 path = settings.get_str(key)
                 known = None if full else _known_states(path)
+
+                # Замер по этапам. Появился потому, что «скан идёт две минуты»
+                # невозможно было разложить на составляющие: обход диска,
+                # сопоставление и связка серий — три очень разные работы, и
+                # чинить, не зная которая из них долгая, значит гадать.
+                timings: dict[str, float] = {}
+                started = time.perf_counter()
                 result = scan_root(path, kind, rules, known=known)
+                timings["walk"] = round(time.perf_counter() - started, 2)
 
                 if not result.is_available:
                     log.error("Корень %s недоступен: %s", path, result.error)
@@ -934,13 +1081,47 @@ class LibraryScanner:
                     stats["roots"].append(summary)
                     continue
 
+                started = time.perf_counter()
                 root_id = _persist_root(result)
+                timings["persist"] = round(time.perf_counter() - started, 2)
+
                 # Сводку берём из БД: при инкременте разобранных файлов в
                 # результате прохода почти нет, а показывать надо всю библиотеку.
                 summary = summarize_from_db(root_id, result)
                 scope = "movie" if kind == "movie" else "series"
-                summary["mapping"] = _map_folders(root_id, index, scope)
-                summary["episode_links"] = _map_episodes(root_id)
+
+                # ⚠️ Сопоставляем только изменившееся. Полный пересчёт остаётся
+                # за сверочным проходом (`full=True`) — он же подхватывает
+                # тайтлы, появившиеся в каталоге после прошлого раза.
+                touched = None if full else _touched_folder_ids(root_id, result)
+                summary["remapped_folders"] = "all" if touched is None else len(touched)
+
+                started = time.perf_counter()
+                if touched is None or touched:
+                    summary["mapping"] = _map_folders(
+                        root_id, title_index(), scope, only_folder_ids=touched
+                    )
+                    timings["mapping"] = round(time.perf_counter() - started, 2)
+
+                    started = time.perf_counter()
+                    summary["episode_links"] = _map_episodes(root_id, only_folders=touched)
+                    timings["episodes"] = round(time.perf_counter() - started, 2)
+                else:
+                    summary["mapping"] = dict(EMPTY_MAPPING_STATS)
+                    summary["episode_links"] = 0
+                    timings["mapping"] = timings["episodes"] = 0.0
+
+                summary["seconds"] = timings
+                log.info(
+                    "Корень %s: обход %.1f с, запись %.1f с, сопоставление %.1f с "
+                    "(папок %s), связка серий %.1f с",
+                    path,
+                    timings["walk"],
+                    timings["persist"],
+                    timings["mapping"],
+                    summary["remapped_folders"],
+                    timings["episodes"],
+                )
                 stats["roots"].append(summary)
 
             stats["mode"] = "full" if full else "incremental"

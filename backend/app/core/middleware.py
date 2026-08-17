@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -18,6 +20,7 @@ from starlette.types import ASGIApp
 from app.core.security import SESSION_COOKIE, password_required, sessions
 
 log = logging.getLogger(__name__)
+access_log = logging.getLogger("app.access")
 
 # Пути, доступные без сессии. Всё остальное требует входа, когда пароль задан.
 PUBLIC_PATHS = frozenset(
@@ -66,6 +69,62 @@ SECURITY_HEADERS = {
     # Ничего из этого приложению не нужно, а разрешено по умолчанию.
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
 }
+
+
+#: С какой длительности запрос считается медленным и пишется предупреждением.
+#:
+#: Замер отдельной строкой нужен потому, что uvicorn пишет свою строку доступа
+#: БЕЗ времени ответа: видно, что запрос был и чем кончился, но не видно, сколько
+#: пользователь его ждал. Из-за этого «библиотека грузится десятки секунд»
+#: приходилось проверять косвенно — по паузам между проверками здоровья
+#: контейнера, а это доказывает лишь то, что процесс был чем-то занят.
+SLOW_REQUEST_MS = int(os.environ.get("A365_SLOW_REQUEST_MS") or 1000)
+
+#: Пути, которые в норме не интересны: их дёргают машины, а не человек.
+QUIET_PATHS = frozenset({"/api/health"})
+
+
+class AccessLogMiddleware(BaseHTTPMiddleware):
+    """Строка доступа со временем ответа.
+
+    ⚠️ Меряется время до **начала** ответа, а не до последнего байта тела.
+    Для BaseHTTPMiddleware иначе и не выйдет: ответ здесь потоковый. Нас это
+    устраивает — интересна работа сервера (база, сеть, разбор), а не скорость
+    канала до браузера. Для видео разница принципиальна: отдача часового файла
+    длится часами, и её длительность ничего не говорит о нагрузке.
+
+    Самое внешнее middleware, поэтому в замер попадают и остальные: проверка
+    сессии, CSRF, сжатие ответа.
+    """
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
+        started = time.perf_counter()
+        target = request.url.path
+        if request.url.query:
+            target = f"{target}?{request.url.query}"
+        client = request.client.host if request.client else "-"
+
+        try:
+            response = await call_next(request)
+        except Exception:
+            elapsed = (time.perf_counter() - started) * 1000
+            # Само исключение залогирует Starlette; здесь важна длительность:
+            # упавший через тридцать секунд запрос и упавший сразу — разные беды.
+            access_log.warning("%s %s — исключение за %.0f мс (%s)", request.method, target, elapsed, client)
+            raise
+
+        elapsed = (time.perf_counter() - started) * 1000
+        if elapsed >= SLOW_REQUEST_MS:
+            level = logging.WARNING
+        elif request.url.path in QUIET_PATHS:
+            level = logging.DEBUG
+        else:
+            level = logging.INFO
+
+        access_log.log(
+            level, "%s %s %s за %.0f мс (%s)", request.method, target, response.status_code, elapsed, client
+        )
+        return response
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -153,3 +212,6 @@ def install(app: ASGIApp) -> None:
     app.add_middleware(AuthMiddleware)
     app.add_middleware(CsrfMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
+    # Замер добавляется последним и оказывается самым внешним: время должно
+    # включать всё, что сервер делает с запросом, а не только работу обработчика.
+    app.add_middleware(AccessLogMiddleware)
