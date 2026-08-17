@@ -350,6 +350,9 @@ def catalog_cards(ids: Annotated[list[int], Body(embed=True)]) -> list[CatalogCa
                 .where(
                     Episode.series_id.in_(ids),
                     Episode.episode_type.notin_(NON_CONTENT_EPISODE_TYPES),
+                    # Заготовки будущих серий не в счёт, иначе анонс с двумя
+                    # десятками пустых записей перестал бы им считаться.
+                    Episode.is_active.is_(True),
                 )
                 .group_by(Episode.series_id)
             ).all()

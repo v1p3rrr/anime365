@@ -18,6 +18,7 @@ from app.services.anime365 import Anime365Client, Anime365Error
 from app.services.audio import normalize_lang
 from app.services.coverage import (
     NON_CONTENT_EPISODE_TYPES,
+    is_placeholder_episode,
     median_duration,
     resolve_is_movie,
     build_quality_summary,
@@ -46,11 +47,19 @@ def _parse_episode_num(value: str | None) -> float | None:
         return None
 
 
-async def ensure_details(series_id: int) -> Series | None:
-    """Догружает описания, ссылки и эпизоды — их нет в списочном ответе каталога."""
+async def ensure_details(series_id: int, force: bool = False) -> Series | None:
+    """Догружает описания, ссылки и эпизоды — их нет в списочном ответе каталога.
+
+    `force` перечитывает всё заново. ⚠️ Без него список серий застывал навсегда:
+    флаг `has_details` ставится один раз, полный синк каталога его намеренно не
+    трогает, и новых серий у онгоинга страница больше не видела. Заметно это
+    стало, когда заготовки будущих серий перестали показываться: серия выходит,
+    её запись на сайте становится активной — а у нас в кэше по-прежнему
+    заготовка.
+    """
     with session_scope() as session:
         series = session.get(Series, series_id)
-        if series is not None and series.has_details:
+        if series is not None and series.has_details and not force:
             return series
 
     async with Anime365Client() as client:
@@ -70,26 +79,26 @@ async def ensure_details(series_id: int) -> Series | None:
 
         episodes = data.get("episodes") or []
         existing = {
-            e.id for e in session.execute(
+            e.id: e for e in session.execute(
                 select(Episode).where(Episode.series_id == series_id)
             ).scalars()
         }
         for item in episodes:
-            if item["id"] in existing:
-                continue
-            session.add(
-                Episode(
-                    id=item["id"],
-                    series_id=series_id,
-                    episode_int=str(item.get("episodeInt") or ""),
-                    episode_num=_parse_episode_num(item.get("episodeInt")),
-                    episode_full=item.get("episodeFull") or "",
-                    episode_title=item.get("episodeTitle") or "",
-                    episode_type=item.get("episodeType") or "",
-                    first_uploaded=item.get("firstUploadedDateTime"),
-                    is_active=bool(item.get("isActive", 1)),
-                )
-            )
+            # ⚠️ Существующие записи именно обновляются, а не пропускаются.
+            # Раньше здесь стоял `continue`, и запись, однажды попавшая в кэш,
+            # больше не менялась никогда. Для заготовки будущей серии это
+            # означало бы, что она останется заготовкой и после выхода серии.
+            row = existing.get(item["id"])
+            if row is None:
+                row = Episode(id=item["id"], series_id=series_id)
+                session.add(row)
+            row.episode_int = str(item.get("episodeInt") or "")
+            row.episode_num = _parse_episode_num(item.get("episodeInt"))
+            row.episode_full = item.get("episodeFull") or ""
+            row.episode_title = item.get("episodeTitle") or ""
+            row.episode_type = item.get("episodeType") or ""
+            row.first_uploaded = item.get("firstUploadedDateTime")
+            row.is_active = bool(item.get("isActive", 1))
 
     with session_scope() as session:
         return session.get(Series, series_id)
@@ -130,6 +139,10 @@ def schedule_translation_refresh(series_id: int) -> bool:
 
     async def _run() -> None:
         try:
+            # Список серий обновляется тем же фоном и с той же периодичностью:
+            # у онгоинга новая серия и новые переводы приезжают вместе, а
+            # отдельного расписания ради одного запроса заводить незачем.
+            await ensure_details(series_id, force=True)
             await ensure_translations(series_id, force=True)
         except Exception:
             # Фоновая задача не имеет права ронять ничего: страница уже отдана.
@@ -388,8 +401,14 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
     _attach_episode_numbers(translations, episodes)
 
     # Трейлеры и реклама лежат вперемешку с сериями и имеют собственные номера,
-    # поэтому в подсчёт «всего серий» они не входят.
-    content_episodes = [e for e in episodes if e.episode_type not in NON_CONTENT_EPISODE_TYPES]
+    # поэтому в подсчёт «всего серий» они не входят. Заготовки будущих серий —
+    # тоже: см. `is_placeholder_episode`.
+    content_episodes = [
+        e
+        for e in episodes
+        if e.episode_type not in NON_CONTENT_EPISODE_TYPES
+        and not is_placeholder_episode(e.episode_type, e.is_active)
+    ]
     # Связка из нескольких movie-эпизодов — не фильм: у частей должны быть
     # разные имена файлов, а у фильма номера серии в имени нет.
     series_data["effective_is_movie"] = resolve_is_movie(
@@ -497,6 +516,17 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
             }
         )
 
+    # Заготовки будущих серий на страницу не попадают: обещать серию, которой
+    # нет и не будет, хуже, чем не показать ничего. Исключение — заготовка, к
+    # которой у пользователя уже лежит файл: скрыть её значило бы спрятать его
+    # собственные данные из-за чужого флага.
+    shown_episodes = [
+        e
+        for e in episodes
+        if not is_placeholder_episode(e.episode_type, e.is_active)
+        or e.episode_num in have_by_episode
+    ]
+
     return {
         "series": series_data,
         "mappings": mappings,
@@ -537,7 +567,7 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
                 # Доступные переводы этой серии — для выбора при загрузке.
                 "translations": by_episode.get(e.episode_num, []),
             }
-            for e in episodes
+            for e in shown_episodes
         ],
         "total_episodes": total,
         # Типичная длительность серии по тайтлу — медиана серийных медиан.
@@ -551,7 +581,7 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
                 if d
             ]
         ),
-        "summary": build_summary(normalized, total),
+        "summary": build_summary(normalized, total, series_data["type"]),
         # Точные ступени берём из кэша embed: если пользователь уже нажимал
         # «уточнить», сводка обязана показывать факт, а не прежнюю прикидку.
         "quality": build_quality_summary(normalized, total, exact_heights_for_series(series_id)),

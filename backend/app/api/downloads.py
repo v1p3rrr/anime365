@@ -282,26 +282,45 @@ def list_tasks(
     limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> dict[str, Any]:
     with session_scope() as session:
-        # ⚠️ Порядок в списке обязан совпадать с порядком скачивания: воркер
-        # берёт наименьшую позицию, значит сверху должна быть та задача, что
-        # пойдёт первой. Раньше список шёл по времени создания вниз — то есть
-        # ровно наоборот, и первой качалась нижняя строка. Перетаскивание при
-        # таком показе было бы просто обманом.
+        # ⚠️ У двух половин списка порядок разный, и одним `order_by` их не
+        # покрыть — на этом уже обожглись.
         #
-        # Завершённые — отдельная история: там интереснее свежее, поэтому они
-        # сортируются по времени завершения вниз. Разделение делает клиент, а
-        # здесь достаточно отдать оба набора в своём порядке.
-        stmt = (
-            select(DownloadTask)
-            .order_by(
-                DownloadTask.status.in_(TERMINAL_STATUSES),
-                func.coalesce(DownloadTask.position, DownloadTask.id),
+        # **Активные** идут в порядке скачивания: воркер берёт наименьшую
+        # позицию, значит сверху должна быть та задача, что пойдёт первой.
+        # Иначе перетаскивание было бы обманом.
+        #
+        # **Завершённые** — наоборот, от свежего к давнему: разбираются они
+        # сверху вниз, и вчерашняя загрузка интереснее позапрошлогодней.
+        # Здесь и была ошибка: сортировка стояла одна на всех, по позиции
+        # вверх, — то есть завершённые показывались от самых старых. Хуже
+        # того, `limit` съедали именно они, и до свежих список не доходил
+        # вовсе. В комментарии при этом было написано, как задумано, а не как
+        # получилось.
+        #
+        # Отсюда два запроса вместо одного: `limit` — потолок на каждую
+        # половину, и активные больше не вытесняют завершённые.
+        def _run(terminal: bool, *order):
+            stmt = select(DownloadTask).order_by(*order).limit(limit)
+            stmt = stmt.where(
+                DownloadTask.status.in_(TERMINAL_STATUSES)
+                if terminal
+                else DownloadTask.status.not_in(TERMINAL_STATUSES)
             )
-            .limit(limit)
-        )
-        if status:
-            stmt = stmt.where(DownloadTask.status == status)
-        tasks = session.execute(stmt).scalars().all()
+            if status:
+                stmt = stmt.where(DownloadTask.status == status)
+            return session.execute(stmt).scalars().all()
+
+        tasks = [
+            *_run(False, func.coalesce(DownloadTask.position, DownloadTask.id)),
+            # `finished_at` бывает пустым у задач, завершённых до того, как его
+            # начали проставлять; для них берём время создания, а последним
+            # ключом — id, чтобы одинаковые метки не переставлялись местами.
+            *_run(
+                True,
+                func.coalesce(DownloadTask.finished_at, DownloadTask.created_at).desc(),
+                DownloadTask.id.desc(),
+            ),
+        ]
 
         counts = {
             status: count

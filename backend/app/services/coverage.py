@@ -13,12 +13,64 @@ from typing import Iterable
 # Нас интересуют только эти языки; voiceOther и typeLang == "er" отбрасываем.
 INTERESTING_LANGS = ("ru", "en", "ja")
 
-# Типы эпизодов, которые не являются контентом: трейлеры, реклама, промо.
-NON_CONTENT_EPISODE_TYPES = frozenset({"preview", "pv", "cm"})
+# Типы эпизодов, которые не являются контентом: трейлеры, реклама, заставки.
+#
+# ⚠️ Набор выведен из живых данных, а не из документации: в swagger заявлены
+# только `tv, movie, ova, ona, special`, а обход 482 эпизодов у 80 случайных
+# тайтлов дал одиннадцать значений — сверх заявленных ещё `preview`, `ending`,
+# `other`, `menu`, `opening`, `tv_special`. Заставки и «Другой N серия» здесь
+# не мелочь: у «Врат» это 33 записи против 24 настоящих серий, и все они
+# попадали в счёт «всего серий».
+NON_CONTENT_EPISODE_TYPES = frozenset(
+    {"preview", "pv", "cm", "opening", "ending", "other", "menu"}
+)
 
-# Контент, но не основной сезон. Обычно нужны именно основные серии, поэтому
-# в батч спешлы и OVA попадают только по явному согласию пользователя.
-EXTRA_EPISODE_TYPES = frozenset({"special", "ova"})
+#: Какие типы эпизодов у тайтла основные — зависит от типа самого тайтла.
+#:
+#: ⚠️ Раньше «добавкой» считались `special` и `ova` независимо от того, что за
+#: тайтл открыт. У тайтла-OVA основными оказывались несуществующие серии, а всё
+#: настоящее уезжало в добавку: страница показывала «4 авторов · 0 переводов»
+#: при восемнадцати живых переводах (тайтл 15594). Добавка имеет смысл только
+#: относительно основного — у OVA основное это и есть OVA.
+_MAIN_BY_SERIES_TYPE = {
+    "movie": frozenset({"movie"}),
+    "ova": frozenset({"ova"}),
+    "special": frozenset({"special"}),
+    "tv_special": frozenset({"special", "tv_special"}),
+}
+
+#: Основное у сериала: серии и веб-серии.
+_MAIN_DEFAULT = frozenset({"tv", "ona", "movie"})
+
+
+def is_placeholder_episode(episode_type: str, is_active: bool) -> bool:
+    """Заготовка серии, а не серия: на сайте её нет и переводов у неё не будет.
+
+    ⚠️ Anime365 заводит пустые записи впрок, и их много. У «Врат» под первым
+    куром лежат 24 серии при `numberOfEpisodes: 12` — вторые двенадцать
+    пустые, хотя второй кур давно живёт отдельным тайтлом. Из-за них страница
+    показывала два кура одним тайтлом и обещала серии, которых там нет.
+
+    Признак — `isActive`, и он проверен, а не выведен по смыслу: у 45 случайных
+    тайтлов из 710 эпизодов 126 неактивных, и **ни у одного из них нет ни
+    одного перевода**. Обратное правило («нет переводов — значит заготовка»)
+    не годится: у 182 активных эпизодов переводов тоже нет, и это нормальные
+    серии, к которым просто никто ничего не выложил.
+
+    У заготовок и дата-заглушка (`2000-01-01`, `2010-01-01`), но опираться на
+    неё не стоит: `firstUploadedDateTime` и у настоящих серий значит не дату
+    эфира, а момент попадания файла на сайт.
+    """
+    return not is_active
+
+
+def main_episode_types(series_type: str) -> frozenset[str]:
+    """Что у тайтла этого типа считается основными сериями.
+
+    Всё остальное содержательное — добавка: спешлы, OVA и прочее, что в батч
+    попадает только по явному согласию пользователя.
+    """
+    return _MAIN_BY_SERIES_TYPE.get(series_type or "", _MAIN_DEFAULT)
 
 # Потолок скачивания. Проверено: у источников 2160p ступени download всё равно
 # [1080, 720, 360] — 4K скачать нельзя. Поэтому оценку качества обрезаем здесь же,
@@ -93,18 +145,31 @@ class AuthorGroup:
         }
 
 
-def build_summary(translations: list[dict], total_episodes: int) -> list[dict]:
+def build_summary(
+    translations: list[dict], total_episodes: int, series_type: str = ""
+) -> list[dict]:
     """Группировка переводов: язык → тип → автор.
 
     На выходе структура, которую UI рисует аккордеонами: содержимое раскрывается
     по требованию, поэтому две тысячи переводов не попадают в DOM разом.
+
+    `series_type` решает, что у этого тайтла основные серии, а что добавка:
+    см. `main_episode_types`.
     """
     grouped: dict[tuple[str, str], dict[str, AuthorGroup]] = defaultdict(dict)
+    main_types = main_episode_types(series_type)
 
     for item in translations:
         lang = item.get("type_lang") or ""
         kind = item.get("type_kind") or ""
         if lang not in INTERESTING_LANGS:
+            continue
+
+        # Заставки, трейлеры и «Другой N серия» — не серии. Их переводы попадали
+        # в основной список и путали счётчик: у тайтла-OVA единственным
+        # «основным» оказывался перевод заставки.
+        episode_type = (item.get("episode_type") or "").strip()
+        if episode_type in NON_CONTENT_EPISODE_TYPES:
             continue
 
         authors = (item.get("authors_summary") or "").strip() or "без указания автора"
@@ -116,7 +181,9 @@ def build_summary(translations: list[dict], total_episodes: int) -> list[dict]:
 
         # Спешлы и OVA — тоже контент, но не основной сезон. Держим их в
         # отдельном списке, чтобы тумблер в батче реально менял состав задач.
-        if (item.get("episode_type") or "") in EXTRA_EPISODE_TYPES:
+        # Пустой тип трактуем как основной: он встречается у переводов, чей
+        # эпизод ещё не подтянулся в кэш, и прятать их в добавку неверно.
+        if episode_type and episode_type not in main_types:
             group.extra_translation_ids.append(item["id"])
         else:
             group.translation_ids.append(item["id"])

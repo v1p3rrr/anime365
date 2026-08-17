@@ -439,7 +439,13 @@ async def run_for_series(
     queued = 0
     for choice in plan:
         try:
-            result = enqueue(choice.translation_id, "subtitles", user_id=user_id)
+            # ⚠️ Тип задачи — «subtitle» в единственном числе, и это не вкус.
+            # Воркер узнаёт субтитры строгим равенством, а всё остальное качает
+            # как видео. Стоявшее здесь «subtitles» проверку проходило (её не
+            # было) и выкачивало видеофайлы целиком: сотни мегабайт вместо
+            # десятков килобайт. Набор допустимых значений теперь сторожит
+            # сам `enqueue`.
+            result = enqueue(choice.translation_id, "subtitle", user_id=user_id)
         except QueueError as exc:
             log.warning(
                 "Автоскачивание: перевод %s не поставлен: %s", choice.translation_id, exc

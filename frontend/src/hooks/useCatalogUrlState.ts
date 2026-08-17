@@ -32,6 +32,22 @@ import type { CatalogFilters as Filters, SortField } from '../api/client'
 export const DEFAULT_SORT: SortField = 'score'
 export const DEFAULT_SORT_DIR = 'desc'
 
+/**
+ * Каталог по умолчанию показывает то, что уже лежит в библиотеке.
+ *
+ * Просьба пользователя, и она про то, чем каталог занят на самом деле: своё
+ * смотрят и докачивают каждый день, а по всем 29 тысячам ходят изредка и с
+ * поиском. Выключается той же чипсой — состояние «показать всё» пишется в
+ * адрес явным `local=all`, иначе им нельзя было бы поделиться.
+ *
+ * ⚠️ На вкладке онгоингов умолчание другое (`undefined`): там смысл ровно
+ * обратный — увидеть, что сейчас выходит, включая то, чего у себя ещё нет.
+ */
+export const DEFAULT_LOCAL: Filters['local'] = 'only'
+
+/** Значение в адресе, означающее «фильтра нет». */
+const LOCAL_ANY = 'all'
+
 export interface CatalogState {
   search: string
   filters: Filters
@@ -50,7 +66,10 @@ function readList(raw: string | null): string[] | undefined {
   return items.length > 0 ? items : undefined
 }
 
-export function parseCatalogState(params: URLSearchParams): CatalogState {
+export function parseCatalogState(
+  params: URLSearchParams,
+  defaultLocal: Filters['local'] = DEFAULT_LOCAL,
+): CatalogState {
   const genres = readList(params.get('genres'))
     ?.map(Number)
     .filter((id) => Number.isFinite(id))
@@ -70,8 +89,15 @@ export function parseCatalogState(params: URLSearchParams): CatalogState {
       scoreFrom: readNumber(params.get('scoreFrom')),
       isAiring: params.get('airing') === '1' || undefined,
       // Значение из адреса не доверяем на слово: чужой набор букв здесь
-      // сломал бы запрос к API, а не показал пустой список.
-      local: local === 'only' || local === 'missing' ? local : undefined,
+      // сломал бы запрос к API, а не показал пустой список. Отсутствие
+      // параметра означает умолчание, а не «фильтра нет»: «нет» пишется
+      // явным `all`.
+      local:
+        local === 'only' || local === 'missing'
+          ? local
+          : local === LOCAL_ANY
+            ? undefined
+            : defaultLocal,
       mappingProblem: params.get('problem') === '1' || undefined,
       has: readList(params.get('has')),
       hasAll: params.get('hasAll') === '1' || undefined,
@@ -81,7 +107,10 @@ export function parseCatalogState(params: URLSearchParams): CatalogState {
   }
 }
 
-export function serializeCatalogState(state: CatalogState): URLSearchParams {
+export function serializeCatalogState(
+  state: CatalogState,
+  defaultLocal: Filters['local'] = DEFAULT_LOCAL,
+): URLSearchParams {
   const params = new URLSearchParams()
   const { search, filters, page } = state
 
@@ -94,7 +123,10 @@ export function serializeCatalogState(state: CatalogState): URLSearchParams {
   if (filters.yearTo != null) params.set('yearTo', String(filters.yearTo))
   if (filters.scoreFrom != null) params.set('scoreFrom', String(filters.scoreFrom))
   if (filters.isAiring) params.set('airing', '1')
-  if (filters.local) params.set('local', filters.local)
+  // Умолчание в адрес не пишем, а вот отказ от него — пишем: без явного `all`
+  // ссылка «показать весь каталог» при следующем открытии снова отфильтровалась
+  // бы по библиотеке.
+  if (filters.local !== defaultLocal) params.set('local', filters.local ?? LOCAL_ANY)
   if (filters.mappingProblem) params.set('problem', '1')
   if (filters.has?.length) params.set('has', filters.has.join(','))
   if (filters.hasAll) params.set('hasAll', '1')
@@ -107,20 +139,27 @@ export function serializeCatalogState(state: CatalogState): URLSearchParams {
   return params
 }
 
-export function useCatalogUrlState() {
+export function useCatalogUrlState(defaultLocal: Filters['local'] = DEFAULT_LOCAL) {
   const [params, setParams] = useSearchParams()
 
-  const state = useMemo(() => parseCatalogState(params), [params])
+  const state = useMemo(
+    () => parseCatalogState(params, defaultLocal),
+    [params, defaultLocal],
+  )
 
   const update = useCallback(
     (patch: Partial<CatalogState>) => {
       setParams(
-        (current) => serializeCatalogState({ ...parseCatalogState(current), ...patch }),
+        (current) =>
+          serializeCatalogState(
+            { ...parseCatalogState(current, defaultLocal), ...patch },
+            defaultLocal,
+          ),
         // Замена, а не новая запись истории: см. докстроку модуля.
         { replace: true },
       )
     },
-    [setParams],
+    [setParams, defaultLocal],
   )
 
   return { state, update }

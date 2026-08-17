@@ -142,7 +142,11 @@ def get_local_coverage(series_id: int, total_episodes: int) -> dict[str, Any]:
             for e in session.execute(
                 select(Episode).where(Episode.series_id == series_id)
             ).scalars()
-            if e.episode_num is not None and e.episode_type not in NON_CONTENT_EPISODE_TYPES
+            if e.episode_num is not None
+            and e.episode_type not in NON_CONTENT_EPISODE_TYPES
+            # Заготовки будущих серий не в счёт: иначе «не хватает» показывало бы
+            # серии, которых на сайте нет. См. `is_placeholder_episode`.
+            and e.is_active
         }
 
     by_role: dict[str, set[float]] = {}
@@ -301,6 +305,7 @@ def count_content_episodes(series_id: int) -> int:
             select(func.count(Episode.id)).where(
                 Episode.series_id == series_id,
                 Episode.episode_type.not_in(NON_CONTENT_EPISODE_TYPES),
+                Episode.is_active.is_(True),
             )
         ).scalar() or 0
 
@@ -343,7 +348,10 @@ def series_badges(series_ids: list[int] | None = None) -> dict[int, dict[str, An
 
         api_stmt = (
             select(Episode.series_id, func.count(func.distinct(Episode.episode_num)))
-            .where(Episode.episode_type.not_in(NON_CONTENT_EPISODE_TYPES))
+            .where(
+                Episode.episode_type.not_in(NON_CONTENT_EPISODE_TYPES),
+                Episode.is_active.is_(True),
+            )
             .group_by(Episode.series_id)
         )
         planned_stmt = select(Series.id, Series.number_of_episodes)

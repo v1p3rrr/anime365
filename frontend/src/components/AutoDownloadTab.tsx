@@ -171,7 +171,7 @@ export function AutoDownloadTab() {
                 <Text
                   size="sm"
                   component={Link}
-                  to={`/title/${row.series_id}`}
+                  to={`/series/${row.series_id}`}
                   style={{ flex: 1, wordBreak: 'break-word' }}
                 >
                   {row.title_ru || row.title_romaji || `#${row.series_id}`}

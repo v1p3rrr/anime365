@@ -405,6 +405,63 @@ class TestPlan:
         assert resolve_for_series(SERIES) == {}
 
 
+class TestWhatLandsInTheQueue:
+    """Что именно ставится в очередь — файл субтитров, а не видео.
+
+    ⚠️ Проверка появилась после живой ошибки: движок передавал тип задачи
+    `"subtitles"` во множественном числе, а воркер узнаёт субтитры строгим
+    равенством `"subtitle"` и всё остальное качает как видео. Автоскачивание
+    субтитров тихо выкачивало видеофайлы целиком.
+
+    Прежние тесты этого не ловили, потому что заканчивались на `plan_for_series`
+    — она возвращает выбор, но в очередь ничего не кладёт. Поэтому здесь
+    вызывается именно `run_for_series`.
+    """
+
+    @staticmethod
+    def _softsubs(monkeypatch) -> None:
+        async def fake_embed(translation_id: int, **kwargs):
+            return {"has_subtitles": True}
+
+        monkeypatch.setattr("app.services.title_service.get_embed", fake_embed)
+
+    def test_the_task_is_a_subtitle_task(self, monkeypatch) -> None:
+        from app.models.downloads import DownloadTask
+        from app.services.autodownload import run_for_series
+
+        self._softsubs(monkeypatch)
+        _video(1)
+        _translation(101, 1, "Kazoku")
+        with session_scope() as session:
+            session.merge(AutoDownloadRule(lang="ru", mode="all", priorities=["kazoku"]))
+
+        try:
+            result = asyncio.run(run_for_series(SERIES))
+            assert result["queued"] == 1
+
+            with session_scope() as session:
+                kinds = (
+                    session.execute(
+                        select(DownloadTask.kind).where(DownloadTask.translation_id == 101)
+                    )
+                    .scalars()
+                    .all()
+                )
+            assert kinds == ["subtitle"]
+        finally:
+            with session_scope() as session:
+                session.execute(delete(DownloadTask).where(DownloadTask.series_id == SERIES))
+
+    def test_an_unknown_kind_is_refused_instead_of_becoming_video(self) -> None:
+        """Опечатка в типе обязана падать, а не менять смысл задачи."""
+        from app.services.download_queue import QueueError, enqueue
+
+        _translation(101, 1, "Kazoku")
+
+        with pytest.raises(QueueError):
+            enqueue(101, "subtitles")
+
+
 class TestAutomaticScope:
     """Автоматический проход берёт только то, что появилось при нём.
 

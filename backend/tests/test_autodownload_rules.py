@@ -28,7 +28,17 @@ OTHER = 970_002
 
 @pytest.fixture(autouse=True)
 def clean():
-    """Настройки глобальные, поэтому между тестами их надо убирать."""
+    """Настройки глобальные, поэтому между тестами их надо убирать.
+
+    ⚠️ Тайтлы заводятся здесь же, и это не украшение. У `series_autodownload`
+    внешний ключ на `series`, поэтому без строки тайтла вставка падает с
+    `FOREIGN KEY constraint failed`. На машине разработчика этого не видно:
+    файл тестовой БД лежит во временной папке и переживает прогоны, так что
+    тайтлы оставались от соседних тестов. На **чистой** базе (свежий
+    контейнер, CI) в этом файле падал двадцать один тест — ровно та ловушка,
+    про которую предупреждает `conftest._schema`.
+    """
+    from app.models.catalog import Series
 
     def wipe() -> None:
         with session_scope() as session:
@@ -40,6 +50,9 @@ def clean():
             )
 
     wipe()
+    with session_scope() as session:
+        session.merge(Series(id=SERIES, title="Rules Test", type="tv"))
+        session.merge(Series(id=OTHER, title="Rules Test 2", type="tv"))
     yield
     wipe()
 

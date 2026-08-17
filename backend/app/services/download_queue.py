@@ -59,6 +59,16 @@ log = logging.getLogger(__name__)
 SUBTITLE_EXTENSION = ".ass"
 VIDEO_EXTENSION = ".mp4"
 
+#: Что вообще можно поставить в очередь.
+#:
+#: ⚠️ Набор проверяется при постановке, и это не формальность. Воркер узнаёт
+#: субтитры по строгому равенству `kind == "subtitle"`, а всё остальное качает
+#: как видео. Опечатка в вызывающем коде поэтому не падает, а **молча меняет
+#: смысл задачи**: автоскачивание субтитров передавало `"subtitles"` во
+#: множественном числе и выкачивало видеофайлы целиком вместо файлов с
+#: субтитрами. Проверка здесь превращает такую ошибку в исключение на месте.
+TASK_KINDS = frozenset({"video", "subtitle", "audio"})
+
 
 class QueueError(RuntimeError):
     pass
@@ -652,6 +662,9 @@ def enqueue(
     user_id: int = 1,
 ) -> dict[str, Any]:
     """Ставит задачу в очередь. Идемпотентно по переводу, типу и качеству."""
+    if kind not in TASK_KINDS:
+        raise QueueError(f"Неизвестный тип задачи: {kind!r}")
+
     with session_scope() as session:
         translation = session.get(Translation, translation_id)
         if translation is None:

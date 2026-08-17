@@ -11,7 +11,7 @@ import { ErrorState } from '../components/ErrorState'
 import { OnlineSearchModal } from '../components/OnlineSearchModal'
 import { SyncIndicator } from '../components/SyncIndicator'
 import { useCatalogIds } from '../hooks/useCatalogIds'
-import { useCatalogUrlState } from '../hooks/useCatalogUrlState'
+import { DEFAULT_LOCAL, useCatalogUrlState } from '../hooks/useCatalogUrlState'
 import { useVirtualCatalog } from '../hooks/useVirtualCatalog'
 import { usePreferences } from '../stores/preferences'
 import { useT } from '../i18n'
@@ -25,7 +25,9 @@ export function CatalogPage({ onlyAiring = false }: Props) {
   // тайтла возвращает в пустой каталог, а ссылкой на подборку не поделиться.
   // По умолчанию сортируем по оценке: в каталоге 29 тысяч тайтлов, и первым
   // экраном полезнее видеть лучшее, а не самое свежедобавленное.
-  const { state, update } = useCatalogUrlState()
+  // На вкладке онгоингов умолчание обратное: там смотрят, что сейчас выходит,
+  // включая то, чего у себя ещё нет. В каталоге — наоборот, см. DEFAULT_LOCAL.
+  const { state, update } = useCatalogUrlState(onlyAiring ? undefined : DEFAULT_LOCAL)
   const { filters, page } = state
 
   // Поле ввода — отдельным состоянием, чтобы адрес не переписывался на каждую

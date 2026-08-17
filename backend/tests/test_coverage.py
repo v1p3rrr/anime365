@@ -233,6 +233,96 @@ class TestExtraEpisodeSplit:
         # Пустой список — сигнал UI не показывать тумблер вовсе.
         assert sections[0]["groups"][0]["extra_translation_ids"] == []
 
+    def test_for_an_ova_title_ova_episodes_are_the_main_ones(self) -> None:
+        """Живой случай: тайтл 15594 показывал «4 авторов · 0 переводов».
+
+        Тайтл сам по себе OVA, все его переводы висят на эпизодах типа `ova` —
+        и все до одного уезжали в добавку, потому что «добавкой» считался тип
+        эпизода безотносительно тайтла. В основном списке не оставалось ничего,
+        а на нём держатся и счётчик, и кнопка батча.
+        """
+        from app.services.coverage import build_summary
+
+        sections = build_summary(
+            [self._translation(1, "ova", 1), self._translation(2, "ova", 2)],
+            total_episodes=2,
+            series_type="ova",
+        )
+        group = sections[0]["groups"][0]
+        assert group["translation_ids"] == [1, 2]
+        assert group["extra_translation_ids"] == []
+        assert group["count"] == 2
+
+    def test_for_a_tv_title_ova_episodes_stay_extra(self) -> None:
+        """Обратная сторона того же правила — она не должна сломаться."""
+        from app.services.coverage import build_summary
+
+        sections = build_summary(
+            [self._translation(1, "tv", 1), self._translation(2, "ova", 1)],
+            total_episodes=1,
+            series_type="tv",
+        )
+        group = sections[0]["groups"][0]
+        assert group["translation_ids"] == [1]
+        assert group["extra_translation_ids"] == [2]
+
+    def test_openings_and_endings_are_not_translations_of_episodes(self) -> None:
+        """Заставки в сводку не идут: у тайтла-OVA единственным «основным»
+        переводом оказывалась именно заставка."""
+        from app.services.coverage import build_summary
+
+        sections = build_summary(
+            [
+                self._translation(1, "ova", 1),
+                self._translation(2, "opening", 1),
+                self._translation(3, "ending", 1),
+                self._translation(4, "other", 1),
+            ],
+            total_episodes=1,
+            series_type="ova",
+        )
+        group = sections[0]["groups"][0]
+        assert group["translation_ids"] == [1]
+        assert group["extra_translation_ids"] == []
+
+    def test_an_unknown_episode_type_counts_as_a_main_episode(self) -> None:
+        """Тип эпизода бывает неизвестен: перевод пришёл, а эпизод ещё нет.
+
+        Прятать такое в добавку нельзя — из добавки не качают без явного
+        согласия, и перевод молча выпал бы из батча.
+        """
+        from app.services.coverage import build_summary
+
+        sections = build_summary([self._translation(1, "", 1)], total_episodes=1)
+        assert sections[0]["groups"][0]["translation_ids"] == [1]
+
+
+class TestPlaceholderEpisodes:
+    """Пустые записи серий, заведённые сайтом впрок.
+
+    Живой случай: у «Врат» (тайтл 12074) под первым куром лежат 24 серии при
+    `numberOfEpisodes: 12`. Вторые двенадцать — заготовки: второй кур давно
+    живёт отдельным тайтлом, переводов у них нет и не будет. Страница из-за
+    них показывала два кура одним тайтлом.
+    """
+
+    def test_an_inactive_episode_is_a_placeholder(self) -> None:
+        from app.services.coverage import is_placeholder_episode
+
+        assert is_placeholder_episode("tv", is_active=False) is True
+
+    def test_an_active_episode_is_not(self) -> None:
+        from app.services.coverage import is_placeholder_episode
+
+        assert is_placeholder_episode("tv", is_active=True) is False
+
+    def test_absence_of_translations_alone_does_not_make_a_placeholder(self) -> None:
+        """Замерено: у 45 случайных тайтлов 182 активных эпизода без единого
+        перевода — это нормальные серии, к которым никто ничего не выложил."""
+        from app.services.coverage import is_placeholder_episode
+
+        assert is_placeholder_episode("tv", is_active=True) is False
+
 
 class TestQualityRefinement:
     """Точные ступени из embed перекрывают оценку по разрешению исходника.
