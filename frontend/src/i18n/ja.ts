@@ -977,7 +977,7 @@ export const ja: Dictionary = {
   source: {
     anilist_id: 'AniList ID による',
     mal_id: 'MAL ID による',
-    original_title: '日本語名による',
+    original_title: '.nfo の名称による',
     exact_title: '完全一致による',
     premiered: '放送開始日による',
     fuzzy: '類似名による',

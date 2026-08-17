@@ -65,6 +65,29 @@
   file: "[Anime365] Natsu e no Tunnel Sayonara no Deguchi - 01 (t5190458) (1).ass"
   expect: { rule: anime365_own, episode: 1, translation_id: 5190458 }
 
+- name: Наша загрузка — id перевода в метке группы
+  scope: series
+  file: "Zombie Land Saga S02E05 [anime365_SebiVoice_t4505262] WEBDL-1080p.ru.mp4"
+  expect: { rule: anime365_ours, season: 2, episode: 5, translation_id: 4505262, language: ru }
+
+# ⚠️ Идентификаторов в имени ДВА: чужой унаследован от видеофайла (иначе
+# Jellyfin не подхватит субтитры), свой стоит последним. Берётся последний —
+# иначе субтитры получили бы язык и вид перевода видеодорожки.
+- name: Наши субтитры к нашему же видео — берётся свой id, а не видеофайла
+  scope: series
+  file: "Show S01E06 [anime365_Kazoku_t111] WEBDL-1080p.anime365_Wakanim_t222.ru.ass"
+  expect: { rule: anime365_ours, season: 1, episode: 6, translation_id: 222, language: ru }
+
+- name: Наши субтитры к чужому видео — основа имени чужая
+  scope: series
+  file: "Yuru Camp S02E01 - Curry Noodles [Ohys-Raws] Bluray-720p.anime365_Kazoku_t333.ja.ass"
+  expect: { rule: anime365_ours, season: 2, episode: 1, translation_id: 333, language: ja }
+
+- name: Наша загрузка в корне фильмов
+  scope: movie
+  file: "Chainsaw Man Movie Reze-hen S01E01 [anime365_Crunchyroll_t9001] WEBDL-1080p.ru.mp4"
+  expect: { rule: anime365_ours, season: 1, episode: 1, translation_id: 9001, language: ru }
+
 - name: Фильм по схеме Radarr
   scope: movie
   file: "Your Name. (2016) - [Bluray-1080p] [AV1] [Opus 2.0] [JA].mkv"

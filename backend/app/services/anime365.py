@@ -433,6 +433,21 @@ class Anime365Client:
                 break
         return out
 
+    async def translation(self, translation_id: int) -> dict[str, Any] | None:
+        """Один перевод по его идентификатору.
+
+        Нужен ровно для одного: у файла в имени стоит `t{id}`, а какому тайтлу
+        этот перевод принадлежит — неизвестно. Ответ содержит `seriesId`, и
+        дальше тайтл догружается целиком обычным путём.
+
+        Отдельный метод, а не `translations(series_id)`, потому что вопрос
+        обратный: не «какие переводы у тайтла», а «чей это перевод».
+        """
+        return await self._request(
+            f"/api/translations/{translation_id}",
+            {"fields": "id,seriesId,episodeId,typeKind,typeLang"},
+        )
+
     async def download_sizes(self, info: EmbedInfo) -> dict[str, int]:
         """Вес файла по каждой ступени, до начала загрузки.
 

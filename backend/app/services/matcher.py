@@ -31,11 +31,34 @@ log = logging.getLogger(__name__)
 class MatchSource(str, Enum):
     ANILIST_ID = "anilist_id"
     MAL_ID = "mal_id"
-    ORIGINAL_TITLE = "original_title"
+    #: Совпадение по названию из `.nfo`. Строковое значение осталось прежним
+    #: (`original_title`): оно хранится в базе у каждой привязки и стоит в
+    #: словарях интерфейса, а переименование потребовало бы миграции ради
+    #: внутреннего слова. Само же имя перестало быть честным — тег
+    #: `<originaltitle>` больше не обещает японского, см. `_propose_nfo_titles`.
+    NFO_TITLE = "original_title"
     EXACT_TITLE = "exact_title"
     PREMIERED = "premiered"
     FUZZY = "fuzzy"
     MANUAL = "manual"
+
+
+#: Кана, кандзи и полуширинная катакана. Хирагана и катакана — 3040–30FF,
+#: кандзи — 4E00–9FFF плюс расширение A (3400–4DBF), полуширинные — FF66–FF9F.
+_JAPANESE_SCRIPT = re.compile(r"[぀-ヿ㐀-䶿一-鿿ｦ-ﾟ]")
+
+
+def looks_japanese(value: str) -> bool:
+    """Написано ли название японской письменностью.
+
+    Хватает одного знака: латиница и кана в одном названии встречаются
+    (`NANA-ナナ-`, `16bitセンセーション`), и такое название всё равно японское —
+    искать его надо среди японских, а не среди ромадзи.
+
+    Доли символов, в отличие от определения языка субтитров, здесь не считаются:
+    там речь о тексте в тысячи знаков, здесь — о строке в несколько слов.
+    """
+    return bool(_JAPANESE_SCRIPT.search(value or ""))
 
 
 # Поле season каталога выглядит как «Осень 2015». Месяц премьеры из .nfo
@@ -842,23 +865,51 @@ class Matcher:
                     )
                 )
 
-        out.extend(self._propose_japanese(ctx, nfo))
+        out.extend(self._propose_nfo_titles(ctx, nfo))
         return out
 
-    def _propose_japanese(self, ctx: MatchContext, nfo: NfoData) -> list[MatchResult]:
-        """Кандидат по японскому названию — оно совпадает точно или никак."""
-        if not nfo.original_title:
-            return []
+    def _propose_nfo_titles(self, ctx: MatchContext, nfo: NfoData) -> list[MatchResult]:
+        """Кандидат по названию из `.nfo`: точное совпадение или ничего.
 
-        ids = self.index.by_japanese.get(normalize_title(nfo.original_title)) or []
+        ⚠️ Механизм больше не привязан к письменности, и это не украшение.
+        Раньше он умел ровно одно — взять `<originaltitle>` и поискать его среди
+        японских названий каталога. Так было верно ровно до тех пор, пока
+        Jellyfin писал туда японское.
+
+        Замерено на библиотеке пользователя (450 папок): `<originaltitle>` уже у
+        46 из них латиницей, `<title>` не бывает японским **никогда**, а доля
+        латиницы растёт по мере того, как Jellyfin обновляет метаданные. При
+        этом каждая из строк — полноценный ключ: английское название нашлось в
+        каталоге у 402 папок, ромадзи есть у 29 169 тайтлов из 29 231.
+
+        Поэтому перебираем все названия, что дал `.nfo`, и каждое ищем в
+        индексе по **его собственной** письменности. Порядок каскадов при этом
+        не меняется: идентификаторы из `.nfo` по-прежнему предлагаются раньше,
+        а имя папки сюда не попадает вовсе — оно идёт строковым каскадом.
+        """
+        for raw in (nfo.original_title, nfo.title, nfo.show_title):
+            if not raw:
+                continue
+            found = self._propose_by_title(ctx, nfo, raw)
+            if found:
+                return found
+        return []
+
+    def _propose_by_title(
+        self, ctx: MatchContext, nfo: NfoData, raw: str
+    ) -> list[MatchResult]:
+        # Японский индекс уже, поэтому для японской строки он и точнее: в него
+        # входит только `titles.ja`, а не все написания подряд.
+        index = self.index.by_japanese if looks_japanese(raw) else self.index.by_norm_title
+        ids = index.get(normalize_title(raw)) or []
         if len(ids) == 1:
-            return [MatchResult(ids[0], MatchSource.ORIGINAL_TITLE, 97.0, nfo.original_title)]
+            return [MatchResult(ids[0], MatchSource.NFO_TITLE, 97.0, raw)]
         if not ids:
             return []
 
-        # ⚠️ Одно японское название на несколько записей — это почти всегда
-        # оригинал и его ремейк. 鋼の錬金術師 носят и сериал 2003 года, и
-        # «Brotherhood» 2009-го, и различить их этой строкой **невозможно**.
+        # ⚠️ Одно название на несколько записей — это почти всегда оригинал и
+        # его ремейк. 鋼の錬金術師 носят и сериал 2003 года, и «Brotherhood»
+        # 2009-го, и различить их этой строкой **невозможно**.
         #
         # Зато их различает `anilistid`, и он в том же `.nfo`. Так папка
         # `Fullmetal Alchemist - Brotherhood/Season 1` с 64 файлами уехала на
@@ -870,14 +921,14 @@ class Matcher:
         from_id = self.index.by_anilist.get(nfo.anilist_id) if nfo.anilist_id else None
         if from_id is not None:
             return (
-                [MatchResult(from_id, MatchSource.ORIGINAL_TITLE, 92.0, nfo.original_title)]
+                [MatchResult(from_id, MatchSource.NFO_TITLE, 92.0, raw)]
                 if from_id in ids
                 else []
             )
 
         narrowed = self._disambiguate(ctx, ids)
         if narrowed is not None:
-            return [MatchResult(narrowed, MatchSource.ORIGINAL_TITLE, 92.0, nfo.original_title)]
+            return [MatchResult(narrowed, MatchSource.NFO_TITLE, 92.0, raw)]
         return []
 
     def _verify(

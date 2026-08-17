@@ -977,7 +977,7 @@ export const en: Dictionary = {
   source: {
     anilist_id: 'by AniList ID',
     mal_id: 'by MAL ID',
-    original_title: 'by Japanese title',
+    original_title: 'by title from .nfo',
     exact_title: 'by exact title',
     premiered: 'by premiere date',
     fuzzy: 'by similar title',

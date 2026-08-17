@@ -84,6 +84,24 @@ def sanitize_author(authors: str) -> str:
     return cleaned or "unknown"
 
 
+def author_marker(authors: str, translation_id: int | None = None) -> str:
+    """Метка загрузки: кто перевёл и какой это перевод.
+
+    Идентификатор перевода делает файл **самоописывающимся**: он ведёт в
+    каталоге к тайтлу и серии, и эта связь сильнее папки вокруг файла. Без него
+    файл, скачанный нами, опознавался только по папке и номеру серии — а
+    переехавший в другую папку не опознавался никак. Сам сайт называет свои
+    файлы так же (`… (t4505262).mp4`), и именно они у пользователя всегда
+    привязывались точно.
+
+    ⚠️ Номер приклеивается ПОСЛЕ `sanitize_author`. Обрезка длинного имени
+    группы идёт по `MAX_AUTHOR_CHARS`, и попади номер внутрь — от него осталась
+    бы половина, то есть ссылка на чужой перевод.
+    """
+    marker = f"anime365_{sanitize_author(authors)}"
+    return f"{marker}_t{translation_id}" if translation_id else marker
+
+
 def truncate_to_bytes(name: str, limit: int = MAX_FILENAME_BYTES) -> str:
     """Обрезает имя по границе символов так, чтобы уложиться в лимит байтов."""
     if len(name.encode("utf-8")) <= limit:
@@ -123,6 +141,8 @@ class NamingContext:
     extension: str
     year: int | None = None
     is_movie: bool = False
+    #: Идентификатор перевода Anime365. Попадает в имя файла — см. `author_marker`.
+    translation_id: int | None = None
 
 
 def _episode_code(season: int | None, episode: float) -> str:
@@ -153,7 +173,7 @@ def _lang_suffix(ctx: NamingContext) -> str:
 
 def canonical_name(ctx: NamingContext) -> str:
     """Имя по канонической схеме — когда соседних файлов нет."""
-    author = sanitize_author(ctx.authors)
+    author = author_marker(ctx.authors, ctx.translation_id)
     suffix = _lang_suffix(ctx)
 
     if ctx.is_movie:
@@ -167,7 +187,7 @@ def canonical_name(ctx: NamingContext) -> str:
         part = f" - {int(ctx.episode)}" if ctx.episode and ctx.episode > 1 else ""
         name = (
             f"{title}{year}{part} - [{_source_tag(ctx.height)}] "
-            f"[anime365_{author}]{suffix}{ctx.extension}"
+            f"[{author}]{suffix}{ctx.extension}"
         )
         return truncate_to_bytes(name)
 
@@ -177,7 +197,7 @@ def canonical_name(ctx: NamingContext) -> str:
     title_part = f" - {episode_title}" if episode_title else ""
     name = (
         f"{show} {code}{title_part} "
-        f"[anime365_{author}] {_source_tag(ctx.height)}{suffix}{ctx.extension}"
+        f"[{author}] {_source_tag(ctx.height)}{suffix}{ctx.extension}"
     )
     return truncate_to_bytes(name)
 
@@ -214,7 +234,7 @@ def name_from_neighbour(neighbour: str, ctx: NamingContext) -> str | None:
     if not match:
         return None
 
-    author = sanitize_author(ctx.authors)
+    author = author_marker(ctx.authors, ctx.translation_id)
     code = _episode_code(ctx.season, ctx.episode)
 
     # ⚠️ Середину имени соседа НЕЛЬЗЯ переносить как есть: там лежит название
@@ -235,7 +255,7 @@ def name_from_neighbour(neighbour: str, ctx: NamingContext) -> str | None:
         match.group("head").strip(),
         code,
         middle.strip(),
-        f"[anime365_{author}]",
+        f"[{author}]",
         _source_tag(ctx.height),
     ]
     if tail:
@@ -246,7 +266,13 @@ def name_from_neighbour(neighbour: str, ctx: NamingContext) -> str | None:
     return truncate_to_bytes(f"{name}{_lang_suffix(ctx)}{ctx.extension}")
 
 
-def subtitle_name_for_video(video_filename: str, authors: str, lang: str, extension: str) -> str:
+def subtitle_name_for_video(
+    video_filename: str,
+    authors: str,
+    lang: str,
+    extension: str,
+    translation_id: int | None = None,
+) -> str:
     """Имя субтитров к УЖЕ СУЩЕСТВУЮЩЕМУ локальному видео.
 
     Jellyfin подхватывает субтитры только при совпадении basename с видеофайлом,
@@ -255,14 +281,19 @@ def subtitle_name_for_video(video_filename: str, authors: str, lang: str, extens
 
     Имя автора вставляется, чтобы на один эпизод можно было держать несколько
     переводов — иначе второй русский затирал бы первый.
+
+    ⚠️ В имени оказываются ДВА идентификатора перевода: чужой — в основе имени,
+    унаследованной от видео, — и свой, в хвосте. Свой стоит последним, и правило
+    разбора `anime365_ours` ищет именно последний. Иначе субтитры получили бы
+    язык и вид перевода видеодорожки.
     """
     stem = Path(video_filename).stem
     # Если у видео уже был языковой суффикс, второй добавлять не нужно.
     stem = re.sub(r"\.(ru|en|ja|jpn|eng|rus)$", "", stem, flags=re.IGNORECASE)
 
-    author = sanitize_author(authors)
+    marker = author_marker(authors, translation_id)
     suffix = SUB_LANG_SUFFIX.get(lang, "")
-    return truncate_to_bytes(f"{stem}.anime365_{author}{suffix}{extension}")
+    return truncate_to_bytes(f"{stem}.{marker}{suffix}{extension}")
 
 
 def pick_neighbour(filenames: list[str], video_extensions: set[str]) -> str | None:
@@ -295,7 +326,9 @@ def build_target_name(
     этот случай имеет приоритет, потому что имя обязано совпасть.
     """
     if existing_video and is_subtitle_kind(ctx.kind):
-        return subtitle_name_for_video(existing_video, ctx.authors, ctx.lang, ctx.extension)
+        return subtitle_name_for_video(
+            existing_video, ctx.authors, ctx.lang, ctx.extension, ctx.translation_id
+        )
 
     if neighbour:
         from_neighbour = name_from_neighbour(neighbour, ctx)
@@ -416,18 +449,18 @@ def audio_name(ctx: NamingContext) -> str:
     Расширение приходит готовым: оно определяется кодеком дорожки, потому что
     поток копируется без перекодирования.
     """
-    author = sanitize_author(ctx.authors)
+    author = author_marker(ctx.authors, ctx.translation_id)
     lang = ctx.lang or "ja"
 
     if ctx.is_movie:
         title = sanitize_component(ctx.show_title)
         year = f" ({ctx.year})" if ctx.year else ""
-        name = f"{title}{year} [anime365_{author}].{lang}{ctx.extension}"
+        name = f"{title}{year} [{author}].{lang}{ctx.extension}"
         return truncate_to_bytes(name)
 
     show = sanitize_component(ctx.show_title)
     code = _episode_code(ctx.season, ctx.episode)
     episode_title = sanitize_component(ctx.episode_title or "")
     title_part = f" - {episode_title}" if episode_title else ""
-    name = f"{show} {code}{title_part} [anime365_{author}].{lang}{ctx.extension}"
+    name = f"{show} {code}{title_part} [{author}].{lang}{ctx.extension}"
     return truncate_to_bytes(name)

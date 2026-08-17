@@ -977,7 +977,7 @@ export const ru = {
   source: {
     anilist_id: 'по AniList ID',
     mal_id: 'по MAL ID',
-    original_title: 'по японскому названию',
+    original_title: 'по названию из .nfo',
     exact_title: 'по точному названию',
     premiered: 'по дате премьеры',
     fuzzy: 'по похожему названию',

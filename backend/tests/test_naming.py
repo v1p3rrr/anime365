@@ -200,6 +200,53 @@ class TestSubtitleForExistingVideo:
         assert name.endswith(".ja.ass")
 
 
+class TestTranslationIdInName:
+    """Идентификатор перевода в имени файла.
+
+    Файл, названный нами, должен уметь сказать, чей он: `t{id}` ведёт в каталоге
+    к тайтлу и серии, и эта связь сильнее папки вокруг него. Раньше её несли
+    только файлы, названные самим сайтом, — у пользователя таких 34 против 184
+    наших.
+    """
+
+    def test_marker_carries_the_id(self) -> None:
+        name = canonical_name(ctx(authors="Kazoku", translation_id=4505262))
+        assert "[anime365_Kazoku_t4505262]" in name
+
+    def test_without_an_id_the_name_is_unchanged(self) -> None:
+        """Старые загрузки и тесты не должны переименоваться задним числом."""
+        assert canonical_name(ctx(authors="Kazoku")) == canonical_name(
+            ctx(authors="Kazoku", translation_id=None)
+        )
+        assert "[anime365_Kazoku]" in canonical_name(ctx(authors="Kazoku"))
+
+    def test_a_long_author_name_does_not_eat_the_id(self) -> None:
+        """Обрезка идёт по имени группы, номер приклеивается после неё."""
+        name = canonical_name(ctx(authors="Ы" * 200, translation_id=4505262))
+        assert "_t4505262]" in name
+
+    def test_the_id_survives_the_neighbour_pattern(self) -> None:
+        neighbour = "Zombie Land Saga S02E04 - Title [neoHEVC] Bluray-1080p.mkv"
+        name = name_from_neighbour(neighbour, ctx(authors="Kazoku", translation_id=777))
+        assert "[anime365_Kazoku_t777]" in name
+
+    def test_subtitles_carry_their_own_id_after_the_video_one(self) -> None:
+        """⚠️ Идентификаторов в имени два, и свой обязан быть последним.
+
+        Основа имени наследуется у видеофайла целиком — иначе Jellyfin не
+        подхватит субтитры, — поэтому чужой `t{id}` остаётся в строке. Правило
+        разбора ищет последний; будь наш раньше, субтитры получили бы язык и
+        вид перевода видеодорожки.
+        """
+        video = "Show S01E06 [anime365_Kazoku_t111] WEBDL-1080p.mp4"
+        name = subtitle_name_for_video(video, "Wakanim", "ru", ".ass", 222)
+
+        assert name == (
+            "Show S01E06 [anime365_Kazoku_t111] WEBDL-1080p.anime365_Wakanim_t222.ru.ass"
+        )
+        assert name.rindex("t222") > name.rindex("t111")
+
+
 class TestPickNeighbour:
     def test_ignores_non_video(self) -> None:
         files = ["poster.jpg", "tvshow.nfo", "Show S01E01 - Title [Doki] Bluray-1080p.mkv"]

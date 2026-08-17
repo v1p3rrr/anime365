@@ -1232,6 +1232,7 @@ class DownloadQueue:
                 lang=snapshot["lang"] or stream.lang or "ja",
                 kind=snapshot["type_kind"] or "raw",
                 extension=stream.extension,
+                translation_id=snapshot["translation_id"],
             )
             filename = audio_name(ctx)
 
@@ -1345,6 +1346,9 @@ class DownloadQueue:
             lang=snapshot["lang"] or "ja",
             kind=snapshot["type_kind"] or "raw",
             extension=extension,
+            # Идентификатор перевода уходит прямо в имя файла: так файл при
+            # следующем скане сам скажет, чей он, независимо от папки вокруг.
+            translation_id=snapshot["translation_id"],
         )
         name = build_target_name(ctx, neighbour=neighbour, existing_video=existing_video)
         return unique_path(folder.rel_path, name, set(_folder_filenames(folder.id)))

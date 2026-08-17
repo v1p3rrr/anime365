@@ -725,19 +725,24 @@ def _episode_for(
     return float(part) if part else file.episode
 
 
-def _map_episodes(root_id: int) -> int:
+def _map_episodes(root_id: int, only_folders: set[int] | None = None) -> int:
     """Связывает локальные файлы с сериями.
 
     Обходятся **все** папки корня, а не только смапленные: файл со своим
     `t{id}` в имени опознаётся сам, даже если папка вокруг него не опознана.
+
+    `only_folders` сужает проход до нескольких папок. Нужен после досбора
+    переводов: он идёт **позже** обычной связки, и заново гонять весь корень
+    ради десятка файлов незачем.
     """
     linked = 0
     with session_scope() as session:
-        folders = (
-            session.execute(select(LibraryFolder).where(LibraryFolder.root_id == root_id))
-            .scalars()
-            .all()
-        )
+        stmt = select(LibraryFolder).where(LibraryFolder.root_id == root_id)
+        if only_folders is not None:
+            if not only_folders:
+                return 0
+            stmt = stmt.where(LibraryFolder.id.in_(only_folders))
+        folders = session.execute(stmt).scalars().all()
         mappings: dict[int, list[int]] = {}
         for folder_id, series_id in session.execute(
             select(TitleMapping.folder_id, TitleMapping.series_id).where(
@@ -827,6 +832,65 @@ def _map_episodes(root_id: int) -> int:
     return linked
 
 
+def _folders_with_translations(series_ids: set[int]) -> dict[int, set[int]]:
+    """Папки, где лежат файлы с переводами этих тайтлов: корень → папки.
+
+    Считается уже **после** досбора, по свежему кэшу: до него эти переводы в
+    базе не значились, и найти по ним было нечего.
+    """
+    if not series_ids:
+        return {}
+
+    with session_scope() as session:
+        rows = session.execute(
+            select(LibraryFolder.root_id, LibraryFolder.id)
+            .join(LibraryFile, LibraryFile.folder_id == LibraryFolder.id)
+            .join(Translation, Translation.id == LibraryFile.anime365_translation_id)
+            .where(Translation.series_id.in_(series_ids))
+            .distinct()
+        ).all()
+
+    out: dict[int, set[int]] = {}
+    for root_id, folder_id in rows:
+        out.setdefault(root_id, set()).add(folder_id)
+    return out
+
+
+def _backfill_own_downloads() -> dict[str, Any]:
+    """Догружает переводы, на которые ссылаются имена файлов, и пересвязывает.
+
+    ⚠️ Порядок здесь неочевидный и важный. Досбор идёт **после** того, как оба
+    корня разобраны и связаны, — то есть связка серий к этому моменту уже
+    отработала со старым кэшем и про новые переводы ничего не знала. Поэтому
+    после загрузки надо пересвязать затронутое; иначе результат досбора
+    появился бы только при следующем сканировании.
+
+    Пересвязываются не все папки корня, а только те, где лежат файлы этих
+    тайтлов: обычно это одна-две папки против нескольких сотен.
+
+    Ошибка здесь не имеет права ронять сканирование: оно к этому моменту уже
+    сделано и полезно само по себе.
+    """
+    from app.services.translation_backfill import backfill_blocking
+
+    try:
+        result = backfill_blocking()
+    except Exception as exc:  # noqa: BLE001 — сеть, чужой сайт
+        log.exception("Досбор переводов не удался")
+        return {"error": str(exc)}
+
+    series_ids = result.get("series") or set()
+    relinked = 0
+    for root_id, folder_ids in _folders_with_translations(series_ids).items():
+        relinked += _map_episodes(root_id, only_folders=folder_ids)
+
+    return {
+        "unknown": result.get("unknown", 0),
+        "loaded": result.get("loaded", 0),
+        "relinked": relinked,
+    }
+
+
 class LibraryScanner:
     def __init__(self) -> None:
         self._running = False
@@ -880,6 +944,7 @@ class LibraryScanner:
                 stats["roots"].append(summary)
 
             stats["mode"] = "full" if full else "incremental"
+            stats["backfill"] = _backfill_own_downloads()
         except Exception as exc:
             log.exception("Сканирование библиотеки упало")
             status, error = "failed", str(exc)
