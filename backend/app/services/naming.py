@@ -102,8 +102,49 @@ def author_marker(authors: str, translation_id: int | None = None) -> str:
     return f"{marker}_t{translation_id}" if translation_id else marker
 
 
+def _fits(head: str, tail: str, limit: int = MAX_FILENAME_BYTES) -> bool:
+    return len(f"{head}{tail}".encode("utf-8")) <= limit
+
+
+def fit_name(head: str, tail: str, limit: int = MAX_FILENAME_BYTES) -> str:
+    """Собирает `head + tail`, укладываясь в лимит **за счёт головы**.
+
+    ⚠️ Резать надо название, а не хвост, и это не вкусовщина. В хвосте лежит
+    всё, что имя должно сообщить машине: метка группы с идентификатором
+    перевода, ступень качества и языковой суффикс. Обрезка с конца съедала их
+    первыми — то есть у самых длинных названий Jellyfin переставал понимать
+    язык субтитров, а файл терял связь со своим переводом. Название, укоротясь,
+    остаётся читаемым; хвост, укоротясь, становится ложью.
+
+    Сегодня это запас на будущее: самое длинное имя в библиотеке пользователя
+    — 175 байт из 13 446 файлов. Но у самого длинного romaji в каталоге 232
+    символа, и на нём предел достигается.
+    """
+    tail_bytes = len(tail.encode("utf-8"))
+    budget = limit - tail_bytes
+    if budget <= 0:
+        # Хвост сам по себе длиннее лимита — случай выдуманный (имя группы
+        # обрезано до 60 символов), но молча склеивать нельзя.
+        return truncate_to_bytes(f"{head}{tail}", limit)
+
+    out: list[str] = []
+    used = 0
+    for char in head:
+        size = len(char.encode("utf-8"))
+        if used + size > budget:
+            break
+        out.append(char)
+        used += size
+
+    return f"{''.join(out).rstrip(' -')}{tail}"
+
+
 def truncate_to_bytes(name: str, limit: int = MAX_FILENAME_BYTES) -> str:
-    """Обрезает имя по границе символов так, чтобы уложиться в лимит байтов."""
+    """Обрезает имя по границе символов так, чтобы уложиться в лимит байтов.
+
+    Последний рубеж. Имена, которые строим мы, собираются через `fit_name` —
+    он сохраняет хвост; сюда попадает только то, у чего головы нет.
+    """
     if len(name.encode("utf-8")) <= limit:
         return name
 
@@ -185,21 +226,25 @@ def canonical_name(ctx: NamingContext) -> str:
         # то есть выглядела бы дублем первой. Номер добавляем только со второй
         # части, чтобы у обычного фильма имя осталось прежним.
         part = f" - {int(ctx.episode)}" if ctx.episode and ctx.episode > 1 else ""
-        name = (
-            f"{title}{year}{part} - [{_source_tag(ctx.height)}] "
-            f"[{author}]{suffix}{ctx.extension}"
+        return fit_name(
+            f"{title}{year}{part}",
+            f" - [{_source_tag(ctx.height)}] [{author}]{suffix}{ctx.extension}",
         )
-        return truncate_to_bytes(name)
 
     show = sanitize_component(ctx.show_title)
     code = _episode_code(ctx.season, ctx.episode)
     episode_title = sanitize_component(ctx.episode_title or "")
-    title_part = f" - {episode_title}" if episode_title else ""
-    name = (
-        f"{show} {code}{title_part} "
-        f"[{author}] {_source_tag(ctx.height)}{suffix}{ctx.extension}"
-    )
-    return truncate_to_bytes(name)
+    tail = f" [{author}] {_source_tag(ctx.height)}{suffix}{ctx.extension}"
+
+    # Порядок, в котором жертвуем частями имени, когда всё не помещается:
+    # сначала название серии целиком (оборванное на полуслове хуже, чем никакое),
+    # потом сокращается название шоу. Код серии не трогается никогда — он
+    # опознаёт серию, и без него файл не соберётся обратно ни у нас, ни у
+    # Jellyfin.
+    with_title = f"{show} {code} - {episode_title}" if episode_title else f"{show} {code}"
+    if _fits(with_title, tail):
+        return f"{with_title}{tail}"
+    return fit_name(show, f" {code}{tail}")
 
 
 # Шаблон имени соседнего файла: до кода серии, сам код, середина, релиз-группа, хвост.
@@ -251,19 +296,20 @@ def name_from_neighbour(neighbour: str, ctx: NamingContext) -> str | None:
     tail = re.sub(r"\b\d{3,4}p\b", "", tail)
     tail = _SPACES.sub(" ", tail).strip(" -")
 
-    parts = [
-        match.group("head").strip(),
-        code,
-        middle.strip(),
-        f"[{author}]",
-        _source_tag(ctx.height),
-    ]
+    parts = [f"[{author}]", _source_tag(ctx.height)]
     if tail:
         parts.append(tail)
+    # Хвост неприкосновенен: метка с номером перевода, ступень качества, язык.
+    fixed = " ".join(parts) + f"{_lang_suffix(ctx)}{ctx.extension}"
 
-    name = " ".join(p for p in parts if p)
-    name = _SPACES.sub(" ", name).strip()
-    return truncate_to_bytes(f"{name}{_lang_suffix(ctx)}{ctx.extension}")
+    head_parts = [match.group("head").strip(), code, middle.strip()]
+    head = _SPACES.sub(" ", " ".join(p for p in head_parts if p)).strip()
+    if _fits(head, f" {fixed}"):
+        return f"{head} {fixed}"
+
+    # Не поместилось — жертвуем названием серии, затем сокращаем начало имени.
+    short = _SPACES.sub(" ", f"{match.group('head').strip()} {code}").strip()
+    return fit_name(short, f" {fixed}")
 
 
 def subtitle_name_for_video(
@@ -293,7 +339,11 @@ def subtitle_name_for_video(
 
     marker = author_marker(authors, translation_id)
     suffix = SUB_LANG_SUFFIX.get(lang, "")
-    return truncate_to_bytes(f"{stem}.{marker}{suffix}{extension}")
+    # Основа имени взята у видео и укоротить её нельзя — на её совпадении и
+    # держится связь. Поэтому в жертву идёт наша метка: сперва номер перевода,
+    # потом имя группы. Язык и расширение остаются в любом случае — без языка
+    # Jellyfin не поймёт, какие это субтитры.
+    return fit_name(f"{stem}.{marker}", f"{suffix}{extension}")
 
 
 def pick_neighbour(filenames: list[str], video_extensions: set[str]) -> str | None:
@@ -455,12 +505,14 @@ def audio_name(ctx: NamingContext) -> str:
     if ctx.is_movie:
         title = sanitize_component(ctx.show_title)
         year = f" ({ctx.year})" if ctx.year else ""
-        name = f"{title}{year} [{author}].{lang}{ctx.extension}"
-        return truncate_to_bytes(name)
+        return fit_name(f"{title}{year}", f" [{author}].{lang}{ctx.extension}")
 
     show = sanitize_component(ctx.show_title)
     code = _episode_code(ctx.season, ctx.episode)
     episode_title = sanitize_component(ctx.episode_title or "")
-    title_part = f" - {episode_title}" if episode_title else ""
-    name = f"{show} {code}{title_part} [{author}].{lang}{ctx.extension}"
-    return truncate_to_bytes(name)
+    tail = f" [{author}].{lang}{ctx.extension}"
+
+    with_title = f"{show} {code} - {episode_title}" if episode_title else f"{show} {code}"
+    if _fits(with_title, tail):
+        return f"{with_title}{tail}"
+    return fit_name(show, f" {code}{tail}")

@@ -11,6 +11,7 @@ import pytest
 
 from app.services.naming import (
     NamingContext,
+    audio_name,
     build_target_name,
     canonical_name,
     name_from_neighbour,
@@ -198,6 +199,68 @@ class TestSubtitleForExistingVideo:
     def test_language_suffix_last(self) -> None:
         name = subtitle_name_for_video(self.VIDEO, "YakuSub", "ja", ".ass")
         assert name.endswith(".ja.ass")
+
+
+class TestLongNamesKeepTheirTail:
+    """Предел ext4 — 255 **байт** на имя, и режется не хвост, а название.
+
+    ⚠️ Хвост несёт всё, что имя сообщает машине: код серии, метку группы с
+    номером перевода, ступень качества и языковой суффикс. Обрезка с конца
+    съедала их первыми — то есть у самых длинных названий Jellyfin переставал
+    понимать язык субтитров. Это ломалось и до появления номера перевода.
+
+    Сегодня запас есть: самое длинное имя в библиотеке пользователя — 175 байт
+    из 13 446 файлов. Но у самого длинного romaji в каталоге 232 символа, и на
+    нём предел достигается.
+    """
+
+    LONG = "Tsuihou sareta Cheat Fuyo Majutsushi wa Kimama na Second Life wo Ouka suru. " * 3
+
+    def _long(self, **kw):
+        return ctx(
+            show_title=self.LONG,
+            episode_title="Ougi Formula and the Longest Night of the Whole Season",
+            authors="Seiya & Surokune & Андрей Зайцев & кто-то ещё",
+            **kw,
+        )
+
+    def test_it_fits_the_limit(self) -> None:
+        name = canonical_name(self._long(translation_id=4505262))
+        assert len(name.encode("utf-8")) <= 250
+
+    def test_episode_code_survives(self) -> None:
+        """Без него файл не собрать обратно ни нам, ни Jellyfin."""
+        assert "S02E05" in canonical_name(self._long(translation_id=4505262))
+
+    def test_translation_id_survives(self) -> None:
+        assert "_t4505262]" in canonical_name(self._long(translation_id=4505262))
+
+    def test_language_suffix_survives(self) -> None:
+        """Главное для Jellyfin: без суффикса он не поймёт язык дорожки."""
+        name = canonical_name(self._long(kind="sub", extension=".ass", lang="ru"))
+        assert name.endswith(".ru.ass")
+
+    def test_episode_title_is_dropped_whole(self) -> None:
+        """Оборванное на полуслове название хуже, чем его отсутствие."""
+        name = canonical_name(self._long(translation_id=4505262))
+        assert "Ougi" not in name
+
+    def test_audio_name_keeps_its_tail(self) -> None:
+        name = audio_name(self._long(translation_id=4505262, extension=".aac"))
+        assert len(name.encode("utf-8")) <= 250
+        assert name.endswith(".ru.aac")
+        assert "S02E05" in name
+
+    def test_subtitles_keep_the_video_stem_and_language(self) -> None:
+        """У субтитров жертвуем меткой, а не основой: на ней держится связь."""
+        video = canonical_name(self._long(extension=".mp4", kind="voice"))
+        stem = video[: -len(".ru.mp4")]
+
+        name = subtitle_name_for_video(video, "Wakanim" * 8, "ru", ".ass", 999888)
+
+        assert len(name.encode("utf-8")) <= 250
+        assert name.startswith(stem), "основа имени видео обязана уцелеть"
+        assert name.endswith(".ru.ass")
 
 
 class TestTranslationIdInName:
