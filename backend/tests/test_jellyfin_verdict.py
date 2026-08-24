@@ -62,6 +62,32 @@ def _seed(anilist_id: int | None, mal_id: int | None) -> None:
         )
 
 
+@pytest.fixture(autouse=True)
+def _no_leftovers():
+    """Убирает за собой корень библиотеки, который заводит `_seed`.
+
+    Корень тут выдуманный — `/test/jellyfin-verdict`, — и лежит он в **общей**
+    тестовой базе, одной на весь прогон. Оставшись после этого файла, он
+    доставался следующим тестам как обычный доступный корень на запись: строкой
+    ниже по алфавиту `test_season_subfolders` просил папку под новую серию и
+    получал попытку создать `/test/jellyfin-verdict/Grand Blue`.
+
+    На Windows это «работало»: путь ложился в корень диска C:, папка спокойно
+    создавалась в корне диска, тест зеленел. На Linux без прав root — отказ,
+    `ensure_target_folder` возвращал None, и падало в двух местах сразу. Нашёл
+    это первый прогон CI; до него мусор годами копился на диске разработчика.
+    """
+    yield
+    with session_scope() as session:
+        root = session.execute(
+            select(LibraryRoot).where(LibraryRoot.path == ROOT)
+        ).scalar_one_or_none()
+        if root is not None:
+            session.execute(delete(LibraryFolder).where(LibraryFolder.root_id == root.id))
+            session.delete(root)
+        session.execute(delete(TitleMapping).where(TitleMapping.series_id == SERIES_ID))
+
+
 @pytest.fixture
 def jellyfin_says(monkeypatch):
     """Подменяет ответ Jellyfin: настоящий сервер в тестах недоступен."""

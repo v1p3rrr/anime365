@@ -9,7 +9,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -139,7 +139,18 @@ if STATIC_DIR.is_dir():
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str) -> FileResponse:
-        """Отдаёт index.html на все не-API маршруты — это SPA с клиентским роутингом."""
+        """Отдаёт index.html на все не-API маршруты — это SPA с клиентским роутингом.
+
+        ⚠️ Несуществующий путь под `/api/` сюда попадать не должен. Раньше попадал
+        и получал в ответ страницу приложения с кодом 200 — то есть опечатка в
+        адресе эндпоинта выглядела как успех. На этом уже обожглись: тест
+        `test_auth_lifecycle` годами дёргал `/api/catalog`, которого нет (есть
+        `/api/catalog/ids` и `/api/catalog/cards`), получал 200 от этой заглушки
+        и считал, что проверил каталог. Вскрылось только в CI, где статика не
+        собрана: без неё заглушки нет вовсе, и тот же запрос дал честный 404.
+        """
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
         candidate = STATIC_DIR / full_path
         if full_path and candidate.is_file():
             return FileResponse(candidate)

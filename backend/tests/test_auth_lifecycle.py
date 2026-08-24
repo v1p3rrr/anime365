@@ -27,14 +27,22 @@ class TestAuthLifecycle:
         assert _status(client) == {"password_required": True, "authenticated": False}
 
     def test_protected_endpoint_follows_the_status(self, client, with_password) -> None:
-        """Статус и настоящие эндпоинты обязаны говорить одно и то же."""
-        assert client.get("/api/catalog?limit=1").status_code == 401
+        """Статус и настоящие эндпоинты обязаны говорить одно и то же.
+
+        ⚠️ Адрес здесь обязан быть **существующим**. Раньше стоял `/api/catalog`,
+        которого нет: запрос уходил в SPA-заглушку, та отдавала `index.html`, и
+        проверка «после входа 200» проходила, ничего не проверяя. На машине
+        разработчика — годами, потому что там лежит собранная статика; в CI, где
+        её нет, тот же запрос сразу дал 404.
+        """
+        endpoint = "/api/catalog/ids?limit=1"
+        assert client.get(endpoint).status_code == 401
 
         client.post("/api/auth/login", json=with_password)
-        assert client.get("/api/catalog?limit=1").status_code == 200
+        assert client.get(endpoint).status_code == 200
 
         client.post("/api/auth/logout")
-        assert client.get("/api/catalog?limit=1").status_code == 401
+        assert client.get(endpoint).status_code == 401
 
     def test_status_stays_open_without_a_session(self, client, with_password) -> None:
         """Единственный эндпоинт до входа — иначе экран входа сам себя не покажет."""

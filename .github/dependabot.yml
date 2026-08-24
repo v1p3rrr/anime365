@@ -2,26 +2,63 @@ version: 2
 
 # Действия в ci.yml прибиты к коммитам, а не к тегам: тег можно передвинуть, и
 # `@v4` завтра окажется другим кодом с теми же правами. Обратная сторона — сами
-# по себе они больше не обновляются никогда, поэтому обновляет их Dependabot:
-# он поднимает коммит и в комментарии рядом пишет новую версию.
+# по себе они больше не обновляются никогда, поэтому обновляет их Dependabot.
+#
+# ⚠️ Настройки ниже — про то, чтобы он не превращался в шум. Первый же запуск с
+# умолчаниями завёл **одиннадцать** пул-реквестов разом: зависимости в проекте
+# давно не трогали, а каждая обновляется отдельной веткой, и каждая тянет за
+# собой полный прогон CI. Поэтому:
+#
+#  * **группировка** — все обновления одной экосистемы приезжают ОДНИМ
+#    пул-реквестом. Одна ветка, один прогон, один разбор;
+#  * **раз в месяц**, а не в неделю. Обновления безопасности приходят отдельно и
+#    расписания не ждут — частый опрос покупает только шум;
+#  * **мажорные прыжки базовых образов игнорируются** (см. ниже).
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    groups:
+      actions:
+        patterns: ['*']
+    open-pull-requests-limit: 2
 
-  # Базовые образы Dockerfile: python:3.12-slim и node:22-alpine.
+  # Базовые образы Dockerfile.
+  #
+  # ⚠️ Оба тега уже плавающие: `python:3.12-slim` сам подтягивает 3.12.x, а
+  # `node:22-alpine` — 22.x. То есть исправления и так приезжают при каждой
+  # пересборке, и Dependabot тут может предложить только смену ветки языка —
+  # ровно то, чего мы не хотим случайно.
+  #
+  # У python игнорируем и минорную: 3.12 → 3.13 меняет интерпретатор, а проект
+  # объявлен как `requires-python = ">=3.12"` с `target-version = "py312"`.
+  # Переход на новую версию языка — отдельная задача с прогоном тестов на ней,
+  # а не автоматический пул-реквест.
   - package-ecosystem: docker
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    ignore:
+      - dependency-name: python
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+      - dependency-name: node
+        update-types:
+          - version-update:semver-major
+    groups:
+      base-images:
+        patterns: ['*']
 
   - package-ecosystem: npm
     directory: /frontend
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    groups:
+      frontend:
+        patterns: ['*']
+    open-pull-requests-limit: 2
 
   # ⚠️ Список зависимостей продублирован в Dockerfile ради кэша слоёв, а
   # Dependabot правит только pyproject.toml. Его пул-реквесты будут падать на
@@ -30,5 +67,8 @@ updates:
   - package-ecosystem: pip
     directory: /backend
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    groups:
+      backend:
+        patterns: ['*']
+    open-pull-requests-limit: 2
