@@ -209,7 +209,7 @@ docker run --rm --entrypoint sh -v "$PWD:/repo:ro" -u root anime365-downloader:0
 | Изменил | Проверить |
 |---|---|
 | Новый эндпоинт | `tests/test_permissions_audit.py` — маршрут без права роняет тест. И спрятать соответствующую кнопку в UI через `usePermissions` |
-| Зависимости | `tests/test_dockerfile_deps.py` — списки в `pyproject` и `Dockerfile` продублированы намеренно, ради кэша слоёв |
+| Зависимости | Только `backend/pyproject.toml` — образ ставит по нему (D-167). `tests/test_dockerfile_deps.py` сторожит, чтобы прибитые версии не вернулись в `Dockerfile` |
 | Настройку в реестре | `tests/test_compose_env.py` и `tests/test_settings_i18n_sync.py` — переменная должна попасть в compose, а подписи в `ru.ts` совпадать дословно |
 | Dockerfile | Пересобрать и **прогнать скан**; проверить, что зачистка сработала (там стоят `test !`, но лишним не будет) |
 | Фронтенд | `tsc --noEmit`, `npm run lint`, `npm run build`. Линтер ловит хуки после раннего `return` — компилятор такое пропускает, а страница падает в браузере |
