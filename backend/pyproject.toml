@@ -16,7 +16,7 @@ dependencies = [
     # socks нужен для SOCKS5-прокси: без него httpx понимает только HTTP(S)_PROXY,
     # а ALL_PROXY=socks5://… падает с «Using SOCKS proxy, but the socksio package is not installed».
     "httpx[http2,socks]==0.28.1",
-    "apscheduler==3.11.0",
+    "apscheduler==3.11.3",
     "pyyaml==6.0.2",
     "rapidfuzz==3.11.0",          # fuzzy-матчинг названий папок с каталогом
     "watchdog==6.0.0",            # слежение за файловой системой вместо опроса по расписанию
