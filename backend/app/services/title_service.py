@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -110,6 +111,77 @@ async def ensure_details(series_id: int, force: bool = False) -> Series | None:
 #: пошли бы в Anime365 за одним и тем же списком в две тысячи записей.
 _refreshing: set[int] = set()
 
+#: Тайтлы, у которых догрузка упала: что случилось и когда пробовать снова.
+_failures: dict[int, "RefreshFailure"] = {}
+
+#: Первый отступ после неудачи и потолок, до которого он растёт.
+#:
+#: Шестьдесят секунд — чтобы разовый сбой сети не был заметен вовсе: страница
+#: откроется из кэша, а следующий заход всё починит. Потолок в полчаса — чтобы
+#: недоступность Anime365 на всю ночь не стоила тысяч запросов.
+REFRESH_RETRY_BASE = timedelta(seconds=60)
+REFRESH_RETRY_CAP = timedelta(minutes=30)
+
+
+@dataclass(frozen=True)
+class RefreshFailure:
+    """Последняя неудачная догрузка переводов тайтла."""
+
+    at: datetime
+    attempts: int
+    message: str
+
+    @property
+    def retry_at(self) -> datetime:
+        # Показатель ограничен: без этого при долгой недоступности множитель
+        # разрастается до чисел, на которых timedelta переполняется.
+        step = REFRESH_RETRY_BASE * 2 ** min(self.attempts - 1, 10)
+        return self.at + min(step, REFRESH_RETRY_CAP)
+
+
+def _remember_failure(series_id: int, exc: BaseException) -> None:
+    """Запоминает неудачу и решает, насколько отложить следующую попытку."""
+    previous = _failures.get(series_id)
+    attempts = previous.attempts + 1 if previous is not None else 1
+    failure = RefreshFailure(
+        at=datetime.utcnow(),
+        attempts=attempts,
+        message=str(exc) or exc.__class__.__name__,
+    )
+    _failures[series_id] = failure
+
+    # Полная трассировка — только на первой неудаче. Дальше сбой уже описан, и
+    # повторять её значит топить лог: на сервере пользователя одна
+    # недоступность Anime365 давала строчку каждые двадцать секунд сутками.
+    if attempts == 1:
+        log.exception("Фоновое обновление переводов тайтла %s не удалось", series_id)
+    else:
+        log.warning(
+            "Фоновое обновление переводов тайтла %s не удалось (попытка %s), "
+            "следующая не раньше %s: %s",
+            series_id,
+            attempts,
+            failure.retry_at.strftime("%H:%M:%S"),
+            failure.message,
+        )
+
+
+def translation_refresh_failure(series_id: int) -> RefreshFailure | None:
+    """Неудача догрузки, если после неё ещё не было успешной."""
+    return _failures.get(series_id)
+
+
+def forget_refresh_failure(series_id: int | None = None) -> None:
+    """Забывает неудачу: следующая попытка пойдёт немедленно.
+
+    Нужно там, где повтор запросил человек — он ждать отступа не обязан.
+    Без аргумента забывается всё; этим пользуются тесты.
+    """
+    if series_id is None:
+        _failures.clear()
+    else:
+        _failures.pop(series_id, None)
+
 
 def translations_are_fresh(series_id: int) -> bool:
     """Есть ли у тайтла непросроченные переводы в кэше."""
@@ -131,8 +203,24 @@ def schedule_translation_refresh(series_id: int) -> bool:
 
     Теперь страница отдаётся сразу с тем, что есть в кэше, а обновление идёт
     фоном; клиент видит флаг `translations_pending` и перезапрашивает.
+
+    ⚠️ **Неудача обязана запоминаться.** Раньше не запоминалась, и это давало
+    вечный цикл: клиент опрашивает страницу раз в полторы секунды, каждый опрос
+    заводит новую задачу, задача падает за десять секунд, `finally` снимает
+    флаг — и следующий опрос заводит следующую. На сервере пользователя это
+    крутилось сутками: спиннер «подгружаются с Anime365» не гас никогда, а в лог
+    падало предупреждение каждые двадцать секунд. Причём сама сеть была
+    исправна — проверено десятью запросами из того же контейнера.
+
+    Теперь после неудачи повтор откладывается (`RefreshFailure.retry_at`), а
+    клиент получает текст ошибки и время следующей попытки вместо бесконечного
+    ожидания.
     """
     if series_id in _refreshing:
+        return False
+
+    failure = _failures.get(series_id)
+    if failure is not None and datetime.utcnow() < failure.retry_at:
         return False
 
     _refreshing.add(series_id)
@@ -144,9 +232,12 @@ def schedule_translation_refresh(series_id: int) -> bool:
             # отдельного расписания ради одного запроса заводить незачем.
             await ensure_details(series_id, force=True)
             await ensure_translations(series_id, force=True)
-        except Exception:
+        except Exception as exc:
             # Фоновая задача не имеет права ронять ничего: страница уже отдана.
-            log.exception("Фоновое обновление переводов тайтла %s не удалось", series_id)
+            _remember_failure(series_id, exc)
+        else:
+            # Получилось — прошлые неудачи больше ничего не значат.
+            _failures.pop(series_id, None)
         finally:
             _refreshing.discard(series_id)
 
@@ -350,6 +441,10 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
     # открытие в 13 секунд ожидания. Поэтому берём то, что есть в кэше, а
     # просроченное обновляем фоном.
     if force_refresh or not translations_are_fresh(series_id):
+        # Обновление запросил человек — ждать отступа после прошлой неудачи он
+        # не обязан, иначе кнопка «обновить» выглядела бы сломанной.
+        if force_refresh:
+            forget_refresh_failure(series_id)
         schedule_translation_refresh(series_id)
 
     with session_scope() as session:
@@ -527,6 +622,8 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
         or e.episode_num in have_by_episode
     ]
 
+    refresh_failure = translation_refresh_failure(series_id)
+
     return {
         "series": series_data,
         "mappings": mappings,
@@ -589,6 +686,13 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
         # получит их. Пустой список при этом флаге означает «ещё не приехали»,
         # а не «их нет» — разница для человека принципиальная.
         "translations_pending": translations_pending(series_id),
+        # Неудача догрузки — отдельный факт, и молчать о ней нельзя. Пустая
+        # сводка без объяснения читается как «переводов нет», а вечный спиннер —
+        # как «сейчас приедут»; оба варианта неправда.
+        "translations_error": refresh_failure.message if refresh_failure else None,
+        "translations_retry_at": (
+            refresh_failure.retry_at.isoformat() if refresh_failure else None
+        ),
     }
 
 

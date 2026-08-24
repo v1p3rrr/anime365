@@ -610,6 +610,16 @@ export function TitlePage() {
               </Text>
             </Group>
           )}
+          {/* Не «ещё едут», а «не приехали». Раньше здесь бесконечно крутился
+              спиннер: сервер повторял упавший запрос без отступа, и состояние
+              «загружается» не заканчивалось никогда. */}
+          {!data.translations_pending && data.translations_error && (
+            <Tooltip label={data.translations_error} multiline maw={320}>
+              <Text size="xs" c="orange" style={{ cursor: 'help' }}>
+                {t('title.translationsFailed')}
+              </Text>
+            </Tooltip>
+          )}
         </Group>
         <TranslationGroups
           sections={data.summary}
