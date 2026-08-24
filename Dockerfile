@@ -1,5 +1,5 @@
 # --- Этап 1: сборка фронтенда ---
-FROM node:22-alpine AS frontend
+FROM node:26-alpine AS frontend
 
 WORKDIR /build
 
