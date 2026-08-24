@@ -432,7 +432,7 @@ docker run -d --name anime365 -p 8080:8080   --read-only --tmpfs /tmp:size=64m  
 * прогнать тесты прямо в образе, смонтировав репозиторий:
 
 ```
-docker run --rm --entrypoint sh -v "$PWD:/repo:ro" -u root   anime365-downloader:0.1.0   -c "pip install -q pytest pytest-asyncio; cd /repo/backend && PYTHONPATH=/repo/backend python -m pytest tests -q"
+docker run --rm --entrypoint sh -v "$PWD:/repo:ro" -u root   anime365-downloader:0.1.0   -c "pip install -q pytest; cd /repo/backend && PYTHONPATH=/repo/backend python -m pytest tests -q"
 ```
 
 ⚠️ **Из Git Bash на Windows** пути в `-v` и `-e` коверкаются: `/data/app.sqlite3`
