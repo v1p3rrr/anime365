@@ -12,7 +12,7 @@ dependencies = [
     # исправленную версию сами, а не ждём, пока подтянется старая.
     "starlette==1.3.1",
     "uvicorn[standard]==0.34.0",
-    "sqlalchemy==2.0.36",
+    "sqlalchemy==2.0.52",
     # socks нужен для SOCKS5-прокси: без него httpx понимает только HTTP(S)_PROXY,
     # а ALL_PROXY=socks5://… падает с «Using SOCKS proxy, but the socksio package is not installed».
     "httpx[http2,socks]==0.28.1",
