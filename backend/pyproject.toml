@@ -37,7 +37,7 @@ dev = [
     # запускаются через asyncio.run (см. tests/test_stream_probe.py).
     "ruff==0.9.2",
     "mypy==1.14.1",
-    "pip-audit==2.7.3",
+    "pip-audit==2.10.1",
 ]
 
 [tool.ruff]
