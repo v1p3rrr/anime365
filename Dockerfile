@@ -15,7 +15,7 @@ RUN mkdir -p /backend/app/static && \
 
 
 # --- Этап 2: рантайм ---
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 # PYTHONUNBUFFERED — иначе логи застревают в буфере и docker logs пустует.
 ENV PYTHONUNBUFFERED=1 \
