@@ -10,34 +10,34 @@ dependencies = [
     # одна high — лимиты `request.form()` молча не применялись к urlencoded.
     # FastAPI верхнюю границу не ставит (`starlette>=0.46.0`), поэтому берём
     # исправленную версию сами, а не ждём, пока подтянется старая.
-    "starlette==1.3.1",
-    "uvicorn[standard]==0.34.0",
-    "sqlalchemy==2.0.36",
+    "starlette==1.6.0",
+    "uvicorn[standard]==0.52.4",
+    "sqlalchemy==2.0.52",
     # socks нужен для SOCKS5-прокси: без него httpx понимает только HTTP(S)_PROXY,
     # а ALL_PROXY=socks5://… падает с «Using SOCKS proxy, but the socksio package is not installed».
     "httpx[http2,socks]==0.28.1",
-    "apscheduler==3.11.0",
-    "pyyaml==6.0.2",
-    "rapidfuzz==3.11.0",          # fuzzy-матчинг названий папок с каталогом
+    "apscheduler==3.11.3",
+    "pyyaml==6.0.3",
+    "rapidfuzz==3.14.5",          # fuzzy-матчинг названий папок с каталогом
     "watchdog==6.0.0",            # слежение за файловой системой вместо опроса по расписанию
-    "argon2-cffi==23.1.0",        # хеш пароля на вход в UI
+    "argon2-cffi==25.1.0",        # хеш пароля на вход в UI
     # Языки дорожек к двухбуквенным кодам. Ручной словарь не годится: у языка
     # бывает два трёхбуквенных кода (ger/deu, fre/fra, cze/ces — восемь таких
     # пар), и они задваиваются.
-    "iso639-lang==2.6.0",
+    "iso639-lang==2.6.3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest==9.0.3",   # 8.3.4 — GHSA-6w46-j5rx-g56g, небезопасная работа с tmpdir
+    "pytest==9.1.1",   # 8.3.4 — GHSA-6w46-j5rx-g56g, небезопасная работа с tmpdir
     # pytest-asyncio отсюда убран: он требует pytest<9, то есть с пином выше
     # не устанавливался в принципе. Локально это было незаметно — плагина в
     # окружении просто нет, — а CI на чистой машине сразу упал на разрешении
     # зависимостей. Проекту он и не нужен: async-тестов ноль, корутины в тестах
     # запускаются через asyncio.run (см. tests/test_stream_probe.py).
-    "ruff==0.9.2",
-    "mypy==1.14.1",
-    "pip-audit==2.7.3",
+    "ruff==0.16.4",
+    "mypy==2.3.1",
+    "pip-audit==2.10.1",
 ]
 
 [tool.ruff]
