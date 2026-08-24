@@ -37,8 +37,11 @@ PLACES: dict[str, str] = {
     "backend/app/main.py": r'version="(?P<ver>[^"]+)"',
     "backend/app/api/health.py": r'"version":\s*"(?P<ver>[^"]+)"',
     "backend/app/services/jellyfin.py": r'APP_VERSION\s*=\s*"(?P<ver>[^"]+)"',
-    "docker-compose.yml": r"image:\s*anime365-downloader:(?P<ver>\S+)",
 }
+
+#: Строка образа в compose. Имя может быть с пространством имён реестра
+#: (`логин/anime365-downloader`), а тег — каким угодно, см. тест ниже.
+COMPOSE_IMAGE = r"image:\s*(?:\S+/)?anime365-downloader:(?P<ver>\S+)"
 
 
 def _declared() -> str:
@@ -73,4 +76,30 @@ def test_version_looks_like_a_number():
     assert re.fullmatch(r"\d+\.\d+\.\d+", version), (
         f"версия {version!r} не похожа на X.Y.Z; из неё собирается тег образа "
         "и проверка тега vX.Y.Z в работе publish"
+    )
+
+
+def test_compose_tag_is_consistent():
+    """Тег в `docker-compose.yml` — только если он вообще номер версии.
+
+    Пока образ собирается на месте (`build: .`), тег там — номер версии, и он
+    обязан совпадать с остальными. Но compose может показывать и на реестр:
+    тогда осмысленные теги — `latest` или `0.1.0-build.7`, которые клеит
+    пайплайн, и сверять их с `pyproject.toml` бессмысленно. В этом случае за
+    номер отвечает не файл, а сама сборка ([D-161](../../claude/09-decisions.md)).
+
+    Поэтому проверка срабатывает, только когда тег выглядит как X.Y.Z. Что
+    строка образа вообще на месте — проверяется всегда.
+    """
+    text = (REPO / "docker-compose.yml").read_text(encoding="utf-8")
+    match = re.search(COMPOSE_IMAGE, text)
+    assert match, "в docker-compose.yml не нашёл строку с образом anime365-downloader"
+
+    tag = match.group("ver")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", tag):
+        return  # образ берётся из реестра — номер клеит пайплайн, не файл
+
+    assert tag == _declared(), (
+        f"в docker-compose.yml собирается образ {tag}, а в pyproject.toml версия "
+        f"{_declared()}"
     )
