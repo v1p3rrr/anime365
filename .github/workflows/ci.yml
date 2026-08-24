@@ -131,7 +131,10 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: anime365-downloader
-          tags: type=raw,value=ci
+          # Отсюда metadata-action берёт метку `org.opencontainers.image.version`.
+          # Раньше стояло `ci`, и опубликованный образ так и сообщал о себе:
+          # версия «ci». Тег для Trivy задаётся отдельно, в шаге сборки.
+          tags: type=raw,value=${{ steps.ver.outputs.version }}
 
       # Ни логина, ни секретов в этой работе нет — и весь код, который
       # выполняется при сборке (npm-хуки зависимостей, pip, RUN из Dockerfile),
