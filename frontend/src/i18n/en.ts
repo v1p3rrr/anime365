@@ -528,6 +528,7 @@ export const en: Dictionary = {
     noSectionsForTypes: 'Nothing for the enabled translation types. Turn some on with the chips above or in settings.',
     translationsAll: 'Translations for the whole title',
     translationsLoading: 'loading from Anime365…',
+    translationsFailed: 'could not load from Anime365',
     episodes: 'Episodes',
     showNonContent: 'Show trailers and promos ({count})',
     columnEpisode: 'Episode',
