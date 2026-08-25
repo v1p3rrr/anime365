@@ -6,10 +6,25 @@
 пришлось бы перечислять все варианты, а промахнувшись мимо одного — молча не
 скачать субтитры.
 
-Чего нормализация НЕ делает. Скобки не выбрасываются подряд: `YakuSub Studio
-(Aero)` — это название команды, а не технический хвост, и склеивать её с
-`YakuSub Studio` нельзя. Выбрасывается только то, что заведомо описывает файл,
-а не автора: разрешение, битность, кодек, источник, число каналов.
+⚠️ **Скобки выбрасываются целиком** — и круглые, и квадратные. Раньше было не
+так: считалось, что `YakuSub Studio (Aero)` — это отдельная команда, и склеивать
+её с `YakuSub Studio` нельзя. Решение пересмотрено пользователем
+([D-172](../../../claude/09-decisions.md)), и вот с какими доводами.
+
+Каталог существует ровно для одного — списка приоритетов автоскачивания
+**субтитров**. В скобках же лежат либо люди внутри группы, либо пометка о файле:
+`AniDUB (BalFor & Trina_D)`, `SoundSub (Invento & Killami)`, `AniRise
+(перезалив)`, `AniRise (исправленная)`. Выбирать поимённо переводчика внутри
+студии никто не собирается, а вот промахнуться мимо одного из четырнадцати
+написаний `YakuSub Studio` — легко, и цена промаха: субтитры молча не скачались.
+
+Замерено на живых данных: у субтитров на языках автоскачивания 665 написаний и
+630 ключей; правило сводит их к **556**, дополнительно сливая 32 группы. Случаев,
+где скобки — это всё имя целиком, не нашлось ни одного, но запасной вариант на
+них есть: пустого ключа такая строка не получит.
+
+Что по-прежнему выбрасывается вне скобок: технический хвост — разрешение,
+битность, кодек, источник, число каналов (`SubsPlease 1080p`, `Crunchyroll 4k`).
 """
 
 from __future__ import annotations
@@ -21,7 +36,12 @@ from datetime import datetime
 from sqlalchemy import select
 
 from app.core.db import session_scope
-from app.models.autodownload import AUTO_LANGS, SubtitleAuthor
+from app.models.autodownload import (
+    AUTO_LANGS,
+    AutoDownloadRule,
+    SeriesAutoDownload,
+    SubtitleAuthor,
+)
 
 log = logging.getLogger(__name__)
 
@@ -60,21 +80,27 @@ def _is_technical(token: str) -> bool:
     return any(pattern.match(cleaned) for pattern in _TECH_PATTERNS)
 
 
-def _strip_technical_groups(value: str) -> str:
-    """Убирает скобки, ЦЕЛИКОМ состоящие из технических слов.
+#: Скобки любого вида вместе с содержимым. Вложенных в живых данных нет, поэтому
+#: выражение простое и не пытается их разбирать.
+_BRACKETS = re.compile(r"\[[^\[\]]*\]|\([^()]*\)")
 
-    Проверяется всё содержимое, а не отдельные слова: `(Aero)` остаётся, а
-    `[BDRip 1080p x265]` уходит. Половинчатое `(Aero 1080p)` тоже остаётся —
-    выкусывать часть скобки означало бы гадать, что там имя, а что описание.
+
+def _strip_bracket_groups(value: str) -> str:
+    """Убирает всё, что в скобках, — и круглых, и квадратных.
+
+    Разбирать содержимое больше не нужно: что там окажется — люди внутри студии
+    (`SoundSub (Invento & Killami)`), пометка о файле (`(BD)`) или о самой
+    работе (`(перезалив)`, `(исправленная)`) — для списка приоритетов
+    безразлично. Выбирают студию, а не переводчика внутри неё.
+
+    ⚠️ Если в скобках было имя целиком, строка остаётся как есть. Иначе ключ
+    получился бы пустым, а пустой ключ означает «здесь не автор» — и запись
+    молча выпала бы из каталога. В живых данных таких строк не нашлось ни одной,
+    но правило дешевле проверки.
     """
-
-    def replace(match: re.Match[str]) -> str:
-        inner = match.group(1)
-        tokens = re.split(r"[\s,;/|]+", inner)
-        return "" if tokens and all(_is_technical(token) for token in tokens) else match.group(0)
-
-    value = re.sub(r"\[([^\[\]]*)\]", replace, value)
-    return re.sub(r"\(([^()]*)\)", replace, value)
+    without = _BRACKETS.sub(" ", value)
+    without = re.sub(r"\s+", " ", without).strip(" .,;:-&")
+    return without or value
 
 
 def _meaningful_tokens(name: str) -> list[str]:
@@ -85,7 +111,7 @@ def _meaningful_tokens(name: str) -> list[str]:
     успевает превратиться в четыре токена `eac 3 2 0`, ни один из которых сам
     по себе техническим не выглядит, и мусор остаётся в каталоге как «группа».
     """
-    value = _strip_technical_groups(str(name))
+    value = _strip_bracket_groups(str(name))
     tokens = [token for token in re.split(r"\s+", value) if token]
     while tokens and _is_technical(tokens[-1]):
         tokens.pop()
@@ -252,6 +278,105 @@ def entry_matches(entry: str, raw_name: str, normalized_key: str) -> bool:
     if pattern is None:
         return entry == normalized_key
     return bool(pattern.search(raw_name or "") or pattern.search(normalized_key or ""))
+
+
+def _renormalized(entries: list[str]) -> list[str]:
+    """Записи списка по текущему правилу, без повторов и с сохранением порядка.
+
+    Порядок — это и есть приоритет, менять его нельзя. Регулярные выражения
+    остаются как есть: их пишет человек, и нормализовать шаблон бессмысленно.
+    """
+    out: list[str] = []
+    for entry in entries:
+        value = entry if is_regex(entry) else (normalize_author(entry) or entry)
+        if value and value not in out:
+            out.append(value)
+    return out
+
+
+def renormalize_saved_entries() -> int:
+    """Приводит сохранённые списки приоритетов к текущему правилу нормализации.
+
+    ⚠️ Без этого смена правила ломает уже настроенное **молча**. Список хранит
+    нормализованный ключ (его кладёт `AuthorPriorityList.tsx`), а обычная запись
+    сверяется как `entry == normalized_key`. Стоит правилу измениться — и
+    сохранённый `yakusub studio (aero)` перестаёт совпадать с новым ключом
+    `yakusub studio`. Внешне ничего не происходит: субтитры просто не качаются.
+
+    Возвращает число изменённых списков. Идемпотентна: повторный прогон по уже
+    приведённым записям ничего не меняет.
+    """
+    changed = 0
+    with session_scope() as session:
+        for model in (AutoDownloadRule, SeriesAutoDownload):
+            for row in session.execute(select(model)).scalars():
+                for field in ("priorities", "blacklist"):
+                    before = list(getattr(row, field) or [])
+                    after = _renormalized(before)
+                    if after != before:
+                        setattr(row, field, after)
+                        changed += 1
+    return changed
+
+
+def recompute_keys() -> int:
+    """Пересчитывает ключи каталога и склеивает записи, которые теперь совпали.
+
+    Каталог наполняется лениво и живёт долго, поэтому смена правила
+    нормализации оставляет в нём старые ключи навсегда. У пользователя это
+    выглядело так: в подсказке шесть отдельных `YakuSub Studio` — с `(Aero)`,
+    с тремя разными тройками людей и без скобок вовсе. Замерено: **79 записей
+    из 498** со скобками в ключе.
+
+    ⚠️ Порядок операций важен: у таблицы ограничение уникальности на
+    `(lang, key)`. Сначала удаляем проигравшие записи и сбрасываем изменения в
+    базу, и только потом переписываем ключ победителю — иначе он столкнётся с
+    ещё живой строкой, занимающей тот же ключ.
+
+    Победитель — тот, кого встречали чаще: его форма записи и остаётся в
+    подсказке. Счётчики складываются, дата последней встречи берётся поздняя.
+
+    Возвращает число склеенных записей. Идемпотентна.
+    """
+    with session_scope() as session:
+        rows = list(session.execute(select(SubtitleAuthor)).scalars())
+
+        groups: dict[tuple[str, str], list[SubtitleAuthor]] = {}
+        for row in rows:
+            key = normalize_author(row.name)
+            if not key:
+                # Строка оказалась не автором вовсе (описание дорожки). Трогать
+                # её не будем: удаление — не задача пересчёта ключей.
+                continue
+            groups.setdefault((row.lang, key), []).append(row)
+
+        merged = 0
+        plan: list[tuple[SubtitleAuthor, str, int, datetime | None]] = []
+        for (_lang, key), members in groups.items():
+            members.sort(key=lambda item: (-(item.seen or 0), item.id))
+            winner = members[0]
+            plan.append(
+                (
+                    winner,
+                    key,
+                    sum(item.seen or 0 for item in members),
+                    max((item.last_seen for item in members if item.last_seen), default=None),
+                )
+            )
+            for loser in members[1:]:
+                session.delete(loser)
+                merged += 1
+
+        session.flush()
+
+        for winner, key, seen, last_seen in plan:
+            winner.key = key
+            winner.name = display_name(winner.name) or winner.name
+            winner.seen = seen
+            if last_seen is not None:
+                winner.last_seen = last_seen
+
+    return merged
 
 
 def backfill_from_stored_translations(limit: int | None = None) -> int:

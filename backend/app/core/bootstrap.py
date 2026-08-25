@@ -13,6 +13,7 @@ from app.core.migrations import add_missing_columns, drop_obsolete_indexes, sync
 from app.core.settings_registry import PATH_KEYS, check_path_layout
 from app.models import DEFAULT_USER_ID, AppSetting, AppUser
 from app.services.fts import init_fts
+from app.services.subtitle_authors import recompute_keys, renormalize_saved_entries
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +76,26 @@ def bootstrap() -> None:
         log.info("Удалено устаревших индексов: %d", obsolete)
     init_fts()
     close_orphaned_runs()
+
+    # Ключи каталога групп и сохранённые списки приоритетов пересчитываются по
+    # ТЕКУЩЕМУ правилу нормализации ([D-172](../../../claude/09-decisions.md)).
+    #
+    # ⚠️ Без этого смена правила ломает уже настроенное молча. Каталог живёт
+    # долго и наполняется лениво, поэтому старые ключи остались бы в подсказке
+    # навсегда: у пользователя там было шесть отдельных `YakuSub Studio`. А
+    # список приоритетов хранит нормализованный ключ и сверяется точным
+    # совпадением — сохранённый `yakusub studio (aero)` просто перестал бы
+    # подходить, и субтитры не качались бы без единого сообщения.
+    #
+    # Обе операции идемпотентны и дёшевы (у пользователя 498 записей), поэтому
+    # гоняются на каждом старте, а не прячутся за флагом «миграция выполнена»:
+    # флаг — это ещё одно состояние, которое может разойтись с данными.
+    merged = recompute_keys()
+    if merged:
+        log.info("Каталог групп: склеено записей после смены правила — %d", merged)
+    renamed = renormalize_saved_entries()
+    if renamed:
+        log.info("Списки приоритетов приведены к текущему правилу: %d", renamed)
 
     with session_scope() as session:
         if session.get(AppUser, DEFAULT_USER_ID) is None:

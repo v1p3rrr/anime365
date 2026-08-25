@@ -52,19 +52,55 @@ class TestOneTeamOneKey:
         assert normalize_author("Wakanim [BDRip 1080p x265]") == normalize_author("Wakanim")
 
 
+class TestBracketsCollapseWholesale:
+    """Скобки выбрасываются целиком, что бы в них ни лежало.
+
+    ⚠️ Раньше правило было обратным: считалось, что `(Aero)` — это отдельная
+    команда внутри студии, и склеивать её с `YakuSub Studio` нельзя. Решение
+    пересмотрено пользователем ([D-172](../../claude/09-decisions.md)): каталог
+    нужен только для списка приоритетов автоскачивания **субтитров**, и выбирать
+    там переводчика поимённо внутри студии никто не собирается.
+
+    Цена прежнего правила измерена: у `YakuSub Studio` четырнадцать написаний,
+    у `Crunchyroll` восемь. Промахнуться мимо одного из них означает молча не
+    скачать субтитры — а заметить это нечем.
+    """
+
+    def test_people_inside_a_studio_do_not_split_it(self) -> None:
+        studio = normalize_author("YakuSub Studio")
+        assert normalize_author("YakuSub Studio (Aero)") == studio
+        assert normalize_author("YakuSub Studio (Helge & Little Devil & Selfish)") == studio
+
+    def test_a_note_about_the_work_falls_off_too(self) -> None:
+        """`(перезалив)`, `(исправленная)` — из живых данных, обе у `AniRise`."""
+        assert normalize_author("AniRise (перезалив)") == normalize_author("AniRise")
+        assert normalize_author("AniRise (исправленная)") == normalize_author("AniRise")
+
+    def test_a_half_technical_group_goes_as_well(self) -> None:
+        """Разбирать содержимое больше не нужно — оно всё равно отбрасывается."""
+        assert normalize_author("Kazoku (Aero 1080p)") == normalize_author("Kazoku")
+
+    def test_square_and_round_together(self) -> None:
+        assert normalize_author("NetFlix [SDH] (BD)") == normalize_author("NetFlix")
+
+    def test_brackets_alone_keep_the_name(self) -> None:
+        """Иначе ключ выйдет пустым, а пустой означает «здесь не автор».
+
+        В живых данных таких строк не нашлось ни одной, но правило дешевле
+        проверки: запись молча выпала бы из каталога.
+        """
+        assert normalize_author("[Fortuna.TV]") != ""
+
+
 class TestDifferentTeamsStayApart:
     """Ошибка в эту сторону не видна глазом, поэтому проверяется явно."""
 
-    def test_a_named_suffix_is_part_of_the_name(self) -> None:
-        """`(Aero)` — это команда, а не описание файла."""
-        assert normalize_author("YakuSub Studio (Aero)") != normalize_author("YakuSub Studio")
-
-    def test_a_half_technical_group_is_left_alone(self) -> None:
-        """Выкусывать часть скобки значило бы гадать, что там имя."""
-        assert normalize_author("Kazoku (Aero 1080p)") != normalize_author("Kazoku")
-
     def test_similar_names_are_not_merged(self) -> None:
         assert normalize_author("AniPlague") != normalize_author("AniPlay")
+
+    def test_a_studio_is_not_merged_with_another_studio(self) -> None:
+        """Скобки схлопываются, но разные имена перед ними — нет."""
+        assert normalize_author("SoundSub (Invento)") != normalize_author("MedusaSub (Invento)")
 
 
 class TestNotAnAuthorAtAll:
