@@ -528,6 +528,7 @@ export const ja: Dictionary = {
     translationsAll: '作品全体の翻訳',
     translationsLoading: 'Anime365 から読み込み中…',
     translationsFailed: 'Anime365 から読み込めませんでした',
+    episodeGone: 'サイトにはもうありません',
     episodes: '話数',
     showNonContent: '予告・CM を表示（{count} 件）',
     columnEpisode: '話',

@@ -15,6 +15,7 @@ from app.core.db import session_scope
 from app.services.subtitle_authors import remember_authors
 from app.core.events import bus
 from app.models.catalog import Episode, Series, Translation, TranslationEmbed
+from app.models.library import LibraryFile
 from app.services.anime365 import Anime365Client, Anime365Error
 from app.services.audio import normalize_lang
 from app.services.coverage import (
@@ -100,6 +101,14 @@ async def ensure_details(series_id: int, force: bool = False) -> Series | None:
             row.episode_type = item.get("episodeType") or ""
             row.first_uploaded = item.get("firstUploadedDateTime")
             row.is_active = bool(item.get("isActive", 1))
+
+    # Ответ содержит ВЕСЬ список серий тайтла, поэтому по нему видно и то, чего
+    # там больше нет. У тайтла 40024 Anime365 удалил ONA-нарезку после выхода
+    # седьмой серии — у нас она жила в кэше и продолжала предлагаться к
+    # скачиванию, хотя ссылки уже не существовало.
+    _reconcile_with_site(
+        series_id, present_episodes={item["id"] for item in episodes if item.get("id")}
+    )
 
     with session_scope() as session:
         return session.get(Series, series_id)
@@ -309,6 +318,13 @@ async def ensure_translations(series_id: int, force: bool = False) -> list[dict[
         # сам, по мере того как пользователь открывает страницы.
         remember_authors(rows_for_db)
 
+        # `translations()` обходит все страницы, поэтому здесь ВЕСЬ список
+        # переводов тайтла — по нему видно и то, чего на сайте больше нет.
+        # Сверяем только на непустом ответе: см. пояснение в `_reconcile_with_site`.
+        _reconcile_with_site(
+            series_id, present_translations={row["id"] for row in rows_for_db}
+        )
+
     return payload
 
 
@@ -333,6 +349,120 @@ def _bulk_upsert_translations(rows: list[dict[str, Any]]) -> None:
             )
 
 
+def _bound_translation_ids(session, series_id: int) -> set[int]:
+    """Переводы тайтла, по которым у нас лежит скачанный файл.
+
+    Связь идёт через `t{id}` в имени файла: сканер вынимает его и кладёт в
+    `LibraryFile.anime365_translation_id`. Это единственный точный признак —
+    разметка серий знает только НОМЕР, а под одним номером у тайтла бывает
+    несколько разных серий ([D-170](../../../claude/09-decisions.md)).
+    """
+    ours = select(Translation.id).where(Translation.series_id == series_id)
+    rows = session.execute(
+        select(LibraryFile.anime365_translation_id).where(
+            LibraryFile.anime365_translation_id.in_(ours)
+        )
+    ).scalars()
+    return {value for value in rows if value is not None}
+
+
+def _forget_or_mark(session, rows: list[Any], bound: set[int], own_id) -> tuple[int, int]:
+    """Общая развилка для исчезнувшего: удалить или пометить.
+
+    Правило пользователя: чего не жалко — удаляем, к чему привязан файл —
+    оставляем с пометкой. Второе не роскошь: `t{id}` из имени файла ведёт
+    именно в эти строки, и без них скачанное осталось бы без автора, языка и
+    серии — безымянным файлом на диске.
+    """
+    now = datetime.utcnow()
+    deleted = marked = 0
+    for row in rows:
+        if own_id(row) in bound:
+            if row.missing_since is None:
+                row.missing_since = now
+                marked += 1
+        else:
+            session.delete(row)
+            deleted += 1
+    return deleted, marked
+
+
+def _reconcile_with_site(series_id: int, present_episodes: set[int] | None = None,
+                         present_translations: set[int] | None = None) -> dict[str, int]:
+    """Сводит наш кэш с тем, что сейчас есть на сайте.
+
+    ⚠️ **Пустой ответ не считается доказательством удаления.** Сеть отвалилась,
+    токен протух, сайт отдал пустую страницу — и мы бы стёрли весь кэш тайтла.
+    Ровно на этих граблях уже стоял обход библиотеки: там «отсутствует в
+    результате» означает «нет на диске», и частичный результат снёс бы всё
+    остальное ([D-155](../../../claude/09-decisions.md), бэклог §1.4). Поэтому
+    сверка работает только по НЕПУСТОМУ списку.
+
+    Вернувшееся на сайт снимает пометку: удалили по ошибке и вернули — обычное
+    дело, а запись, помеченная навсегда, врала бы.
+    """
+    stats = {"episodes_deleted": 0, "episodes_marked": 0,
+             "translations_deleted": 0, "translations_marked": 0, "restored": 0}
+
+    with session_scope() as session:
+        bound = _bound_translation_ids(session, series_id)
+
+        if present_translations:
+            rows = list(
+                session.execute(
+                    select(Translation).where(Translation.series_id == series_id)
+                ).scalars()
+            )
+            for row in rows:
+                if row.id in present_translations and row.missing_since is not None:
+                    row.missing_since = None
+                    stats["restored"] += 1
+            gone = [row for row in rows if row.id not in present_translations]
+            deleted, marked = _forget_or_mark(session, gone, bound, lambda row: row.id)
+            stats["translations_deleted"] = deleted
+            stats["translations_marked"] = marked
+
+        if present_episodes:
+            rows = list(
+                session.execute(
+                    select(Episode).where(Episode.series_id == series_id)
+                ).scalars()
+            )
+            # У серии своих файлов нет — привязка идёт через её переводы.
+            bound_episodes = {
+                row.episode_id
+                for row in session.execute(
+                    select(Translation).where(
+                        Translation.series_id == series_id, Translation.id.in_(bound or {0})
+                    )
+                ).scalars()
+                if row.episode_id is not None
+            }
+            for row in rows:
+                if row.id in present_episodes and row.missing_since is not None:
+                    row.missing_since = None
+                    stats["restored"] += 1
+            gone = [row for row in rows if row.id not in present_episodes]
+            deleted, marked = _forget_or_mark(
+                session, gone, bound_episodes, lambda row: row.id
+            )
+            stats["episodes_deleted"] = deleted
+            stats["episodes_marked"] = marked
+
+    if any(stats.values()):
+        log.info(
+            "Тайтл %s сведён с сайтом: серий удалено %s, помечено %s; "
+            "переводов удалено %s, помечено %s; вернулось %s",
+            series_id,
+            stats["episodes_deleted"],
+            stats["episodes_marked"],
+            stats["translations_deleted"],
+            stats["translations_marked"],
+            stats["restored"],
+        )
+    return stats
+
+
 def _to_float(value: Any) -> float | None:
     try:
         return float(value)
@@ -355,6 +485,8 @@ def _translation_dict(row: Translation) -> dict[str, Any]:
         "height": row.height,
         "duration": row.duration,
         "url": Anime365Client.rewrite_host(row.url or ""),
+        # Перевода на сайте больше нет: скачать его не выйдет, ссылка мертва.
+        "missing": row.missing_since is not None,
         "is_active": row.is_active,
         "_episode_num": None,
         "_episode_type": "",
@@ -617,6 +749,11 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
         episode_id = item.get("episode_id")
         if episode_id is None or item.get("type_lang") not in ("ru", "en", "ja"):
             continue
+        # Пропавшее с сайта не предлагаем: ссылки нет, попытка кончится отказом.
+        # Требование пользователя — показывать в таком случае только то, что уже
+        # лежит файлом.
+        if item.get("missing"):
+            continue
         by_episode.setdefault(episode_id, []).append(
             {
                 "id": item["id"],
@@ -659,6 +796,9 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
                 "episode_full": e.episode_full,
                 "episode_title": e.episode_title,
                 "episode_type": e.episode_type,
+                # Серии на сайте больше нет. Показываем — у пользователя к ней
+                # может лежать скачанный файл, — но скачивать предлагать нечего.
+                "missing": e.missing_since is not None,
                 "is_content": e.episode_type not in NON_CONTENT_EPISODE_TYPES,
                 # Ссылка на страницу серии на сайте. API её не отдаёт, но схема
                 # видна в ссылках самих переводов, которые мы храним:
@@ -666,7 +806,13 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
                 # Отрезав хвост перевода, получаем адрес серии. Выведено из
                 # данных, а не угадано — но если переводов нет, ссылки не будет:
                 # выдумывать её мы не станем.
-                "url": url_by_episode.get(e.id),
+                # ⚠️ У пропавшей серии ссылку не отдаём. Проверено запросом:
+                # сайт на такой адрес отвечает НЕ 404, а цепочкой редиректов
+                # 302→302→301 на страницу тайтла. То есть кнопка «открыть
+                # серию» сработала бы и увела человека не туда, ничего не
+                # объяснив. Заодно это причина, по которой удаление нельзя
+                # определять запросом ссылки — только сверкой со списком.
+                "url": None if e.missing_since else url_by_episode.get(e.id),
                 # ⚠️ Локальное — по НОМЕРУ серии, и это не оплошность. Файл на
                 # диске назван `S01E01` и ни о какой ONA-нарезке не знает: для
                 # него серия — это номер. Переводы и длительность выше ключуются

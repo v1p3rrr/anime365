@@ -16,6 +16,12 @@ export interface EpisodeItem {
   episode_title: string
   episode_type: string
   is_content: boolean
+  /**
+   * Серии больше нет на сайте. Показываем — к ней может лежать скачанный
+   * файл, — но скачивать предлагать нечего, и ссылку не даём: она уводит на
+   * страницу тайтла, а не на серию (проверено запросом).
+   */
+  missing?: boolean
   /** Страница серии на сайте. null — переводов нет, выводить адрес не из чего. */
   url: string | null
   /** Что уже лежит локально: video, sub_ru, sub_ja, sub_en. */

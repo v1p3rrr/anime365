@@ -529,6 +529,7 @@ export const en: Dictionary = {
     translationsAll: 'Translations for the whole title',
     translationsLoading: 'loading from Anime365…',
     translationsFailed: 'could not load from Anime365',
+    episodeGone: 'gone from the site',
     episodes: 'Episodes',
     showNonContent: 'Show trailers and promos ({count})',
     columnEpisode: 'Episode',
