@@ -561,18 +561,27 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
     # Длительности по серии: считаются по всем переводам, включая те, что
     # отфильтрованы по языку. Язык на хронометраж не влияет, а выборка шире —
     # значит медиана устойчивее.
-    durations_by_episode: dict[float, list[float]] = {}
+    # ⚠️ Ключ — идентификатор серии, а НЕ её номер. Под одним номером у тайтла
+    # живёт несколько разных серий: замерено на базе пользователя — 48 таких пар
+    # в 42 тайтлах. Чаще всего это трейлер рядом с первой серией (28 случаев), но
+    # бывает и альтернативная нарезка: у тайтла 40024 двенадцатиминутные
+    # ONA-серии повторяют первые шесть телевизионных.
+    #
+    # Пока ключом был номер, длительности сливались в одно ведро, и медиана
+    # 24-минутной серии показывалась у 12-минутной ONA. В базе при этом лежат
+    # верные числа: 1433 с у телевизионной первой серии против 869 с у ONA.
+    durations_by_episode: dict[int, list[float]] = {}
     for item in normalized:
-        episode_num = item.get("episode_num")
-        if episode_num is None or not item.get("duration"):
+        episode_id = item.get("episode_id")
+        if episode_id is None or not item.get("duration"):
             continue
-        # Трейлеры отсекаем обязательно: у них СВОЙ episodeInt, и он совпадает
-        # с номером настоящей серии — у Фрирен трейлер длиной 50 секунд лежит
-        # под номером 1 рядом с первой серией. Без фильтра он попадал в ту же
-        # выборку и сдвигал медиану.
+        # Трейлеры отсекаем и при ключе по идентификатору: они не попадают в
+        # `typical_duration` ниже, а он считается по всем значениям этого
+        # словаря. У Фрирен трейлер длиной 50 секунд иначе тянет вниз типичную
+        # длительность серии всего тайтла.
         if item.get("episode_type") in NON_CONTENT_EPISODE_TYPES:
             continue
-        durations_by_episode.setdefault(episode_num, []).append(item["duration"])
+        durations_by_episode.setdefault(episode_id, []).append(item["duration"])
 
     # Адрес страницы серии на сайте. Считаем по ПОЛНЫМ записям переводов:
     # в by_episode ниже уходит урезанный набор полей для клиента, и `url`
@@ -596,12 +605,19 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
 
     # Переводы, сгруппированные по серии: из них строится выбор при загрузке
     # конкретной серии.
-    by_episode: dict[float, list[dict[str, Any]]] = {}
+    #
+    # ⚠️ Ключ — идентификатор серии, а НЕ её номер, по той же причине, что у
+    # длительностей и у `url_by_episode` выше. Пока ключом был номер, в список
+    # первой серии подмешивались чужие переводы: у тайтла 40024 к пяти
+    # телевизионным добавлялись два от ONA-нарезки, и получалось семь вариантов
+    # русских субтитров с тремя «Crunchyroll» вместо двух. Трейлеры делали то же
+    # самое ещё у двух десятков тайтлов — просто там это не бросалось в глаза.
+    by_episode: dict[int, list[dict[str, Any]]] = {}
     for item in normalized:
-        episode_num = item.get("episode_num")
-        if episode_num is None or item.get("type_lang") not in ("ru", "en", "ja"):
+        episode_id = item.get("episode_id")
+        if episode_id is None or item.get("type_lang") not in ("ru", "en", "ja"):
             continue
-        by_episode.setdefault(episode_num, []).append(
+        by_episode.setdefault(episode_id, []).append(
             {
                 "id": item["id"],
                 "lang": item.get("type_lang"),
@@ -651,6 +667,16 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
                 # данных, а не угадано — но если переводов нет, ссылки не будет:
                 # выдумывать её мы не станем.
                 "url": url_by_episode.get(e.id),
+                # ⚠️ Локальное — по НОМЕРУ серии, и это не оплошность. Файл на
+                # диске назван `S01E01` и ни о какой ONA-нарезке не знает: для
+                # него серия — это номер. Переводы и длительность выше ключуются
+                # по идентификатору, потому что там источник другой, сайт.
+                #
+                # Обратная сторона честная: скачав перевод ONA-серии, вы
+                # получите файл в той же ячейке `S01E01`, и «есть локально»
+                # загорится у обеих строк. Отличить их всё же можно — в имени
+                # наших файлов стоит `t{id}` перевода, и по нему поднимается
+                # цепочка «файл → перевод → серия → тип».
                 # Что уже есть локально: video, sub_ru, sub_ja, sub_en.
                 "have": sorted(set(have_by_episode.get(e.episode_num, []))),
                 # Языки звука локального видео. Пустой список при наличии видео
@@ -660,9 +686,9 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
                 # Что можно посмотреть прямо с диска, без обращения к сайту.
                 "local_videos": local_video_by_episode.get(e.episode_num, []),
                 # Секунды. None — переводов с известной длительностью нет.
-                "duration": median_duration(durations_by_episode.get(e.episode_num, [])),
+                "duration": median_duration(durations_by_episode.get(e.id, [])),
                 # Доступные переводы этой серии — для выбора при загрузке.
-                "translations": by_episode.get(e.episode_num, []),
+                "translations": by_episode.get(e.id, []),
             }
             for e in shown_episodes
         ],
