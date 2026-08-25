@@ -31,9 +31,10 @@ from pathlib import Path
 from app.core.config import settings
 from app.core.db import session_scope
 from app.models.autodownload import AutoDownloadMiss
-from app.models.catalog import Episode, Translation
+from app.models.catalog import Episode, Series, Translation
 from app.models.library import EpisodeMapping, LibraryFile, LibraryFolder, LibraryRoot
 from app.services.autodownload_rules import Resolved, resolve_for_series
+from app.services.coverage import NON_CONTENT_EPISODE_TYPES
 from app.services.languages import normalize_lang
 from app.services.library_scan import detect_subtitle_language
 from app.services.subtitle_authors import entry_matches, normalize_author
@@ -261,14 +262,29 @@ def _candidates(series_id: int, lang: str) -> dict[float, list[dict]]:
 
     Берём из локального кэша переводов: он наполняется при открытии тайтла и
     фоновым обходом, поэтому лишнего запроса к чужому API здесь нет.
+
+    ⚠️ **Ключ здесь обязан остаться номером**, в отличие от страницы тайтла
+    ([D-170](../../claude/09-decisions.md)). Мы подбираем субтитры к **файлу на
+    диске**, а файл назван `S01E01` и о личности серии на сайте не знает: для
+    него серия — это номер, другого признака нет.
+
+    Отсюда и опасность. Под одним номером у тайтла живёт несколько разных серий
+    (замерено: 48 пар в 42 тайтлах), и в одно ведро попадали переводы трейлера и
+    альтернативной нарезки. Дальше побеждал тот, у кого выше `priority`, — то
+    есть к 24-минутной серии могли молча приехать субтитры от 12-минутного
+    ONA-варианта или вовсе от трейлера, с чужими таймингами и без второй
+    половины. Поэтому ведро сужается здесь, до всякого выбора.
     """
     with session_scope() as session:
+        series = session.get(Series, series_id)
+        series_type = (series.type or "") if series is not None else ""
         rows = session.execute(
             select(
                 Translation.id,
                 Translation.authors_summary,
                 Translation.priority,
                 Episode.episode_num,
+                Episode.episode_type,
             )
             .join(Episode, Translation.episode_id == Episode.id)
             .where(
@@ -280,8 +296,12 @@ def _candidates(series_id: int, lang: str) -> dict[float, list[dict]]:
         ).all()
 
     out: dict[float, list[dict]] = {}
-    for translation_id, authors, priority, episode_num in rows:
+    for translation_id, authors, priority, episode_num, episode_type in rows:
         if episode_num is None:
+            continue
+        # Трейлер под номером первой серии — самый частый случай из замера
+        # (28 пар из 48). Его субтитры не подходят к серии никогда.
+        if episode_type in NON_CONTENT_EPISODE_TYPES:
             continue
         out.setdefault(float(episode_num), []).append(
             {
@@ -291,8 +311,23 @@ def _candidates(series_id: int, lang: str) -> dict[float, list[dict]]:
                 # `priority` у Anime365 — его собственная оценка; при прочих
                 # равных доверяем ей, а не случайному порядку строк в базе.
                 "priority": priority if priority is not None else -1,
+                "_episode_type": episode_type or "",
             }
         )
+
+    for number, items in out.items():
+        kinds = {item["_episode_type"] for item in items}
+        # Под номером осталось несколько ВИДОВ содержимого — например `tv` и
+        # `ona`. Канонические серии те, чей вид совпадает с видом самого
+        # тайтла: у сериала это телевизионные, у OVA — сами OVA. Если совпадения
+        # нет вовсе, ничего не отбрасываем: остаться без кандидатов хуже, чем
+        # выбрать из того, что есть.
+        if len(kinds) > 1 and series_type in kinds:
+            items = [item for item in items if item["_episode_type"] == series_type]
+            out[number] = items
+        for item in items:
+            item.pop("_episode_type", None)
+
     return out
 
 
