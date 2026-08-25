@@ -102,6 +102,11 @@ export function EpisodeRow({
               {format.duration(episode.duration)}
             </Text>
           )}
+          {episode.missing && (
+            <Badge size="xs" variant="light" color="red">
+              {t('title.episodeGone')}
+            </Badge>
+          )}
           {!episode.is_content && (
             <Badge size="xs" variant="light" color="orange">
               {episode.episode_type}

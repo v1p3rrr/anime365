@@ -528,6 +528,7 @@ export const ru = {
     translationsAll: 'Переводы за весь тайтл',
     translationsLoading: 'подгружаются с Anime365…',
     translationsFailed: 'не удалось загрузить с Anime365',
+    episodeGone: 'нет на сайте',
     episodes: 'Серии',
     showNonContent: 'Показать трейлеры и рекламу ({count})',
     columnEpisode: 'Серия',

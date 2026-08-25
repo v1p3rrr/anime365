@@ -192,6 +192,15 @@ class Episode(Base):
     first_uploaded: Mapped[str | None] = mapped_column(String(32))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    #: Когда серия пропала с сайта. `None` — она там есть.
+    #:
+    #: ⚠️ Пометка, а не удаление, и только для того, к чему привязан файл. У
+    #: тайтла 40024 Anime365 удалил ONA-нарезку после выхода седьмой серии, а у
+    #: нас она осталась в кэше навсегда. Ничего не привязано — запись удаляется
+    #: целиком; привязано — остаётся, иначе скачанный файл потерял бы связь с
+    #: серией и превратился бы в безымянный мусор на диске.
+    missing_since: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+
     series: Mapped[Series] = relationship(back_populates="episodes")
 
 
@@ -231,6 +240,14 @@ class Translation(Base):
     added_at: Mapped[str | None] = mapped_column(String(32))
     updated_at: Mapped[str | None] = mapped_column(String(32))
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    #: Когда перевод пропал с сайта. `None` — он там есть.
+    #:
+    #: Скачивать помеченное больше не предлагаем: ссылки уже нет, попытка
+    #: кончится отказом. Но запись остаётся, если по ней скачан файл: `t{id}` из
+    #: имени файла ведёт именно сюда, и без этой строки скачанное осталось бы
+    #: без автора, языка и серии.
+    missing_since: Mapped[datetime | None] = mapped_column(DateTime, index=True)
 
 
 class TranslationEmbed(Base):

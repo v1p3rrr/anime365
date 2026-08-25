@@ -292,6 +292,9 @@ def _candidates(series_id: int, lang: str) -> dict[float, list[dict]]:
                 Translation.type_kind == "sub",
                 Translation.type_lang == lang,
                 Translation.is_active.is_(True),
+                # Пропавшее с сайта не качаем: ссылки уже нет, попытка кончится
+                # отказом и записью о неудаче в очереди.
+                Translation.missing_since.is_(None),
             )
         ).all()
 
