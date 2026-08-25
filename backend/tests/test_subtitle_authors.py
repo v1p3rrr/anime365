@@ -83,6 +83,16 @@ class TestBracketsCollapseWholesale:
     def test_square_and_round_together(self) -> None:
         assert normalize_author("NetFlix [SDH] (BD)") == normalize_author("NetFlix")
 
+    def test_an_unclosed_bracket_falls_off_too(self) -> None:
+        """Найдено в живом каталоге: `Watson (fixed` — без парной скобки.
+
+        Из-за неё группа жила двумя записями: `watson` с четырьмя встречами и
+        `watson (fixed` с одной. Хвост после открывающей скобки именем не
+        бывает, поэтому отбрасывается так же, как закрытая скобка.
+        """
+        assert normalize_author("Watson (fixed") == normalize_author("Watson")
+        assert normalize_author("Kazoku [10bit") == normalize_author("Kazoku")
+
     def test_brackets_alone_keep_the_name(self) -> None:
         """Иначе ключ выйдет пустым, а пустой означает «здесь не автор».
 
