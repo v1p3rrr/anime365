@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 from urllib.parse import urlsplit, urlunsplit
+from urllib.request import getproxies_environment, proxy_bypass_environment
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +69,40 @@ def describe() -> str:
         f"{name}={value if name == 'NO_PROXY' else mask_credentials(value)}"
         for name, value in active
     )
+
+
+def route_for(url: str) -> str:
+    """Через что пойдёт **этот** запрос: адрес прокси или «напрямую».
+
+    `describe()` отвечает на вопрос «что вообще задано», а этот — «что применится
+    к конкретному адресу». Разница существенная: `NO_PROXY` и разные схемы
+    означают, что часть запросов идёт мимо прокси, и по общей строке из лога при
+    старте этого не видно.
+
+    Нужно для разбора отказов. На сервере пользователя таймауты к Anime365
+    выглядели как сетевая поломка, хотя сеть была исправна, — и первым делом
+    хотелось знать, действительно ли запрос шёл через прокси. Ответить было
+    нечем: в логе стояло только «Зеркало недоступно».
+
+    Берём `getproxies_environment()`, а не `getproxies()`: второй на Windows
+    лезет ещё и в реестр, и ответ переставал бы совпадать с тем, что видит
+    контейнер. httpx с `trust_env=True` читает те же переменные.
+
+    ⚠️ Учётные данные из адреса вырезаются: строка идёт в лог.
+    """
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    proxies = getproxies_environment()
+
+    if not proxies:
+        return "напрямую (прокси не задан)"
+    if host and proxy_bypass_environment(host, proxies):
+        return f"напрямую ({host} подходит под NO_PROXY)"
+
+    chosen = proxies.get(parts.scheme) or proxies.get("all")
+    if not chosen:
+        return f"напрямую (для схемы {parts.scheme} прокси не задан)"
+    return mask_credentials(chosen)
 
 
 def log_status() -> None:

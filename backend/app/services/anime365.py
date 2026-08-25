@@ -18,9 +18,19 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from app.core import proxy
 from app.core.config import settings
 
 log = logging.getLogger(__name__)
+
+#: Запросы к API, идущие прямо сейчас. Нужен только для диагностики отказов:
+#: «таймаут, когда параллельно шёл один запрос» и «таймаут, когда их было сорок» —
+#: это две разные истории, а по прежнему логу они выглядели одинаково.
+#:
+#: Метки-пустышки, а не адреса: два одинаковых адреса одновременно — обычное
+#: дело (две вкладки с одним тайтлом), и множество строк схлопнуло бы их в одну,
+#: занизив счёт.
+_inflight: set[object] = set()
 
 # Поля для списка каталога. Без этого параметра API отдаёт ещё и episodes[],
 # descriptions[] и links[] — две записи весят 38 КБ, весь каталог так не выкачать.
@@ -238,9 +248,13 @@ class Anime365Client:
         origins = self._ordered_origins()
         last_error: Exception | None = None
 
-        for origin in origins:
+        for attempt, origin in enumerate(origins, start=1):
+            queued = time.monotonic()
             await self._limiter.acquire()
+            started = time.monotonic()
             url = f"{origin}{path}"
+            marker = object()
+            _inflight.add(marker)
             try:
                 response = await self._client.get(url, params=params)
             except httpx.HTTPError as exc:
@@ -248,9 +262,42 @@ class Anime365Client:
                 # к сообщению обязательно добавляем класс исключения — без него
                 # в UI приходило бы просто «Все зеркала недоступны: ».
                 detail = str(exc) or exc.__class__.__name__
-                log.warning("Зеркало %s недоступно: %s (%s)", origin, detail, type(exc).__name__)
+                # ⚠️ Подробности обязательны, и вот почему. На сервере
+                # пользователя эти таймауты шли сутками, а строка в логе
+                # говорила только «Зеркало недоступно» — по ней нельзя было
+                # отличить оборванную сеть от запроса, ушедшего мимо прокси, от
+                # ожидания в очереди лимитера. Полдня ушло на проверку сети,
+                # которая оказалась исправной. Здесь всё, чего тогда не хватало.
+                log.warning(
+                    "Зеркало %s недоступно: %s (%s). Запрос %s, зеркало %s из %s, "
+                    "ждал ответа %.0f мс, до этого в очереди лимитера %.0f мс, "
+                    "маршрут: %s, одновременных запросов: %s",
+                    origin,
+                    detail,
+                    type(exc).__name__,
+                    path,
+                    attempt,
+                    len(origins),
+                    (time.monotonic() - started) * 1000,
+                    (started - queued) * 1000,
+                    proxy.route_for(url),
+                    len(_inflight),
+                )
                 last_error = Anime365Error(f"{type(exc).__name__}: {detail}")
                 continue
+            finally:
+                _inflight.discard(marker)
+
+            # Успех тоже стоит уметь посмотреть — но не в обычном логе, а по
+            # требованию: `A365_LOG_LEVELS=app.services.anime365=DEBUG` (D-158).
+            # Без этого «медленно» и «не отвечает» невозможно отличить.
+            log.debug(
+                "%s → %s за %.0f мс (маршрут: %s)",
+                path,
+                response.status_code,
+                (time.monotonic() - started) * 1000,
+                proxy.route_for(url),
+            )
 
             if response.status_code == 403:
                 raise SubscriptionRequired(
