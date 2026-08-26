@@ -121,6 +121,27 @@ class TestBoundaries:
     def test_the_hop_limit_is_not_absurd(self) -> None:
         assert 2 <= MAX_REDIRECT_HOPS <= 10
 
+    def test_a_following_client_does_not_disarm_the_check(self) -> None:
+        """⚠️ Защита не должна зависеть от того, как создан клиент.
+
+        `client.send()` у клиента с `follow_redirects=True` проходит цепочку
+        сам и возвращает финальный ответ. Цикл проверки увидел бы
+        `is_redirect == False` и отдал бы наружу непроверенный хост, ничего не
+        заметив. Поэтому флаг задаётся на самом вызове, а не только при
+        создании клиента.
+        """
+        handler = _redirect_to(INTERNAL)
+
+        async def run():
+            # Клиент нарочно «неправильный» — со следованием редиректов.
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handler), follow_redirects=True
+            ) as client:
+                return await open_checked(client, ALLOWED, {}, stream=False)
+
+        with pytest.raises(Anime365Error):
+            asyncio.run(run())
+
 
 class TestAllowlistItself:
     def test_mirrors_and_cdn_pass(self) -> None:

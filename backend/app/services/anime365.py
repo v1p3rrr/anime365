@@ -521,27 +521,55 @@ class Anime365Client:
         return sizes
 
     async def _probe_size(self, url: str) -> int | None:
-        try:
-            response = await self._client.head(url, follow_redirects=True, timeout=20)
-            length = response.headers.get("content-length")
-            if response.status_code < 400 and length:
-                return int(length)
-        except (httpx.HTTPError, ValueError):
-            pass
+        """Вес файла до скачивания: сперва `HEAD`, при отказе — `Range`.
 
-        try:
-            response = await self._client.get(
-                url, headers={"Range": "bytes=0-0"}, follow_redirects=True, timeout=20
-            )
-            # `Content-Range: bytes 0-0/83960238` — полный размер после дроби.
-            content_range = response.headers.get("content-range", "")
-            if "/" in content_range:
-                total = content_range.rsplit("/", 1)[1].strip()
-                if total.isdigit():
-                    return int(total)
-        except (httpx.HTTPError, ValueError):
-            pass
+        ⚠️ Адрес приходит из ответа `embed` и **не проходит** через
+        `rewrite_host`: тот намеренно пропускает чужие хосты, потому что
+        CDN-ссылки подписанные и живут на своих доменах. Значит проверять
+        его надо здесь, иначе проба уходит по любому адресу, который вернул
+        чужой API, — включая внутреннюю сеть ([D-174](../../../claude/09-decisions.md)).
 
+        Импорт локальный: `downloader` тянет этот модуль сверху, и обычный
+        импорт замкнул бы кольцо.
+        """
+        from app.services.downloader import open_checked
+
+        for method, headers, pick in (
+            ("HEAD", {}, self._length_from_headers),
+            ("GET", {"Range": "bytes=0-0"}, self._length_from_range),
+        ):
+            try:
+                response = await open_checked(
+                    self._client, url, headers, stream=False, method=method, timeout=20
+                )
+            except (Anime365Error, httpx.HTTPError):
+                # Неизвестный хост или сеть: вес не выясним, но и не роняем
+                # выдачу — сводка качества просто останется без цифры.
+                continue
+            try:
+                size = pick(response)
+            except ValueError:
+                size = None
+            if size is not None:
+                return size
+
+        return None
+
+    @staticmethod
+    def _length_from_headers(response: httpx.Response) -> int | None:
+        length = response.headers.get("content-length")
+        if response.status_code < 400 and length:
+            return int(length)
+        return None
+
+    @staticmethod
+    def _length_from_range(response: httpx.Response) -> int | None:
+        # `Content-Range: bytes 0-0/83960238` — полный размер после дроби.
+        content_range = response.headers.get("content-range", "")
+        if "/" in content_range:
+            total = content_range.rsplit("/", 1)[1].strip()
+            if total.isdigit():
+                return int(total)
         return None
 
     async def embed(self, translation_id: int) -> EmbedInfo:

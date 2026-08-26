@@ -20,7 +20,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
@@ -946,25 +946,54 @@ class DownloadQueue:
                 _fail_with_backoff(task_id, str(exc))
 
     def _claim_next(self) -> int | None:
-        """Забирает следующую задачу, помечая её как выполняющуюся."""
+        """Забирает следующую задачу, помечая её как выполняющуюся.
+
+        ⚠️ **Один оператор, а не «выбрать, потом записать».** Раньше здесь шёл
+        `SELECT` и следом присвоение статуса. SQLite не сериализует читателей,
+        поэтому два воркера успевали прочитать одну и ту же строку и оба брали
+        задачу себе.
+
+        Кончалось это не дублем в списке, а битым файлом: загрузка пишет в
+        `.part`, открытый на дописывание, и смещение каждый воркер считает сам
+        (`existing = part.stat().st_size`). Двое дописывают перекрывающиеся
+        куски в один файл — видео получается испорченным, а задача при этом
+        завершается успехом, то есть молча.
+
+        По умолчанию воркер один и гонки нет, но `max_concurrent_downloads`
+        меняется из интерфейса, а `0` означает «без ограничения» и даёт восемь.
+
+        Теперь строку выбирает подзапрос внутри самого `UPDATE`: оператор
+        выполняется под блокировкой записи целиком, и окна между выбором и
+        пометкой не существует. Второй воркер дождётся блокировки, пересчитает
+        подзапрос и возьмёт **следующую** задачу.
+        """
         now = datetime.utcnow()
+        candidate = (
+            select(DownloadTask.id)
+            .where(
+                DownloadTask.status == TaskStatus.QUEUED,
+                (DownloadTask.retry_after.is_(None)) | (DownloadTask.retry_after <= now),
+            )
+            # Строго по позиции — тому порядку, который пользователь видит
+            # в списке и меняет перетаскиванием. У записей без позиции
+            # (заведены до появления поля) её роль играет id.
+            .order_by(func.coalesce(DownloadTask.position, DownloadTask.id))
+            .limit(1)
+            .scalar_subquery()
+        )
         with session_scope() as session:
-            task = session.execute(
-                select(DownloadTask)
+            return session.execute(
+                update(DownloadTask)
                 .where(
+                    DownloadTask.id == candidate,
+                    # Условие по статусу повторяется намеренно: подзапрос уже
+                    # его проверил, но между вычислением и записью не должно
+                    # оставаться ни одного предположения.
                     DownloadTask.status == TaskStatus.QUEUED,
-                    (DownloadTask.retry_after.is_(None)) | (DownloadTask.retry_after <= now),
                 )
-                # Строго по позиции — тому порядку, который пользователь видит
-                # в списке и меняет перетаскиванием. У записей без позиции
-                # (заведены до появления поля) её роль играет id.
-                .order_by(func.coalesce(DownloadTask.position, DownloadTask.id))
-                .limit(1)
+                .values(status=TaskStatus.DOWNLOADING)
+                .returning(DownloadTask.id)
             ).scalar_one_or_none()
-            if task is None:
-                return None
-            task.status = TaskStatus.DOWNLOADING
-            return task.id
 
     async def _process(self, task_id: int) -> None:
         with session_scope() as session:
