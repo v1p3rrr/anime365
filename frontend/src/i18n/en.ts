@@ -586,6 +586,7 @@ export const en: Dictionary = {
     files: 'Episode files',
     haveLocal: '{label}: available locally',
     missing: '{label}: missing',
+    embeddedOnly: '{label}: track inside the video file — autodownload treats the episode as covered',
     localHave: 'Local:',
     localNothing: 'Nothing local for this episode',
     audioUnknown: 'track unknown',

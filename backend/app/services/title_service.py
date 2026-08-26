@@ -673,12 +673,28 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
     # лежит на диске, не обращаясь к сайту. Файлов на серию бывает несколько
     # (озвучка и оригинал), поэтому список, а не одно значение.
     local_video_by_episode: dict[float, list[dict[str, Any]]] = {}
+    # Языки субтитров, лежащих ВНУТРИ видеофайла.
+    #
+    # ⚠️ Считаются отдельно от `have`, и это не мелочь. `have` собирается по
+    # разметке серий, то есть по **соседним файлам**; дорожка внутри контейнера
+    # туда не попадает никогда. Из-за этого страница писала «Субтитры RU: нет»
+    # ровно у тех серий, которые автоскачивание считало закрытыми — оно-то
+    # дорожки учитывает. Два ответа на один вопрос, и человеку не за что было
+    # зацепиться: качать отказывается, а показывает, что качать нужно.
+    embedded_subs_by_episode: dict[float, set[str]] = {}
     lang_by_translation = {t["id"]: t.get("type_lang") for t in normalized}
 
     for item in get_local_files(series_id):
         have_by_episode.setdefault(item["episode"], []).append(item["role"])
         if item["role"] != "video":
             continue
+
+        embedded = embedded_subs_by_episode.setdefault(item["episode"], set())
+        embedded.update(
+            lang
+            for raw in ((item.get("streams") or {}).get("subtitle_languages") or [])
+            if (lang := normalize_lang(raw))
+        )
         local_video_by_episode.setdefault(item["episode"], []).append(
             {
                 "file_id": item["file_id"],
@@ -825,6 +841,12 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
                 # цепочка «файл → перевод → серия → тип».
                 # Что уже есть локально: video, sub_ru, sub_ja, sub_en.
                 "have": sorted(set(have_by_episode.get(e.episode_num, []))),
+                # Языки субтитров внутри видеофайла. Отдельно от `have`, потому
+                # что это другое состояние: файла рядом нет, а субтитры есть —
+                # и автоскачивание такую серию считает закрытой. Пустой список
+                # означает «дорожек не нашли **или** не проверяли»: у `.nfo`
+                # покрытие частичное, а ffprobe под тумблером.
+                "embedded_subs": sorted(embedded_subs_by_episode.get(e.episode_num, set())),
                 # Языки звука локального видео. Пустой список при наличии видео
                 # означает «не удалось определить» — в этом случае UI не прячет
                 # ничего, потому что скрывать по догадке хуже, чем показать лишнее.

@@ -585,6 +585,7 @@ export const ja: Dictionary = {
     files: '話のファイル',
     haveLocal: '{label}：ローカルにあり',
     missing: '{label}：なし',
+    embeddedOnly: '{label}：動画ファイル内のトラック — 自動ダウンロードは取得済みとみなします',
     localHave: 'ローカル：',
     localNothing: 'このエピソードはローカルにありません',
     audioUnknown: '音声トラック不明',

@@ -145,9 +145,17 @@ export function EpisodeRow({
           <Group gap={6} align="center" wrap="nowrap">
             {visibleBadges.map((badge) => {
               const have = episode.have.includes(badge.role)
+              // Субтитры есть, но внутри видеофайла: отдельным файлом рядом их
+              // нет, а автоскачивание такую серию считает закрытой. Без этого
+              // состояния страница писала «нет» ровно там, где движок отвечал
+              // «есть», и понять расхождение было нечем.
+              const embedded =
+                !have && !!badge.label && episode.embedded_subs.includes(badge.label)
               const label = have
                 ? t('episode.haveLocal', { label: badgeLabel(badge) })
-                : t('episode.missing', { label: badgeLabel(badge) })
+                : embedded
+                  ? t('episode.embeddedOnly', { label: badgeLabel(badge) })
+                  : t('episode.missing', { label: badgeLabel(badge) })
 
               // У значка видео к подсказке добавляем язык звуковой дорожки:
               // сам значок отвечает только «файл есть», а вопрос обычно другой —
@@ -172,7 +180,8 @@ export function EpisodeRow({
                   <Tooltip key={badge.role} label={label}>
                     <span
                       className={classes.flagMark}
-                      data-missing={!have || undefined}
+                      data-missing={(!have && !embedded) || undefined}
+                      data-embedded={embedded || undefined}
                       aria-label={label}
                     >
                       <Flag lang={badge.label} size={13} />

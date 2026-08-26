@@ -585,6 +585,7 @@ export const ru = {
     files: 'Файлы серии',
     haveLocal: '{label}: есть локально',
     missing: '{label}: нет',
+    embeddedOnly: '{label}: дорожка внутри видеофайла — автоскачивание считает серию закрытой',
     localHave: 'Локально:',
     localNothing: 'Локально этой серии нет',
     audioUnknown: 'дорожка не определена',
