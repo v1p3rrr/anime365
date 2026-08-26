@@ -383,6 +383,64 @@ PROVIDER_FIELDS = {
 CONFLICT_PROVIDERS = frozenset({"anilist"})
 
 
+def _attach_titles(rows: list[dict[str, Any]]) -> None:
+    """Дописывает названия тайтлов к расходящимся строкам.
+
+    ⚠️ Ради этого всё и делается. «anilist 21613 против 135865» человек не
+    читает — числа ничего не говорят. «Youjo Senki против Youjo Senki II»
+    читается мгновенно: сразу видно, что Jellyfin показывает на первый сезон,
+    а мы на второй.
+
+    Обе стороны ищутся **в нашем же каталоге**: идентификатор чужой, но
+    нумерация общая — `anilist_id` у нас и `AniList` у Jellyfin это одно и то
+    же пространство. Поэтому чужое число тоже разрешается в название, и
+    никакого обращения наружу для этого не нужно.
+
+    Не нашлось — поля просто не будет: у Anime365 есть не всякий тайтл, и
+    выдумывать подпись вместо этого нечем.
+    """
+    wanted: dict[str, set[int]] = {}
+    for row in rows:
+        if not row.get("values_differ"):
+            # У совпавших строк подписывать нечего: название было бы одно и то
+            # же дважды, то есть тот самый шум, от которого уходим.
+            continue
+        field = PROVIDER_FIELDS[row["provider"]]
+        for raw in (row["theirs"], row["ours"]):
+            try:
+                wanted.setdefault(field, set()).add(int(raw))
+            except (TypeError, ValueError):
+                continue
+
+    if not wanted:
+        return
+
+    found: dict[tuple[str, int], str] = {}
+    with session_scope() as session:
+        for field, ids in wanted.items():
+            column = getattr(Series, field)
+            for value, title, titles_json in session.execute(
+                select(column, Series.title, Series.titles).where(column.in_(sorted(ids)))
+            ).all():
+                # Romaji, а не склейка «ru / romaji» из `title`: в подсказке
+                # строка короткая, и длинное двойное название её разорвёт.
+                name = (titles_json or {}).get("romaji") or title
+                if name:
+                    found[(field, int(value))] = name
+
+    for row in rows:
+        if not row.get("values_differ"):
+            continue
+        field = PROVIDER_FIELDS[row["provider"]]
+        for side in ("theirs", "ours"):
+            try:
+                key = (field, int(row[side]))
+            except (TypeError, ValueError):
+                continue
+            if key in found:
+                row[f"{side}_title"] = found[key]
+
+
 @router.get(
     "/jellyfin/verdict/{series_id}",
     dependencies=[Depends(require(Permission.CATALOG))],
@@ -422,21 +480,28 @@ async def jellyfin_verdict(series_id: int) -> dict[str, Any]:
     conflicts: list[dict[str, Any]] = []
     for name, value in sorted(providers.items()):
         field = PROVIDER_FIELDS.get(name)
-        if field is None:
-            # Про TVDB, TMDB, AniDB и Kitsu нам сравнивать нечего: в каталоге
-            # Anime365 таких полей нет. Показывать их всё равно полезно — по ним
-            # человек и опознаёт, какой тайтл Jellyfin имел в виду.
-            conflicts.append({"provider": name, "theirs": value, "ours": None, "differs": False})
+        our_value = ours.get(field) if field else None
+        if our_value is None:
+            # ⚠️ Сравнивать нечем — не показываем вовсе. Про TVDB, TMDB, AniDB и
+            # Kitsu в каталоге Anime365 полей нет, и раньше такие строки шли с
+            # прочерком «чтобы человек опознал тайтл». На деле опознавать по
+            # голому числу нечего, а половина таблицы уходила под прочерки.
+            # Опознание теперь даёт название (см. ниже), и шум стал не нужен.
             continue
-        our_value = ours.get(field)
-        differs = (
-            name in CONFLICT_PROVIDERS
-            and our_value is not None
-            and str(our_value) != str(value)
-        )
         conflicts.append(
-            {"provider": name, "theirs": value, "ours": our_value, "differs": differs}
+            {
+                "provider": name,
+                "theirs": value,
+                "ours": our_value,
+                "differs": name in CONFLICT_PROVIDERS and str(our_value) != str(value),
+                # Отдельно от `differs`: у Shikimori расхождение спором не
+                # считается ([D-98](../../../claude/09-decisions.md)), но
+                # названия там показать так же полезно.
+                "values_differ": str(our_value) != str(value),
+            }
         )
+
+    _attach_titles(conflicts)
 
     return {
         "available": True,
