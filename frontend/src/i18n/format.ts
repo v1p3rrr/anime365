@@ -52,5 +52,20 @@ export function useFormat() {
     },
     /** Число с разделителями разрядов по правилам языка. */
     number: (value: number) => value.toLocaleString(locale),
+    /**
+     * Дата и время из ISO-строки, по правилам языка.
+     *
+     * ⚠️ Сервер отдаёт наивный UTC без суффикса `Z`, и браузер такую строку
+     * трактует как **местное** время. У пользователя в другом часовом поясе
+     * время добавления уезжало бы на несколько часов, поэтому суффикс
+     * дописываем сами.
+     */
+    dateTime: (iso: string | null | undefined) => {
+      if (!iso) return null
+      const normalized = /[Zz]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`
+      const parsed = new Date(normalized)
+      if (Number.isNaN(parsed.getTime())) return null
+      return parsed.toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' })
+    },
   }
 }

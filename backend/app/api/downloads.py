@@ -368,8 +368,12 @@ def pause_task(task_id: int) -> dict[str, Any]:
         if task.status == TaskStatus.QUEUED:
             task.status = TaskStatus.PAUSED
         elif task.status == TaskStatus.DOWNLOADING:
-            # Воркер увидит остановку и сам переведёт в paused, сохранив .part.
-            download_queue.cancel(task_id)
+            # ⚠️ Именно `pause`, а не `cancel`. Раньше здесь стояла отмена, и
+            # воркер, которому обе приходили одним множеством, различить их не
+            # мог: пауза активной загрузки удаляла недокачанный `.part` и
+            # помечала задачу отменённой. Комментарий рядом при этом обещал
+            # прямо обратное — «переведёт в paused, сохранив .part».
+            download_queue.pause(task_id)
     return {"id": task_id, "paused": True}
 
 
@@ -385,6 +389,9 @@ def resume_task(task_id: int) -> dict[str, Any]:
         if task.status == TaskStatus.PAUSED:
             task.status = TaskStatus.QUEUED
             task.retry_after = None
+    # Снимаем просьбу остановиться: воркер мог ещё не дойти до неё, и без
+    # этого он остановил бы задачу сразу после того, как её вернули в очередь.
+    download_queue.forget_paused(task_id)
     return {"id": task_id, "resumed": True}
 
 

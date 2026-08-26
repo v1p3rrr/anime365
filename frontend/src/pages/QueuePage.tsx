@@ -34,6 +34,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import {
   IconAlertTriangle,
+  IconClock,
   IconPlayerPause,
   IconPlayerPlay,
   IconArrowDown,
@@ -446,6 +447,9 @@ function TaskRow({
   const canCancel = ACTIVE_STATUSES.includes(task.status)
   // Двигать в очереди можно только незавершённое: у завершённого очереди нет.
   const canRequeue = !['done', 'already_exists', 'cancelled', 'failed'].includes(task.status)
+  // Время окончания есть только у завершённых — у остальных строка одна.
+  const addedAt = format.dateTime(task.created_at)
+  const finishedAt = format.dateTime(task.finished_at)
 
   return (
     <Table.Tr
@@ -517,9 +521,42 @@ function TaskRow({
       </Table.Td>
 
       <Table.Td>
-        <Badge size="sm" variant="light" color={STATUS_COLORS[task.status] ?? 'gray'}>
-          {statusLabel(task.status)}
-        </Badge>
+        <Group gap={4} wrap="nowrap">
+          <Badge size="sm" variant="light" color={STATUS_COLORS[task.status] ?? 'gray'}>
+            {statusLabel(task.status)}
+          </Badge>
+          {/* Времена под иконкой, а не строкой в таблице: колонок и так пять,
+              а дата нужна изредка — когда разбираются, почему что-то встало. */}
+          {addedAt && (
+            <Tooltip
+              multiline
+              w={210}
+              withArrow
+              // На телефоне наведения нет, поэтому подсказка открывается по
+              // тапу. Без `touch` иконка там была бы мёртвой.
+              events={{ hover: true, focus: true, touch: true }}
+              label={
+                <>
+                  <Text size="xs">{t('queue.addedAt', { at: addedAt })}</Text>
+                  {finishedAt && (
+                    <Text size="xs">{t('queue.finishedAt', { at: finishedAt })}</Text>
+                  )}
+                </>
+              }
+            >
+              <ActionIcon
+                size="sm"
+                variant="subtle"
+                color="gray"
+                aria-label={t('queue.timesHint')}
+                // Курсор-подсказка, а не «нажми меня»: иконка ничего не делает.
+                style={{ cursor: 'help' }}
+              >
+                <IconClock size={14} />
+              </ActionIcon>
+            </Tooltip>
+          )}
+        </Group>
       </Table.Td>
 
       <Table.Td>

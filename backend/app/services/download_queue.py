@@ -824,12 +824,62 @@ def _fail_with_backoff(task_id: int, error: str) -> None:
     bus.publish("download.status", task_id=task_id, status="retrying", error=error)
 
 
+#: Сколько запасных имён перебираем, прежде чем сдаться.
+MAX_NAME_VARIANTS = 20
+
+
+def free_destination(destination: Path, source: Path) -> Path | None:
+    """Куда класть файл, если по этому имени уже что-то лежит.
+
+    ⚠️ Перезаписывать нельзя ни при каких обстоятельствах. Под этим именем
+    может лежать файл, который мы не скачивали, — и `shutil.move` затёр бы его
+    молча, без единой строчки в логе. Правило записано в
+    [06-naming-rules.md](../../../claude/06-naming-rules.md), но в коде его не
+    было: проверку сделали только в ветке фонотеки, а видео и субтитры ехали
+    поверх существующего.
+
+    Возвращает:
+
+    * сам `destination` — место свободно;
+    * `None` — там лежит ровно то же самое (совпал размер), второй экземпляр
+      не нужен;
+    * имя с пометкой ` v2`, ` v3`… — место занято чем-то другим.
+    """
+    if not destination.exists():
+        return destination
+
+    try:
+        if destination.stat().st_size == source.stat().st_size:
+            return None
+    except OSError:
+        # Сравнить не вышло — значит не знаем, что там. Не знаем — не трогаем.
+        pass
+
+    for variant in range(2, MAX_NAME_VARIANTS + 1):
+        candidate = destination.with_name(
+            f"{destination.stem} v{variant}{destination.suffix}"
+        )
+        if not candidate.exists():
+            return candidate
+
+    raise QueueError(
+        f"Не удалось подобрать свободное имя для {destination.name}: "
+        f"занято и оно, и {MAX_NAME_VARIANTS - 1} запасных"
+    )
+
+
 class DownloadQueue:
     def __init__(self) -> None:
         self._workers: list[asyncio.Task] = []
         self._stop = asyncio.Event()
         self._paused = False
         self._cancelled: set[int] = set()
+        # ⚠️ Пауза отдельной задачи — своё множество, а не то же, что у отмены.
+        # Раньше пауза активной загрузки шла через `_cancelled`, и воркер,
+        # который различить их не мог, читал её как отмену: удалял недокачанный
+        # `.part` и помечал задачу отменённой. То есть кнопка «пауза» теряла
+        # уже скачанные мегабайты и меняла статус на совсем другой.
+        self._paused_tasks: set[int] = set()
         # Цикл, в котором живут воркеры. Нужен, чтобы попросить перезапуск из
         # синхронного обработчика: FastAPI выполняет их в отдельном потоке, где
         # работающего цикла нет вовсе.
@@ -844,13 +894,64 @@ class DownloadQueue:
         return self._paused
 
     def pause_all(self) -> None:
+        """Останавливает всю очередь, не трогая статусы отдельных задач.
+
+        ⚠️ Общая пауза **не** помечает задачи `paused`. Раньше помечала — и это
+        был билет в один конец: `resume_all` снимал только флаг в памяти, а
+        задачи оставались в `paused`, тогда как воркер берёт лишь `queued`.
+        Снаружи это выглядело так: нажал «пауза», нажал «продолжить», а те
+        одна-две задачи, что качались в тот момент, стоят навсегда и оживить их
+        можно только по одной.
+
+        Теперь прерванная общей паузой загрузка возвращается в `queued`.
+        Недокачанный `.part` при этом цел, так что после возобновления она
+        продолжится с того же места, а не начнётся заново.
+        """
         self._paused = True
 
     def resume_all(self) -> None:
+        """Снимает общую паузу.
+
+        Статусы править не нужно: прерванные задачи уже лежат в `queued` и
+        будут разобраны воркерами сами. Задачи, поставленные на паузу
+        поимённо, остаются на паузе — их будит своя кнопка.
+        """
         self._paused = False
 
     def cancel(self, task_id: int) -> None:
         self._cancelled.add(task_id)
+
+    def pause(self, task_id: int) -> None:
+        """Просит воркера остановить конкретную загрузку, сохранив скачанное."""
+        self._paused_tasks.add(task_id)
+
+    def forget_paused(self, task_id: int) -> None:
+        self._paused_tasks.discard(task_id)
+
+    def _stop_reason(self, task_id: int) -> str:
+        """Почему загрузка прервалась: `cancelled`, `paused` или `queued`.
+
+        Отметку снимаем здесь же, а читаем **до** снятия: раньше проверка шла
+        после `discard`, и отмена всегда выглядела паузой.
+
+        Три исхода, а не два, и разница между ними существенна:
+
+        * `cancelled` — человек отказался от файла. Недокачанный `.part`
+          удаляем, возобновлять нечего;
+        * `paused` — человек остановил **эту** задачу. `.part` бережём, статус
+          `paused`, ждём его же кнопки;
+        * `queued` — остановились не из-за задачи: общая пауза очереди или
+          остановка сервиса. Задача ничем не провинилась, поэтому возвращается
+          в очередь и поедет дальше сама. Помечать её `paused` нельзя: общее
+          возобновление статусов не трогает, и она осталась бы стоять навсегда.
+        """
+        if task_id in self._cancelled:
+            self._cancelled.discard(task_id)
+            return "cancelled"
+        if task_id in self._paused_tasks:
+            self._paused_tasks.discard(task_id)
+            return "paused"
+        return "queued"
 
     def forget_cancelled(self, task_id: int) -> None:
         """Убирает отметку отмены у завершённой задачи.
@@ -1132,26 +1233,32 @@ class DownloadQueue:
                 )
 
             def should_stop() -> bool:
-                return task_id in self._cancelled or self._paused or self._stop.is_set()
+                return (
+                    task_id in self._cancelled
+                    or task_id in self._paused_tasks
+                    or self._paused
+                    or self._stop.is_set()
+                )
 
             try:
                 expect = "subtitle" if snapshot["kind"] == "subtitle" else "video"
                 await downloader.fetch(url, tmp_path, on_progress, should_stop, expect=expect)
             except DownloadCancelled:
-                # Проверяем ДО снятия отметки: иначе отмена всегда выглядела бы паузой.
-                was_cancelled = task_id in self._cancelled
-                self._cancelled.discard(task_id)
-
-                if was_cancelled:
+                reason = self._stop_reason(task_id)
+                if reason == "cancelled":
                     # Недокачанный кусок удаляем: возобновлять отменённое незачем.
                     tmp_path.with_suffix(tmp_path.suffix + ".part").unlink(missing_ok=True)
                     _finish(task_id, TaskStatus.CANCELLED)
                 else:
-                    # Пауза: .part остаётся, докачаем с того же места.
+                    # Пауза и общая остановка: `.part` остаётся, докачаем
+                    # с того же места. Разница только в статусе — см. `_stop_reason`.
+                    status = TaskStatus.PAUSED if reason == "paused" else TaskStatus.QUEUED
                     with session_scope() as session:
                         db_task = session.get(DownloadTask, task_id)
                         if db_task is not None:
-                            db_task.status = TaskStatus.PAUSED
+                            db_task.status = status
+                            db_task.speed_bps = 0.0
+                    bus.publish("download.status", task_id=task_id, status=str(status))
                 return
             except SubscriptionRequired as exc:
                 _finish(task_id, TaskStatus.FAILED, str(exc))
@@ -1333,16 +1440,38 @@ class DownloadQueue:
                 _write_progress(task_id, progress)
 
             def should_stop() -> bool:
-                return task_id in self._cancelled or self._paused or self._stop.is_set()
+                return (
+                    task_id in self._cancelled
+                    or task_id in self._paused_tasks
+                    or self._paused
+                    or self._stop.is_set()
+                )
 
             try:
                 await downloader.fetch(url, tmp_video, on_progress, should_stop, expect="video")
             except DownloadCancelled:
-                was_cancelled = task_id in self._cancelled
-                self._cancelled.discard(task_id)
+                reason = self._stop_reason(task_id)
+                # Видео здесь — промежуточный файл ради звуковой дорожки, а не
+                # результат. Держать его недокачанным незачем: ссылки всё равно
+                # запрашиваются заново, а качается минимальное качество.
                 tmp_video.unlink(missing_ok=True)
                 tmp_video.with_suffix(tmp_video.suffix + ".part").unlink(missing_ok=True)
-                _finish(task_id, TaskStatus.CANCELLED if was_cancelled else TaskStatus.PAUSED)
+
+                if reason == "cancelled":
+                    _finish(task_id, TaskStatus.CANCELLED)
+                    return None
+
+                # ⚠️ Не через `_finish`: он проставляет `finished_at` и снимает
+                # задачу с ключа идемпотентности, то есть объявляет её
+                # завершённой. Поставленная на паузу дорожка от этого уезжала
+                # в список готовых — при том что она никуда не делась.
+                status = TaskStatus.PAUSED if reason == "paused" else TaskStatus.QUEUED
+                with session_scope() as session:
+                    db_task = session.get(DownloadTask, task_id)
+                    if db_task is not None:
+                        db_task.status = status
+                        db_task.speed_bps = 0.0
+                bus.publish("download.status", task_id=task_id, status=str(status))
                 return None
             except Anime365Error as exc:
                 _fail_with_backoff(task_id, str(exc))
@@ -1495,6 +1624,32 @@ class DownloadQueue:
             return
 
         target_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            free = free_destination(destination, tmp_path)
+        except QueueError as exc:
+            _fail_with_backoff(task_id, str(exc))
+            return
+
+        if free is None:
+            # Тот же файл уже на месте: размеры совпали. Скачанное удаляем —
+            # держать копию во временной папке незачем.
+            tmp_path.unlink(missing_ok=True)
+            log.info("Файл уже лежит в библиотеке: %s", destination.name)
+            _finish(task_id, TaskStatus.ALREADY_EXISTS)
+            return
+
+        if free != destination:
+            log.warning(
+                "Имя %s занято другим файлом — кладу как %s", destination.name, free.name
+            )
+            # Путь в задаче записан до постобработки; без правки в интерфейсе
+            # осталось бы имя, которого на диске нет.
+            with session_scope() as session:
+                db_task = session.get(DownloadTask, task_id)
+                if db_task is not None:
+                    db_task.target_path = str(free)
+        destination = free
 
         try:
             # shutil.move переживает перемещение между дисками, os.rename — нет,
