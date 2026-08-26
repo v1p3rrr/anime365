@@ -154,16 +154,33 @@ class TestVerdict:
         assert shikimori["differs"] is False
         assert shikimori["theirs"] == "39972", "показать всё равно обязаны"
 
-    def test_foreign_providers_are_shown_but_not_compared(self, client, jellyfin_says) -> None:
-        """TMDB, TVDB, Kitsu — по ним человек и опознаёт, что имел в виду Jellyfin."""
+    def test_providers_we_cannot_compare_are_not_shown(self, client, jellyfin_says) -> None:
+        """TMDB, TVDB, Kitsu, IMDb — в подсказку не идут.
+
+        ⚠️ Ожидание **перевёрнуто** по просьбе пользователя. Раньше эти строки
+        показывались с прочерком, и оправдание было такое: «по ним человек
+        опознаёт, что имел в виду Jellyfin». На практике опознавать по голому
+        числу нечего, а половина таблицы уходила под прочерки — из семи строк
+        сравнимыми были две.
+
+        Опознание теперь даёт название рядом с идентификатором, так что шум
+        перестал что-либо покупать.
+        """
         _seed(anilist_id=150672, mal_id=None)
         jellyfin_says(REAL_PROVIDERS)
 
-        rows = {row["provider"]: row for row in _verdict(client)["ids"]}
+        shown = {row["provider"] for row in _verdict(client)["ids"]}
 
-        assert rows["tmdb"]["theirs"] == "203737"
-        assert rows["tmdb"]["ours"] is None
-        assert rows["tmdb"]["differs"] is False
+        assert shown == {"anilist"}, "остаётся только то, что мы умеем сравнить"
+
+    def test_a_provider_stays_when_we_have_the_field(self, client, jellyfin_says) -> None:
+        """Обратная сторона: сравнимое не должно пропасть заодно с прочерками."""
+        _seed(anilist_id=150672, mal_id=39972)
+        jellyfin_says(REAL_PROVIDERS)
+
+        shown = {row["provider"] for row in _verdict(client)["ids"]}
+
+        assert shown == {"anilist", "shikimori"}
 
     def test_item_not_found_is_not_an_error(self, client, jellyfin_says) -> None:
         _seed(anilist_id=150672, mal_id=None)
@@ -180,3 +197,86 @@ class TestVerdict:
             session.execute(delete(TitleMapping).where(TitleMapping.series_id == SERIES_ID))
 
         assert _verdict(client)["reason"] == "not_mapped"
+#: Соседи по каталогу, в которые разрешаются идентификаторы обеих сторон.
+#:
+#: Числа настоящие: 21613 — «Youjo Senki» (первый сезон), 135865 — «Youjo Senki
+#: II». Ровно тот случай, из-за которого подсказку и дописали: Jellyfin
+#: показывал на первый сезон, привязка стояла на второй, а в таблице было лишь
+#: «21613 против 135865» — и понять из этого было нечего.
+NEIGHBOURS = (
+    (995101, 21613, 11794, "Youjo Senki"),
+    (995102, 135865, 61234, "Youjo Senki II"),
+)
+
+
+@pytest.fixture
+def catalog_neighbours():
+    """Заводит тайтлы, в которые упираются идентификаторы, и убирает их за собой."""
+    with session_scope() as session:
+        for series_id, anilist_id, mal_id, romaji in NEIGHBOURS:
+            session.merge(
+                Series(
+                    id=series_id,
+                    title=f"{romaji} / рус",
+                    type="tv",
+                    anilist_id=anilist_id,
+                    mal_id=mal_id,
+                    titles={"romaji": romaji},
+                )
+            )
+    yield
+    with session_scope() as session:
+        session.execute(
+            delete(Series).where(Series.id.in_([row[0] for row in NEIGHBOURS]))
+        )
+
+
+class TestTitlesNextToIds:
+    """Рядом с идентификатором — название тайтла, в который он ведёт.
+
+    ⚠️ Обе стороны ищутся **в нашем же каталоге**: идентификатор чужой, но
+    пространство нумерации общее — `anilist_id` у нас и `AniList` у Jellyfin
+    это одно и то же. Поэтому чужое число тоже разрешается в название, и
+    ходить за этим наружу не нужно.
+    """
+
+    def test_both_sides_get_a_name(self, client, jellyfin_says, catalog_neighbours) -> None:
+        _seed(anilist_id=135865, mal_id=None)
+        jellyfin_says({"anilist": "21613"})
+
+        row = _verdict(client)["ids"][0]
+
+        assert row["theirs_title"] == "Youjo Senki"
+        assert row["ours_title"] == "Youjo Senki II"
+
+    def test_a_matching_row_is_not_annotated(self, client, jellyfin_says, catalog_neighbours) -> None:
+        """Одно и то же название дважды — тот самый шум, от которого уходим."""
+        _seed(anilist_id=21613, mal_id=None)
+        jellyfin_says({"anilist": "21613"})
+
+        row = _verdict(client)["ids"][0]
+
+        assert "theirs_title" not in row
+        assert "ours_title" not in row
+
+    def test_an_unknown_id_gets_no_label(self, client, jellyfin_says, catalog_neighbours) -> None:
+        """У Anime365 есть не всякий тайтл, и выдумывать подпись нечем."""
+        _seed(anilist_id=135865, mal_id=None)
+        jellyfin_says({"anilist": "999999999"})
+
+        row = _verdict(client)["ids"][0]
+
+        assert "theirs_title" not in row
+        assert row["ours_title"] == "Youjo Senki II"
+
+    def test_shikimori_is_annotated_too(self, client, jellyfin_says, catalog_neighbours) -> None:
+        """Спором его расхождение не считается ([D-98]), но подписать полезно."""
+        _seed(anilist_id=135865, mal_id=61234)
+        jellyfin_says({"anilist": "135865", "shikimori": "11794"})
+
+        rows = {row["provider"]: row for row in _verdict(client)["ids"]}
+
+        assert rows["shikimori"]["differs"] is False, "спором это по-прежнему не считаем"
+        assert rows["shikimori"]["values_differ"] is True
+        assert rows["shikimori"]["theirs_title"] == "Youjo Senki"
+        assert rows["shikimori"]["ours_title"] == "Youjo Senki II"

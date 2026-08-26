@@ -9,9 +9,15 @@ interface ProviderRow {
   provider: string
   /** Что стоит у Jellyfin. */
   theirs: string
-  /** Что стоит у нас. null — такого поля в каталоге Anime365 нет. */
+  /** Что стоит у нас. Строки, где сравнивать нечем, сервер не присылает вовсе. */
   ours: number | null
+  /** Считается ли это спором. Только AniList — см. D-98. */
   differs: boolean
+  /** Значения просто не совпали. У Shikimori это не спор, но подписать полезно. */
+  values_differ: boolean
+  /** Названия тайтлов, если идентификатор нашёлся в нашем каталоге. */
+  theirs_title?: string
+  ours_title?: string
 }
 
 interface Verdict {
@@ -58,7 +64,9 @@ export function JellyfinVerdictBadge({ seriesId }: Props) {
   return (
     <Tooltip
       multiline
-      w={340}
+      // Шире прежнего: под числами теперь стоят названия, и romaji вроде
+      // «Youjo Senki II» на узкой подсказке ломалось бы переносом.
+      w={400}
       label={
         <Stack gap={4}>
           <Text size="xs">{t('jellyfinVerdict.hint')}</Text>
@@ -73,13 +81,24 @@ export function JellyfinVerdictBadge({ seriesId }: Props) {
                   </Table.Td>
                   <Table.Td>
                     <Text size="xs">{row.theirs}</Text>
+                    {/* Название под числом — ради этого подсказка и нужна:
+                        «21613 против 135865» не читается, а «Youjo Senki
+                        против Youjo Senki II» видно сразу. */}
+                    {row.theirs_title && (
+                      <Text size="xs" c="dimmed" style={{ lineHeight: 1.2 }}>
+                        {row.theirs_title}
+                      </Text>
+                    )}
                   </Table.Td>
                   <Table.Td>
-                    {/* Прочерк, а не пусто: «у нас такого поля нет» и «у нас
-                        пусто» человек должен различать. */}
                     <Text size="xs" c="dimmed">
-                      {row.ours ?? '—'}
+                      {row.ours}
                     </Text>
+                    {row.ours_title && (
+                      <Text size="xs" c="dimmed" style={{ lineHeight: 1.2 }}>
+                        {row.ours_title}
+                      </Text>
+                    )}
                   </Table.Td>
                 </Table.Tr>
               ))}
