@@ -303,13 +303,44 @@ class TestRanking:
         # Из списка никого — идут остальные, по оценке сайта.
         assert [item["id"] for item in ranked] == [3, 1, 2]
 
-    def test_fallback_does_not_fire_while_the_list_matched(self) -> None:
-        """Иначе «фолбек» превратился бы в «взять всех подряд»."""
+    def test_the_list_still_goes_first_when_fallback_is_on(self) -> None:
+        """Список впереди, остальные — в хвост, а не вместо него.
+
+        ⚠️ Ожидание здесь **перевёрнуто** осознанно. Раньше тест требовал, чтобы
+        при сработавшем списке остальные не добавлялись вовсе, и объяснял это
+        так: «иначе фолбек превратился бы в „взять всех подряд"». Обоснование
+        оказалось неверным: порядок — это не выбор. Выбирает
+        `_first_soft_subtitle`, а он идёт сверху вниз и берёт **первого
+        годного**, поэтому группа из списка выигрывает всегда, когда её вообще
+        можно скачать.
+
+        Разница видна ровно в одном случае — когда из списка скачать нечего:
+        хардсаб мы считаем ненайденным ([D-132](../../claude/09-decisions.md)),
+        и человек, попросивший «взять любую, если из списка никто не подошёл»,
+        при старом порядке не получал ничего. Молча.
+        """
         ranked = rank_candidates(
             self.ITEMS, _rule(priorities=["kazoku"], allow_any_fallback=True)
         )
 
-        assert [item["id"] for item in ranked] == [1]
+        assert ranked[0]["id"] == 1, "группа из списка обязана идти первой"
+        assert [item["id"] for item in ranked] == [1, 3, 2]
+
+    def test_fallback_does_not_reorder_the_list_itself(self) -> None:
+        """Приоритет внутри списка сильнее оценки сайта, и хвост его не трогает."""
+        ranked = rank_candidates(
+            self.ITEMS, _rule(priorities=["wakanim", "kazoku"], allow_any_fallback=True)
+        )
+
+        assert [item["id"] for item in ranked][:2] == [2, 1]
+
+    def test_a_candidate_matching_two_entries_appears_once(self) -> None:
+        """Иначе на него ушёл бы лишний запрос `embed` на ровном месте."""
+        ranked = rank_candidates(
+            self.ITEMS, _rule(priorities=["kazoku", "re:kazo"], allow_any_fallback=True)
+        )
+
+        assert [item["id"] for item in ranked].count(1) == 1
 
     def test_allow_any_ignores_the_list_entirely(self) -> None:
         """Второй переключатель: список гасится, но не стирается."""
@@ -713,3 +744,180 @@ class TestDiskCheck:
         plan, _ = asyncio.run(plan_for_series(SERIES))
 
         assert plan == []
+class TestRetryTouchesOnlyTheMissedEpisodes:
+    """Повтор возвращается к тем сериям, что не нашлись, а не ко всему тайтлу.
+
+    ⚠️ Найдено ревью бизнес-логики. Повтор звал проход по тайтлу целиком и с
+    `automatic=False`, то есть **без** ограничения по возрасту файла. У тайтла
+    с одной ненайденной серией это выкачивало субтитры ко всем остальным —
+    включая те, что лежали до включения автоскачивания. А это прямо то, чего
+    пользователь просил не делать: включение не должно задним числом
+    обрабатывать всю библиотеку ([D-129](../../claude/09-decisions.md)).
+    """
+
+    @staticmethod
+    def _softsubs(monkeypatch) -> None:
+        async def fake_embed(translation_id: int, **kwargs):
+            return {"has_subtitles": True}
+
+        monkeypatch.setattr("app.services.title_service.get_embed", fake_embed)
+
+    def _two_episodes(self) -> None:
+        _video(1)
+        _video(2)
+        _translation(101, 1, "Kazoku")
+        _translation(102, 2, "Kazoku")
+        with session_scope() as session:
+            session.merge(AutoDownloadRule(lang="ru", mode="all", priorities=["kazoku"]))
+
+    def test_only_narrows_the_plan_to_the_named_pairs(self, monkeypatch) -> None:
+        self._softsubs(monkeypatch)
+        self._two_episodes()
+
+        plan, _ = asyncio.run(plan_for_series(SERIES, only={(2.0, "ru")}))
+
+        assert [choice.episode for choice in plan] == [2.0]
+
+    def test_without_the_narrowing_both_would_be_taken(self, monkeypatch) -> None:
+        """Обратная сторона: без `only` берутся обе — значит тест не пустой."""
+        self._softsubs(monkeypatch)
+        self._two_episodes()
+
+        plan, _ = asyncio.run(plan_for_series(SERIES))
+
+        assert sorted(choice.episode for choice in plan) == [1.0, 2.0]
+
+    def test_targets_carry_the_episode_and_the_language(self) -> None:
+        """Повтору нужны пары, а не список тайтлов: по тайтлу он брал лишнее."""
+        from app.services.autodownload import pending_miss_targets, remember_misses
+
+        remember_misses(SERIES, [(2.0, "ru")])
+
+        assert pending_miss_targets()[SERIES] == {(2.0, "ru")}
+
+
+class TestDismissedIsRespected:
+    """«Выкинул запись» должно означать «перестань этим заниматься».
+
+    ⚠️ Раньше пометка `dismissed` только прятала строку из списка: план о
+    промахах не знал вовсе и каждый час заново гонял `embed` по той же серии.
+    Отписаться было нельзя ([D-132](../../claude/09-decisions.md)).
+    """
+
+    @staticmethod
+    def _softsubs(monkeypatch) -> None:
+        async def fake_embed(translation_id: int, **kwargs):
+            return {"has_subtitles": True}
+
+        monkeypatch.setattr("app.services.title_service.get_embed", fake_embed)
+
+    def _setup(self, dismissed: bool) -> None:
+        import time
+        from datetime import datetime
+
+        # Файл должен попадать в автоматический проход: уже отстоялся, но ещё
+        # в пределах окна возврата. Иначе его отсечёт `_in_automatic_scope`, и
+        # пустой план ничего не скажет про пометку.
+        file_id = _video(1)
+        with session_scope() as session:
+            session.get(LibraryFile, file_id).mtime = time.time() - 86400
+
+        _translation(101, 1, "Kazoku")
+        with session_scope() as session:
+            session.merge(AutoDownloadRule(lang="ru", mode="all", priorities=["kazoku"]))
+            session.add(
+                AutoDownloadMiss(
+                    series_id=SERIES,
+                    episode=1.0,
+                    lang="ru",
+                    first_missed_at=datetime.utcnow(),
+                    last_checked_at=datetime.utcnow(),
+                    checks=1,
+                    dismissed=dismissed,
+                )
+            )
+
+    def test_automatic_pass_skips_a_dismissed_pair(self, monkeypatch) -> None:
+        self._softsubs(monkeypatch)
+        self._setup(dismissed=True)
+
+        plan, _ = asyncio.run(plan_for_series(SERIES, automatic=True))
+
+        assert plan == []
+
+    def test_a_pending_miss_is_still_retried(self, monkeypatch) -> None:
+        """Не отброшенная запись работе не мешает — иначе сломали бы повтор."""
+        self._softsubs(monkeypatch)
+        self._setup(dismissed=False)
+
+        plan, _ = asyncio.run(plan_for_series(SERIES, automatic=True))
+
+        assert [choice.episode for choice in plan] == [1.0]
+
+    def test_the_button_still_tries_a_dismissed_pair(self, monkeypatch) -> None:
+        """Кнопка «скачать всё недостающее» — способ отменить свою же отписку.
+
+        Отдельного эндпоинта для этого нет, поэтому ручной проход обязан
+        оставаться сильнее пометки: иначе выйти из отписки было бы нечем.
+        """
+        self._softsubs(monkeypatch)
+        self._setup(dismissed=True)
+
+        plan, _ = asyncio.run(plan_for_series(SERIES, automatic=False))
+
+        assert [choice.episode for choice in plan] == [1.0]
+
+
+class TestFallbackReachesPastHardsub:
+    """Группа из списка нашлась, но у неё хардсаб — запасной вариант обязан сработать.
+
+    ⚠️ Ровно то расхождение, ради которого порядок в `rank_candidates` и
+    менялся. Хардсаб считается **ненайденным** ([D-132](../../claude/09-decisions.md)),
+    значит «из списка никто не подошёл» — это и есть наш случай, и человек,
+    включивший «взять любую», не должен остаться ни с чем.
+    """
+
+    def test_another_group_is_taken_when_the_listed_one_is_hardsub(
+        self, monkeypatch
+    ) -> None:
+        async def fake_embed(translation_id: int, **kwargs):
+            # У группы из списка субтитры вшиты в картинку, у чужой — файлом.
+            return {"has_subtitles": translation_id != 101}
+
+        monkeypatch.setattr("app.services.title_service.get_embed", fake_embed)
+
+        _video(1)
+        _translation(101, 1, "Kazoku")
+        _translation(102, 1, "Wakanim")
+        with session_scope() as session:
+            session.merge(
+                AutoDownloadRule(
+                    lang="ru", mode="all", priorities=["kazoku"], allow_any_fallback=True
+                )
+            )
+
+        plan, misses = asyncio.run(plan_for_series(SERIES))
+
+        assert [(c.translation_id, c.reason) for c in plan] == [(102, "fallback")]
+        assert misses == []
+
+    def test_without_the_permission_it_is_still_a_miss(self, monkeypatch) -> None:
+        """Без «взять любую» чужая группа по-прежнему не годится."""
+
+        async def fake_embed(translation_id: int, **kwargs):
+            return {"has_subtitles": translation_id != 101}
+
+        monkeypatch.setattr("app.services.title_service.get_embed", fake_embed)
+
+        _video(1)
+        _translation(101, 1, "Kazoku")
+        _translation(102, 1, "Wakanim")
+        with session_scope() as session:
+            session.merge(
+                AutoDownloadRule(lang="ru", mode="all", priorities=["kazoku"])
+            )
+
+        plan, misses = asyncio.run(plan_for_series(SERIES))
+
+        assert plan == []
+        assert misses == [(1.0, "ru")]

@@ -214,8 +214,10 @@ def _subtitle_language(path: Path) -> str | None:
     return detect_subtitle_language(path)
 
 
-def _subtitles_on_disk(file_id: int | None, lang: str) -> tuple[bool, bool]:
-    """Смотрит на диск прямо сейчас: `(видео есть, субтитры языка есть)`.
+def _subtitles_on_disk(
+    file_id: int | None, cache: dict[int, tuple[bool, set[str]]] | None = None
+) -> tuple[bool, set[str]]:
+    """Смотрит на диск прямо сейчас: `(видео есть, языки субтитров рядом)`.
 
     Индекс библиотеки отражает последний скан, а между сканами файл могли
     удалить или положить рядом субтитры руками. Перед постановкой в очередь
@@ -223,10 +225,26 @@ def _subtitles_on_disk(file_id: int | None, lang: str) -> tuple[bool, bool]:
 
     Проверка идёт по соседям видеофайла: Jellyfin подхватывает субтитры только
     при совпадении основы имени, поэтому и наши, и чужие лежат ровно там же.
+
+    ⚠️ Возвращается **набор языков**, а не ответ про один. Раньше функция
+    отвечала про конкретный язык, и каталог приходилось перечитывать на каждую
+    пару «серия × язык»: у тайтла из двадцати четырёх серий и трёх языков это
+    семьдесят два обхода папки за проход — на HDD, с которого в это же время
+    качают и стримят. Теперь папка читается один раз на файл, а `cache` держит
+    результат в пределах одного прохода.
     """
     if file_id is None:
-        return False, False
+        return False, set()
+    if cache is not None and file_id in cache:
+        return cache[file_id]
 
+    result = _read_subtitle_langs(file_id)
+    if cache is not None:
+        cache[file_id] = result
+    return result
+
+
+def _read_subtitle_langs(file_id: int) -> tuple[bool, set[str]]:
     with session_scope() as session:
         row = session.execute(
             select(LibraryFile.filename, LibraryFolder.rel_path, LibraryRoot.path)
@@ -235,26 +253,28 @@ def _subtitles_on_disk(file_id: int | None, lang: str) -> tuple[bool, bool]:
             .where(LibraryFile.id == file_id)
         ).one_or_none()
     if row is None:
-        return False, False
+        return False, set()
 
     filename, rel_path, root = row
     video = Path(root) / rel_path / filename
+    found: set[str] = set()
     try:
         if not video.is_file():
-            return False, False
+            return False, set()
         stem = video.stem
         for neighbour in video.parent.iterdir():
             if neighbour.suffix.lower() not in SUBTITLE_SUFFIXES:
                 continue
             if not neighbour.name.startswith(stem):
                 continue
-            if _subtitle_language(neighbour) == lang:
-                return True, True
+            language = _subtitle_language(neighbour)
+            if language:
+                found.add(language)
     except OSError:
         # Диск недоступен (сеть отвалилась, права). Молча качать в такой
         # ситуации нельзя: мы не знаем, что там лежит.
-        return False, False
-    return True, False
+        return False, set()
+    return True, found
 
 
 def _candidates(series_id: int, lang: str) -> dict[float, list[dict]]:
@@ -347,6 +367,16 @@ def rank_candidates(candidates: list[dict], resolved: Resolved) -> list[dict]:
 
     Внутри «остальных» порядок — по оценке самого Anime365, затем по номеру
     перевода: без второго ключа выдача прыгала бы между запросами.
+
+    ⚠️ **Запасные кандидаты дописываются в хвост, а не подменяют список.**
+    Раньше решение принималось здесь и сразу: «список дал непустой результат —
+    остальные не нужны». Но годность кандидата выясняется позже, запросом
+    `embed`, и хардсаб мы считаем **ненайденным** ([D-132](../../claude/09-decisions.md)).
+    Получалось противоречие: группа из списка нашлась, но у неё субтитры вшиты
+    в картинку — и человек не получал ничего, хотя явно попросил «взять любую,
+    если из списка никто не подошёл». Теперь порядок перебора отвечает на этот
+    вопрос сам: список идёт первым, остальные следом, а выбирает тот, кто
+    проверяет годность.
     """
 
     def generic(items: list[dict]) -> list[dict]:
@@ -372,14 +402,20 @@ def rank_candidates(candidates: list[dict], resolved: Resolved) -> list[dict]:
     # кандидатов — так группа, которой в списке нет, не может обогнать ту,
     # что в нём есть, ни по какой другой причине.
     ranked: list[dict] = []
+    seen: set[int] = set()
     for entry in resolved.priorities:
         matched = [
-            item for item in candidates if entry_matches(entry, item["authors"], item["key"])
+            item
+            for item in candidates
+            if item["id"] not in seen and entry_matches(entry, item["authors"], item["key"])
         ]
+        # Повтор возможен: одна группа подходит и под имя, и под шаблон рядом.
+        # Без отсева она получила бы лишний запрос `embed` на ровном месте.
+        seen.update(item["id"] for item in matched)
         ranked.extend(sorted(matched, key=lambda item: (-item["priority"], item["id"])))
 
-    if not ranked and resolved.allow_any_fallback:
-        return generic(candidates)
+    if resolved.allow_any_fallback:
+        ranked.extend(item for item in generic(candidates) if item["id"] not in seen)
     return ranked
 
 
@@ -411,13 +447,19 @@ async def _first_soft_subtitle(candidates: list[dict]) -> dict | None:
 
 
 async def plan_for_series(
-    series_id: int, automatic: bool = False
+    series_id: int,
+    automatic: bool = False,
+    only: set[tuple[float, str]] | None = None,
 ) -> tuple[list[Choice], list[tuple[float, str]]]:
     """Что скачать и к чему не нашлось. Ничего не ставит в очередь.
 
     Второй список — пары «серия, язык», для которых перебор разрешённых групп
     исчерпан. Туда же попадают случаи, когда все кандидаты оказались хардсабом:
     скачать его нечем, значит найденным он не считается.
+
+    `only` сужает проход до конкретных пар «серия, язык». Нужен повтору
+    промахов: он обязан вернуться **к тем сериям, что однажды не нашлись**, а
+    не ко всему тайтлу ([D-129](../../claude/09-decisions.md)).
     """
     rules = resolve_for_series(series_id)
     if not rules:
@@ -425,18 +467,34 @@ async def plan_for_series(
 
     plan: list[Choice] = []
     misses: list[tuple[float, str]] = []
+
+    # Один запрос на тайтл, а не на каждый язык: набор серий с видео от языка
+    # не зависит, и три одинаковых обхода базы здесь были лишними.
+    videos = episodes_with_video(series_id)
+    # Каталог рядом с видеофайлом читается один раз на файл, а не на каждый язык.
+    disk: dict[int, tuple[bool, set[str]]] = {}
+
+    # Отброшенные вручную не трогаем в автоматическом проходе: «выкинул» должно
+    # означать «перестань этим заниматься», а не «убрал строку с глаз». Кнопка
+    # «скачать всё недостающее» их по-прежнему проверяет — иначе отменить
+    # собственную отписку было бы нечем ([D-132](../../claude/09-decisions.md)).
+    dismissed = _dismissed_pairs(series_id) if automatic else set()
+
     for lang, resolved in rules.items():
         missing = missing_episodes(series_id, resolved, automatic)
         if not missing:
             continue
         by_episode = _candidates(series_id, lang)
-        videos = episodes_with_video(series_id)
         for episode in missing:
+            if only is not None and (episode, lang) not in only:
+                continue
+            if (episode, lang) in dismissed:
+                continue
             # Последняя проверка — по диску, а не по индексу: файл могли
             # удалить, а субтитры положить руками уже после скана.
             file_id = videos.get(episode, (None, None))[0]
-            has_video, has_subs = _subtitles_on_disk(file_id, lang)
-            if not has_video or has_subs:
+            has_video, on_disk = _subtitles_on_disk(file_id, disk)
+            if not has_video or lang in on_disk:
                 continue
 
             ranked = rank_candidates(by_episode.get(episode, []), resolved)
@@ -462,17 +520,23 @@ async def plan_for_series(
 
 
 async def run_for_series(
-    series_id: int, user_id: int = 1, automatic: bool = False
+    series_id: int,
+    user_id: int = 1,
+    automatic: bool = False,
+    only: set[tuple[float, str]] | None = None,
 ) -> dict:
     """Считает план и ставит его в очередь загрузок.
 
     Постановка идёт через общий `enqueue`, а не своим путём: он уже идемпотентен
     по паре «перевод + тип», умеет позицию в очереди и владельца задачи. Своя
     очередь для автоскачивания означала бы вторую правду о том, что качается.
+
+    `only` пробрасывается в план и сужает проход до конкретных пар
+    «серия, язык».
     """
     from app.services.download_queue import QueueError, enqueue
 
-    plan, misses = await plan_for_series(series_id, automatic)
+    plan, misses = await plan_for_series(series_id, automatic, only)
     remember_misses(series_id, misses)
     queued = 0
     for choice in plan:
@@ -620,15 +684,40 @@ def clear_miss(series_id: int, episode: float, lang: str) -> None:
         )
 
 
-def pending_misses() -> list[int]:
-    """Тайтлы, у которых есть неотброшенные записи о ненайденных субтитрах."""
+def pending_miss_targets() -> dict[int, set[tuple[float, str]]]:
+    """Что именно перепроверять: тайтл → пары «серия, язык».
+
+    ⚠️ Именно пары, а не список тайтлов. Повтор раньше брал тайтл целиком и
+    считал план без ограничения по возрасту файла — то есть у тайтла с одной
+    ненайденной серией выкачивал субтитры **ко всем остальным**, включая те,
+    что лежали до включения автоскачивания. А это прямо то, чего пользователь
+    просил не делать ([D-129](../../claude/09-decisions.md)).
+    """
     with session_scope() as session:
         rows = session.execute(
-            select(AutoDownloadMiss.series_id)
-            .where(AutoDownloadMiss.dismissed.is_(False))
-            .distinct()
-        ).scalars()
-        return sorted(rows)
+            select(
+                AutoDownloadMiss.series_id,
+                AutoDownloadMiss.episode,
+                AutoDownloadMiss.lang,
+            ).where(AutoDownloadMiss.dismissed.is_(False))
+        ).all()
+
+    out: dict[int, set[tuple[float, str]]] = {}
+    for series_id, episode, lang in rows:
+        out.setdefault(series_id, set()).add((float(episode), lang))
+    return out
+
+
+def _dismissed_pairs(series_id: int) -> set[tuple[float, str]]:
+    """Пары «серия, язык», от которых человек отписался вручную."""
+    with session_scope() as session:
+        rows = session.execute(
+            select(AutoDownloadMiss.episode, AutoDownloadMiss.lang).where(
+                AutoDownloadMiss.series_id == series_id,
+                AutoDownloadMiss.dismissed.is_(True),
+            )
+        ).all()
+    return {(float(episode), lang) for episode, lang in rows}
 
 
 async def retry_misses(user_id: int = 1) -> dict:
@@ -638,18 +727,26 @@ async def retry_misses(user_id: int = 1) -> dict:
     новое, здесь — ждём, когда появится то, чего пока нет. Каждый день
     перебирать одно и то же дороже, чем раз в сутки.
 
-    Ограничение «только новые файлы» здесь не применяется: серия уже попала в
-    список, то есть её однажды признали своей, и терять её из-за возраста
-    файла было бы странно.
+    Ограничение «только новые файлы» к самим этим сериям не применяется: серию
+    однажды признали своей, и терять её из-за возраста файла было бы странно.
+
+    ⚠️ **Но только к ним.** Раньше повтор брал тайтл целиком и считал план без
+    ограничения по возрасту: у тайтла с одной ненайденной серией он выкачивал
+    субтитры ко **всем** остальным, в том числе к лежавшим до включения
+    автоскачивания. Обоснование «серия уже попала в список» подменяло предмет —
+    своей признали одну серию, а прав это давало на весь тайтл, и получалось
+    ровно то, чего просили не делать ([D-129](../../claude/09-decisions.md)).
     """
-    series_ids = pending_misses()
-    if not series_ids:
+    targets = pending_miss_targets()
+    if not targets:
         return {"series": 0, "planned": 0, "queued": 0}
 
     planned = queued = touched = 0
-    for series_id in series_ids:
+    for series_id in sorted(targets):
         try:
-            result = await run_for_series(series_id, user_id, automatic=False)
+            result = await run_for_series(
+                series_id, user_id, automatic=False, only=targets[series_id]
+            )
         except Exception:
             log.exception("Повтор автоскачивания: тайтл %s не удался", series_id)
             continue
