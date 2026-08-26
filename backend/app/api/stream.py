@@ -31,7 +31,7 @@ from app.api.deps import rate_limit
 from app.core.config import settings
 from app.core.permissions import Permission, require, require_save_or_watch
 from app.services.anime365 import Anime365Client, Anime365Error, SubscriptionRequired
-from app.services.downloader import is_allowed_target, pick_download_url
+from app.services.downloader import is_allowed_target, next_hop, open_checked, pick_download_url
 from app.services.title_service import get_embed
 
 log = logging.getLogger(__name__)
@@ -134,20 +134,20 @@ async def stream_video(
     if not url:
         raise ApiError(404, errors.NO_PLAYABLE_LINKS, "У этого перевода нет ссылок для воспроизведения")
 
-    if not is_allowed_target(url):
-        # Ссылку выдал API, но доверять ей вслепую нельзя: подменённый ответ
-        # превратил бы эндпоинт в открытый прокси на произвольный хост.
-        log.error("Отклонён посторонний хост при воспроизведении: %s", url)
-        raise ApiError(502, errors.UNKNOWN_HOST, "Ссылка ведёт на неизвестный хост")
-
     headers = {"User-Agent": settings.get_str("user_agent")}
     if range_header:
         headers["Range"] = range_header
 
-    client = httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(30.0, read=None))
+    # ⚠️ `follow_redirects=False` — обязательно. Хост сверяется на КАЖДОМ шаге
+    # внутри `open_checked`, иначе allowlist проверял бы только первый адрес,
+    # а дальше ответ уводил бы нас куда угодно, в том числе в локальную сеть.
+    client = httpx.AsyncClient(follow_redirects=False, timeout=httpx.Timeout(30.0, read=None))
     try:
-        request = client.build_request("GET", url, headers=headers)
-        upstream = await client.send(request, stream=True)
+        upstream = await open_checked(client, url, headers, stream=True)
+    except Anime365Error as exc:
+        await client.aclose()
+        log.error("Отклонён посторонний хост при воспроизведении: %s", exc)
+        raise ApiError(502, errors.UNKNOWN_HOST, "Ссылка ведёт на неизвестный хост") from exc
     except httpx.HTTPError as exc:
         await client.aclose()
         detail = str(exc) or type(exc).__name__
@@ -239,6 +239,10 @@ async def download_video(
             reason=str(response.status_code),
         )
 
+    # `Location` бывает относительным — тогда хоста в нём нет вовсе, и проверка
+    # отвергла бы законный редирект. Склеиваем с адресом, по которому пришли.
+    location = next_hop(url, location)
+
     if not is_allowed_target(location):
         # Подменённый ответ не должен уводить человека на посторонний хост.
         raise ApiError(502, errors.UPSTREAM_UNAVAILABLE, "Anime365 увёл ссылку на неизвестный хост")
@@ -297,11 +301,23 @@ async def stream_subtitles(
     if not url or not is_allowed_target(url):
         raise ApiError(404, errors.SUBTITLES_UNAVAILABLE, "Ссылка на субтитры недоступна")
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client_http:
+    # Тот же порядок, что у видео: хост сверяется на каждом шаге редиректа,
+    # поэтому клиент идёт с `follow_redirects=False`, а цепочку проходит
+    # `open_checked`. Субтитры весят десятки килобайт, читаем их целиком.
+    async with httpx.AsyncClient(follow_redirects=False, timeout=30.0) as client_http:
         try:
-            response = await client_http.get(
-                url, headers={"User-Agent": settings.get_str("user_agent")}
+            response = await open_checked(
+                client_http,
+                url,
+                {"User-Agent": settings.get_str("user_agent")},
+                stream=False,
             )
+        except Anime365Error as exc:
+            log.error("Отклонён посторонний хост при выдаче субтитров: %s", exc)
+            raise ApiError(
+                502, errors.SUBTITLES_FETCH_FAILED, "Ссылка на субтитры ведёт на неизвестный хост",
+                reason=str(exc),
+            ) from exc
         except httpx.HTTPError as exc:
             detail = str(exc) or type(exc).__name__
             raise ApiError(502, errors.SUBTITLES_FETCH_FAILED, f"Не удалось получить субтитры: {detail}", reason=detail) from exc

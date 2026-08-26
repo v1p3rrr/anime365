@@ -212,6 +212,16 @@ sessions = SessionStore()
 # --------------------------------------------------------------------------- #
 
 
+#: С какого числа ключей начинаем подчищать словари ограничителей.
+#:
+#: Ключ у них — адрес или имя пользователя из запроса, то есть значение,
+#: которое задаёт обращающийся. Без уборки словарь растёт, пока не кончится
+#: память контейнера (у нас лимит 512–768 МБ, дальше OOM и перезапуск).
+#: Тысяча живых ключей для домашнего сервиса заведомо избыточна, а уборка
+#: стоит один проход по словарю и делается только на неудачных попытках.
+PRUNE_THRESHOLD = 1024
+
+
 class AttemptLimiter:
     """Скользящее окно неудачных попыток.
 
@@ -250,7 +260,14 @@ class AttemptLimiter:
             recorded = self._attempts.get(key, [])
             window = self._window_for(len(recorded))
             hits = [t for t in recorded if now - t < window]
-            self._attempts[key] = hits
+            if hits:
+                self._attempts[key] = hits
+            else:
+                # ⚠️ Пустой список нельзя оставлять: для `check` он неотличим от
+                # отсутствующего ключа, а словарь от него растёт. Ключ здесь —
+                # имя пользователя из тела запроса, и вход открыт без сессии,
+                # так что тысяча выдуманных имён давала тысячу вечных ключей.
+                self._attempts.pop(key, None)
             if len(hits) < self.limit:
                 return 0.0
             return window - (now - hits[0])
@@ -259,6 +276,24 @@ class AttemptLimiter:
         now = time.time()
         with self._lock:
             self._attempts.setdefault(key, []).append(now)
+            if len(self._attempts) > PRUNE_THRESHOLD:
+                self._prune_locked(now)
+
+    def _prune_locked(self, now: float) -> None:
+        """Выкидывает ключи, у которых не осталось ни одной свежей попытки.
+
+        Нужен для ключей, которые больше никто не спросит: неудачная попытка
+        под выдуманным именем заводит запись, а `check` по этому имени уже не
+        придёт никогда. `max_window` — верхняя граница любого окна, после неё
+        `check` всё равно отфильтровал бы все отметки.
+        """
+        dead = [
+            key
+            for key, hits in self._attempts.items()
+            if not hits or now - hits[-1] >= self.max_window
+        ]
+        for key in dead:
+            del self._attempts[key]
 
     def reset(self, key: str) -> None:
         with self._lock:
@@ -286,6 +321,12 @@ class RateLimiter:
         self._lock = threading.Lock()
         self._hits: dict[str, list[float]] = {}
 
+    #: После какого простоя ключ считается мёртвым и выбрасывается.
+    #:
+    #: Окна у всех вызывающих — минута; час взят с большим запасом, чтобы
+    #: уборка не могла обнулить счётчик кому-то, кто ещё в своём окне.
+    STALE_AFTER = 3600.0
+
     def allow(self, key: str, limit: int, window: float) -> bool:
         now = time.time()
         with self._lock:
@@ -295,7 +336,20 @@ class RateLimiter:
                 return False
             hits.append(now)
             self._hits[key] = hits
+            # Ключ включает адрес обращающегося, поэтому словарь растёт сам по
+            # себе и без злого умысла — просто от смены адресов в сети.
+            if len(self._hits) > PRUNE_THRESHOLD:
+                self._prune_locked(now)
             return True
+
+    def _prune_locked(self, now: float) -> None:
+        dead = [
+            key
+            for key, hits in self._hits.items()
+            if not hits or now - hits[-1] >= self.STALE_AFTER
+        ]
+        for key in dead:
+            del self._hits[key]
 
 
 rate_limiter = RateLimiter()
