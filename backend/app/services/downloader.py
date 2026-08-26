@@ -15,9 +15,10 @@ import asyncio
 import logging
 import re
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Callable
+from typing import AsyncIterator, Callable
 
 import httpx
 
@@ -90,6 +91,8 @@ async def open_checked(
     headers: dict[str, str],
     *,
     stream: bool,
+    method: str = "GET",
+    timeout: float | None = None,
 ) -> httpx.Response:
     """Запрос с проверкой хоста на КАЖДОМ шаге редиректа.
 
@@ -113,8 +116,16 @@ async def open_checked(
         if not is_allowed_target(current):
             raise Anime365Error(f"Ссылка ведёт на неизвестный хост: {current[:80]}")
 
-        request = client.build_request("GET", current, headers=headers)
-        response = await client.send(request, stream=stream)
+        build: dict[str, object] = {"headers": headers}
+        if timeout is not None:
+            build["timeout"] = timeout
+        request = client.build_request(method, current, **build)  # type: ignore[arg-type]
+        # ⚠️ `follow_redirects=False` задаётся ЗДЕСЬ, а не только при создании
+        # клиента. Иначе защита держалась бы на том, что каждый вызывающий не
+        # забыл выставить флаг: клиент со следованием прошёл бы цепочку сам,
+        # вернул финальный ответ, и цикл ниже увидел бы `is_redirect == False`
+        # — то есть отдал бы наружу непроверенный хост, ничего не заметив.
+        response = await client.send(request, stream=stream, follow_redirects=False)
 
         if not response.is_redirect:
             return response
@@ -126,6 +137,27 @@ async def open_checked(
         current = next_hop(current, location)
 
     raise Anime365Error(f"Слишком длинная цепочка редиректов от {url[:80]}")
+
+
+@asynccontextmanager
+async def checked_stream(
+    client: httpx.AsyncClient, url: str, headers: dict[str, str]
+) -> AsyncIterator[httpx.Response]:
+    """`client.stream(...)`, но с проверкой хоста на каждом редиректе.
+
+    Замена именно контекстным менеджером, а не отдельным вызовом: у загрузки
+    тело большое и читается потоком, а закрывать ответ нужно при любом исходе.
+
+    ⚠️ Ссылку **нельзя** разрешить заранее отдельным запросом и потом
+    перезапросить: подписи CDN одноразовые, и повторное обращение вернёт ноль
+    байт. Поэтому наружу отдаётся тот самый ответ, на котором цепочка
+    закончилась.
+    """
+    response = await open_checked(client, url, headers, stream=True)
+    try:
+        yield response
+    finally:
+        await response.aclose()
 
 
 # Что считаем допустимым содержимым для каждого вида загрузки.
@@ -169,7 +201,13 @@ class Downloader:
         limit = settings.get_int("speed_limit_kbps")
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(60.0, connect=15.0, read=120.0),
-            follow_redirects=True,
+            # ⚠️ Редиректы НЕ следуем автоматически: хост сверяется на каждом
+            # шаге в `checked_stream`. Раньше здесь стояло `True`, и проверка
+            # allowlist касалась только первой ссылки — то есть путь загрузок
+            # уводился ответом чужого сервера куда угодно, включая внутреннюю
+            # сеть, и делал это без человека за экраном, по расписанию
+            # автоскачивания субтитров ([D-174](../../../claude/09-decisions.md)).
+            follow_redirects=False,
             headers={"User-Agent": settings.get_str("user_agent")},
         )
         self._speed_limit_bps = limit * 1024 if limit > 0 else 0
@@ -267,7 +305,7 @@ class Downloader:
         started = time.monotonic()
         downloaded_now = 0
 
-        async with self._client.stream("GET", url, headers=headers) as response:
+        async with checked_stream(self._client, url, headers) as response:
             if response.status_code == 403:
                 raise SubscriptionRequired(
                     "403 при скачивании: проверьте access_token и активность подписки"
