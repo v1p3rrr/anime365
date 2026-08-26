@@ -714,6 +714,9 @@ export const ru = {
     pauseHint: 'Пауза, файл сохранится',
     resumeHint: 'Продолжить с того же места',
     cancelHint: 'Отменить, недокачанное удалится',
+    timesHint: 'Когда добавлено и когда завершено',
+    addedAt: 'Добавлено: {at}',
+    finishedAt: 'Завершено: {at}',
   },
 
   library: {

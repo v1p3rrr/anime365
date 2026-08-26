@@ -714,6 +714,9 @@ export const ja: Dictionary = {
     pauseHint: '一時停止（ファイルは保持されます）',
     resumeHint: '同じ位置から再開',
     cancelHint: 'キャンセル（未完了のファイルは削除されます）',
+    timesHint: '追加された日時と完了した日時',
+    addedAt: '追加: {at}',
+    finishedAt: '完了: {at}',
   },
 
   library: {

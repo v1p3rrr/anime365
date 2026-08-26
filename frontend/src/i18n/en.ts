@@ -715,6 +715,9 @@ export const en: Dictionary = {
     pauseHint: 'Pause, the file is kept',
     resumeHint: 'Continue from the same place',
     cancelHint: 'Cancel, the partial file is deleted',
+    timesHint: 'When it was added and when it finished',
+    addedAt: 'Added: {at}',
+    finishedAt: 'Finished: {at}',
   },
 
   library: {
