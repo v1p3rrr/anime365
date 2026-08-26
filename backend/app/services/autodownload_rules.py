@@ -171,15 +171,31 @@ def any_language_enabled() -> bool:
 def configured_series_ids() -> list[int]:
     """Тайтлы со своей настройкой — для списка «настроено вручную».
 
-    Считается настроенным тот, у кого режим не `default` или есть свой список
-    приоритетов: остальные поля без этого ничего не решают.
+    Настроенным считается тайтл, у которого задано **хоть что-нибудь своё**.
+
+    ⚠️ Раньше здесь смотрели только на режим и список приоритетов, а чёрный
+    список и переключатели в счёт не шли. Но запрет группы — решение не менее
+    весомое, чем список: тайтл с одним лишь чёрным списком настроен, а в
+    перечне не показывался. Найти его потом было нечем, и это ровно то, ради
+    чего перечень и заведён.
     """
     with session_scope() as session:
         rows = session.execute(select(SeriesAutoDownload)).scalars().all()
-        return sorted(
-            {
-                row.series_id
-                for row in rows
-                if (row.mode or "default") != "default" or (row.priorities or [])
-            }
-        )
+        return sorted({row.series_id for row in rows if _has_own_settings(row)})
+
+
+def _has_own_settings(row: SeriesAutoDownload) -> bool:
+    """Задано ли у записи хоть что-то, кроме умолчаний.
+
+    `None` у переключателя означает «наследовать», поэтому настройкой считается
+    именно **заданное** значение, а не его истинность: явное «выключено» — тоже
+    решение пользователя.
+    """
+    if (row.mode or "default") != "default":
+        return True
+    if row.priorities or row.blacklist:
+        return True
+    return any(
+        getattr(row, name) is not None
+        for name in ("allow_any", "allow_any_fallback", "ignore_embedded")
+    )

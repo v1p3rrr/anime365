@@ -228,3 +228,21 @@ class TestHelpers:
         _for_title(mode="default", priorities=[])
 
         assert configured_series_ids() == []
+
+    def test_a_title_with_only_a_blacklist_counts_as_configured(self) -> None:
+        """⚠️ Запрет группы — решение не менее весомое, чем список приоритетов.
+
+        Раньше сюда смотрели только режим и список, поэтому тайтл, у которого
+        задан один лишь чёрный список, в перечень не попадал. Настройка
+        работала, а найти её было нечем — при том что перечень ровно для этого
+        и заведён.
+        """
+        _for_title(mode="default", priorities=[], blacklist=["anilibria"])
+
+        assert configured_series_ids() == [SERIES]
+
+    def test_a_title_with_only_a_toggle_counts_as_configured(self) -> None:
+        """`None` значит «наследовать», а явное «выключено» — тоже решение."""
+        _for_title(mode="default", priorities=[], allow_any=False)
+
+        assert configured_series_ids() == [SERIES]
