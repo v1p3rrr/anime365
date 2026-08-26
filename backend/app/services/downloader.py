@@ -65,6 +65,69 @@ def is_allowed_target(url: str) -> bool:
     return any(host.endswith(suffix) for suffix in ALLOWED_CDN_SUFFIXES)
 
 
+#: Сколько редиректов проходим, прежде чем сдаться.
+#:
+#: Пять с запасом: у Anime365 цепочка «страница → CDN» длиной в один-два шага,
+#: а длинная цепочка — это либо петля, либо попытка увести куда-то в сторону.
+MAX_REDIRECT_HOPS = 5
+
+
+def next_hop(current_url: str, location: str) -> str:
+    """Абсолютный адрес следующего шага цепочки редиректов.
+
+    ⚠️ `Location` по стандарту бывает **относительным** (`/route/?m=…`), и
+    сравнивать его с allowlist напрямую бессмысленно: хоста в нём нет вовсе,
+    проверка отвергла бы законный редирект. Склеиваем с текущим адресом.
+    """
+    from urllib.parse import urljoin
+
+    return urljoin(current_url, location)
+
+
+async def open_checked(
+    client: httpx.AsyncClient,
+    url: str,
+    headers: dict[str, str],
+    *,
+    stream: bool,
+) -> httpx.Response:
+    """Запрос с проверкой хоста на КАЖДОМ шаге редиректа.
+
+    ⚠️ Ради этого функция и существует. Проверить только исходную ссылку мало:
+    `follow_redirects=True` уводит клиент куда скажет ответ, а ответ приходит
+    с чужой стороны. Подменённый или взломанный upstream отвечает `302` на
+    `http://192.168.1.1/`, и приложение послушно сходит туда **из локальной
+    сети сервера** — в типовой раскладке локальные диапазоны стоят в `NO_PROXY`,
+    то есть запрос пойдёт напрямую, мимо прокси. Тело при этом уедет в браузер.
+
+    Поэтому клиент обязан быть создан с `follow_redirects=False`, а цепочку
+    проходим сами, сверяя каждый шаг с allowlist.
+
+    ⚠️ Каждый адрес запрашивается ровно **один раз**. Подписи в ссылках CDN
+    одноразовые: предварительный `HEAD` ради проверки убил бы ссылку, и
+    настоящая загрузка получила бы ноль байт. Ответ редиректа тела не несёт,
+    поэтому закрыть его и пойти дальше безопасно.
+    """
+    current = url
+    for _ in range(MAX_REDIRECT_HOPS):
+        if not is_allowed_target(current):
+            raise Anime365Error(f"Ссылка ведёт на неизвестный хост: {current[:80]}")
+
+        request = client.build_request("GET", current, headers=headers)
+        response = await client.send(request, stream=stream)
+
+        if not response.is_redirect:
+            return response
+
+        location = response.headers.get("location")
+        await response.aclose()
+        if not location:
+            raise Anime365Error(f"Редирект без Location при обращении к {current[:80]}")
+        current = next_hop(current, location)
+
+    raise Anime365Error(f"Слишком длинная цепочка редиректов от {url[:80]}")
+
+
 # Что считаем допустимым содержимым для каждого вида загрузки.
 EXPECTED_CONTENT = {
     "video": ("video/", "application/octet-stream", "application/mp4"),

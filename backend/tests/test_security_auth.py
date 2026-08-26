@@ -113,6 +113,36 @@ class TestCsrf:
         response = client.get("/api/catalog/genres", headers={"Sec-Fetch-Site": "cross-site"})
         assert response.status_code == 200
 
+    def test_sibling_subdomain_is_rejected(self, client) -> None:
+        """⚠️ `same-site` — это в том числе соседний поддомен, и его не пускаем.
+
+        И `SameSite=Strict` у куки, и значение `same-site` считают поддомены
+        одним сайтом: `anime365.example.com` и `wiki.example.com` для них одно
+        и то же. Типовая домашняя установка — это два-три десятка сервисов на
+        поддоменах одного домена за общим обратным прокси, и XSS в любом из них
+        давал бы полноценный CSRF сюда. Взаимный TLS не спасает: браузер жертвы
+        сам предъявит клиентский сертификат.
+        """
+        response = client.post(
+            "/api/catalog/cards",
+            json={"ids": [1]},
+            headers={"Sec-Fetch-Site": "same-site"},
+        )
+        assert response.status_code == 403
+
+    def test_user_initiated_navigation_is_allowed(self, client) -> None:
+        """`none` ставит сам браузер при переходе из адресной строки.
+
+        Подделать его с чужой страницы нельзя, поэтому запрет ничего не дал бы,
+        а сломать мог бы не-браузерных клиентов.
+        """
+        response = client.post(
+            "/api/catalog/cards",
+            json={"ids": []},
+            headers={"Sec-Fetch-Site": "none"},
+        )
+        assert response.status_code == 200
+
 
 class TestSecurityHeaders:
     def test_csp_present_and_without_unsafe_scripts(self, client) -> None:

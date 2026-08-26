@@ -34,6 +34,21 @@ PUBLIC_PATHS = frozenset(
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
+#: Значения `Sec-Fetch-Site`, с которыми пускаем изменяющий запрос.
+#:
+#: ⚠️ `same-site` сюда НЕ входит, и это главное в этом наборе. И `SameSite=Strict`
+#: у куки, и значение `same-site` считают поддомены одним сайтом: для них
+#: `anime365.example.com` и `wiki.example.com` — одно и то же. То есть XSS или
+#: произвольная вставка HTML на **любом соседнем сервисе того же домена** даёт
+#: полноценный CSRF сюда, а типовая домашняя установка — это два-три десятка
+#: сервисов на поддоменах одного домена за общим обратным прокси. Взаимный TLS
+#: от этого не спасает: браузер жертвы сам предъявит клиентский сертификат.
+#:
+#: `none` оставлен намеренно и безопасен: так браузер помечает переход, начатый
+#: человеком (адресная строка, закладка). Подделать это значение с чужой
+#: страницы нельзя — заголовок ставит сам браузер.
+ALLOWED_FETCH_SITES = frozenset({"same-origin", "none"})
+
 # `unsafe-inline` для стилей приходится оставить: Mantine ставит инлайновые
 # style-атрибуты на элементы. Для скриптов его нет — именно скрипты опасны.
 # `connect-src 'self'` не даёт утащить данные на посторонний хост, если XSS
@@ -175,7 +190,7 @@ class CsrfMiddleware(BaseHTTPMiddleware):
 
         fetch_site = request.headers.get("sec-fetch-site")
         if fetch_site is not None:
-            if fetch_site not in ("same-origin", "same-site", "none"):
+            if fetch_site not in ALLOWED_FETCH_SITES:
                 log.warning("Отклонён межсайтовый запрос на %s (%s)", request.url.path, fetch_site)
                 return JSONResponse({"detail": "Межсайтовый запрос отклонён"}, status_code=403)
             return await call_next(request)
