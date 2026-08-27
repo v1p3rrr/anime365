@@ -1090,16 +1090,21 @@ export const en: Dictionary = {
   },
 
   apiErrors: {
+    network:
+      'The server did not answer the request {path}. Check that the container is running and reachable at this address. Reason: {reason}',
     upstream_unavailable: 'Anime365 is not responding. The mirror may be blocked — try switching it in settings. Reason: {reason}',
     token_missing: 'No access token is set. Anime365 refuses every request — open settings and provide one.',
     subscription_required: 'This needs an access token from an account with an active premium subscription. Set the token in settings and check that the subscription has not expired.',
+    relations_unavailable: 'Shikimori did not answer, so there is nothing to build the franchise links from. Reason: {reason}',
     too_many_cards: 'At most {max} cards can be requested at once.',
+    unknown_translation_type: 'Unknown translation type: {types}',
     sync_running: 'A catalog sync is already running ({mode}). Wait for it to finish.',
     rate_limited: 'Too often: {limit} requests per {window} s are allowed. Wait a moment.',
     root_read_only: 'The folder {path} is mounted read-only, so nothing can be downloaded into it. Remount the volume without the :ro flag.',
     hardsub: 'The subtitles are burned into the picture — no separate file exists. Download the video: they are already in it.',
     queue_rejected: 'Could not add to the queue: {reason}',
     task_not_found: 'Task not found — it may have already been removed from the queue.',
+    task_not_active: 'The task has already finished — there is nothing to move in the queue.',
     scan_running: 'A library scan is already running.',
     scan_rejected: 'Scanning is not possible: {reason}',
     folder_not_found: 'Folder not found.',
@@ -1108,9 +1113,14 @@ export const en: Dictionary = {
     too_many_names: 'At most {max} names can be parsed at once.',
     file_not_found: 'File not found.',
     bind_kind_unsupported: 'Only video and subtitle files can be bound.',
+    jellyfin_disabled: 'The Jellyfin integration is off or not configured — check the address and the key in settings.',
+    jellyfin_nothing_found: 'None of the titles were found in Jellyfin. It has most likely not seen these folders yet — ask it to rescan the library.',
+    jellyfin_unavailable: 'Jellyfin rejected the operation — check that it is running and that the key is still valid.',
     ffprobe_disabled: 'Track detection via ffprobe is turned off. Enable it in settings if some files have no .nfo.',
     ffmpeg_missing: 'The image has no ffmpeg — track detection and audio extraction are unavailable.',
+    probe_failed: 'ffprobe could not read the file: {reason}',
     settings_invalid: 'Settings were rejected: {reason}',
+    paths_overlap: 'Library roots must not be nested inside one another: {reason}',
     setting_unknown: 'Unknown setting: {key}',
     no_playable_links: 'This translation has no playable links.',
     unknown_host: 'The link points to an unknown host — playback was cancelled.',
@@ -1122,6 +1132,11 @@ export const en: Dictionary = {
     subtitles_server_error: 'The subtitle server replied with error {status}.',
     permission_denied: 'Not enough rights: “{permission}” is required. Ask an administrator to grant it.',
     admin_required: 'Only an administrator can do this.',
+    password_change_required: 'The password was issued temporarily — set your own to continue.',
+    user_exists: 'A user named “{name}” already exists.',
+    user_not_found: 'User not found — they may have already been removed.',
+    cannot_remove_last_admin: 'This is the last administrator — without them nobody could manage the settings.',
+    not_found: 'Record not found — it may have already been removed.',
   },
 
   errorCodes: {
@@ -1163,9 +1178,5 @@ export const en: Dictionary = {
 
   errors: {
     title: 'Something went wrong',
-    unauthorized: 'Sign-in required',
-    network:
-      'The server did not answer the request {path}. Check that the container is running and reachable at this address. Reason: {reason}',
-    serverSaid: 'Server said: {detail}',
   },
 }

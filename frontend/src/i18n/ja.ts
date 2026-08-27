@@ -1090,16 +1090,21 @@ export const ja: Dictionary = {
   },
 
   apiErrors: {
+    network:
+      'サーバーがリクエスト {path} に応答しませんでした。コンテナーが起動し、このアドレスで到達できるか確認してください。原因：{reason}',
     upstream_unavailable: 'Anime365 が応答しません。ミラーがブロックされている可能性があります — 設定で切り替えてみてください。理由：{reason}',
     token_missing: 'アクセストークンが設定されていません。Anime365 はすべてのリクエストを拒否します — 設定でトークンを指定してください。',
     subscription_required: 'プレミアム契約が有効なアカウントのアクセストークンが必要です。設定でトークンを指定し、契約期限を確認してください。',
+    relations_unavailable: 'Shikimori が応答しなかったため、シリーズの関連を表示できません。理由：{reason}',
     too_many_cards: '一度に取得できるカードは最大 {max} 件です。',
+    unknown_translation_type: '不明な翻訳の種類：{types}',
     sync_running: 'カタログの同期がすでに実行中です（{mode}）。完了までお待ちください。',
     rate_limited: '頻度が高すぎます：{window} 秒あたり {limit} リクエストまでです。少しお待ちください。',
     root_read_only: 'フォルダー {path} は読み取り専用でマウントされているため、ダウンロードできません。:ro フラグを外して再マウントしてください。',
     hardsub: '字幕は映像に焼き込まれており、個別のファイルは存在しません。動画をダウンロードしてください — すでに含まれています。',
     queue_rejected: 'キューに追加できませんでした：{reason}',
     task_not_found: 'タスクが見つかりません — すでにキューから削除された可能性があります。',
+    task_not_active: 'タスクはすでに完了しています — キュー内で移動するものはありません。',
     scan_running: 'ライブラリのスキャンがすでに実行中です。',
     scan_rejected: 'スキャンできません：{reason}',
     folder_not_found: 'フォルダーが見つかりません。',
@@ -1108,9 +1113,14 @@ export const ja: Dictionary = {
     too_many_names: '一度に解析できる名前は最大 {max} 件です。',
     file_not_found: 'ファイルが見つかりません。',
     bind_kind_unsupported: '紐付けられるのは動画と字幕のファイルだけです。',
+    jellyfin_disabled: 'Jellyfin 連携が無効か未設定です — 設定でアドレスとキーを確認してください。',
+    jellyfin_nothing_found: 'どのタイトルも Jellyfin で見つかりませんでした。まだフォルダーを認識していない可能性があります — ライブラリの再スキャンを実行してください。',
+    jellyfin_unavailable: 'Jellyfin が操作を受け付けませんでした — 起動しているか、キーが有効かを確認してください。',
     ffprobe_disabled: 'ffprobe によるトラック判定は無効です。.nfo が無いファイルがある場合は設定で有効にしてください。',
     ffmpeg_missing: 'イメージに ffmpeg がありません — トラック判定と音声抽出は利用できません。',
+    probe_failed: 'ffprobe がファイルを読めませんでした：{reason}',
     settings_invalid: '設定が受け付けられませんでした：{reason}',
+    paths_overlap: 'ライブラリのルートは互いに入れ子にできません：{reason}',
     setting_unknown: '不明な設定：{key}',
     no_playable_links: 'この翻訳には再生可能なリンクがありません。',
     unknown_host: 'リンクが不明なホストを指しています — 再生を中止しました。',
@@ -1122,6 +1132,11 @@ export const ja: Dictionary = {
     subtitles_server_error: '字幕サーバーがエラー {status} を返しました。',
     permission_denied: '権限が足りません：「{permission}」が必要です。管理者に付与を依頼してください。',
     admin_required: 'この操作は管理者のみ実行できます。',
+    password_change_required: 'パスワードは一時的に発行されたものです — 続けるにはご自身のパスワードを設定してください。',
+    user_exists: 'ユーザー「{name}」はすでに存在します。',
+    user_not_found: 'ユーザーが見つかりません — すでに削除された可能性があります。',
+    cannot_remove_last_admin: 'これが最後の管理者です — 削除すると設定を管理できる人がいなくなります。',
+    not_found: 'レコードが見つかりません — すでに削除された可能性があります。',
   },
 
   errorCodes: {
@@ -1163,9 +1178,5 @@ export const ja: Dictionary = {
 
   errors: {
     title: '問題が発生しました',
-    unauthorized: 'ログインが必要です',
-    network:
-      'サーバーがリクエスト {path} に応答しませんでした。コンテナーが起動し、このアドレスで到達できるか確認してください。原因：{reason}',
-    serverSaid: 'サーバーの応答：{detail}',
   },
 }

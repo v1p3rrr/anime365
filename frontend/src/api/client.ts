@@ -8,6 +8,15 @@
 /** Сигнал «сессия больше не действительна» — слушает useAuth. */
 export const UNAUTHORIZED_EVENT = 'a365:unauthorized'
 
+/**
+ * Код отказа, который придумываем мы сами, а не сервер.
+ *
+ * До сервера запрос не дошёл, поэтому кода взять неоткуда — а объяснить надо, и
+ * на языке интерфейса. Дальше он идёт по общему пути: `useApiError` ищет
+ * `apiErrors.network` в словаре, как и для любого серверного кода.
+ */
+export const NETWORK_ERROR_CODE = 'network'
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -48,10 +57,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // fetch бросает голое «Failed to fetch» на любой сетевой проблеме и не
     // говорит ни какой запрос упал, ни почему. Для домашнего сервиса причина
     // почти всегда одна и та же — сервер не отвечает, — и её стоит назвать.
+    //
+    // ⚠️ Русский текст здесь — запасной вариант ровно в том же смысле, что и
+    // сообщение сервера ([D-48](../../../claude/09-decisions.md)): показывается,
+    // если словарь почему-то не дал строки. Перевод берётся по коду, иначе
+    // англоязычный интерфейс объяснялся бы по-русски — и объяснялся, пока эту
+    // строку не связали с уже написанным `apiErrors.network`.
+    const reason = (cause as Error).message
     throw new ApiError(
       0,
       `Сервер не ответил на запрос ${path}. Проверьте, что контейнер запущен ` +
-        `и доступен по этому адресу. Причина: ${(cause as Error).message}`,
+        `и доступен по этому адресу. Причина: ${reason}`,
+      NETWORK_ERROR_CODE,
+      { path, reason },
     )
   }
 
@@ -87,43 +105,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
-/**
- * То же самое, но ответ — текст, а не JSON.
- *
- * Нужен субтитрам: `.ass` приходит текстом, а вот **ошибки у него те же
- * самые**, в том числе `{code, message, params}`. Разбирать их отдельным
- * `fetch` уже пробовали — получилось «[object Object]» вместо причины, потому
- * что `detail` объект, а его клали прямо в `new Error()`.
- */
-async function requestText(path: string): Promise<string> {
-  const response = await fetch(`/api${path}`, { credentials: 'same-origin' })
-  if (!response.ok) {
-    // Ошибку разбираем ровно как в request(): тело у неё JSON, даже когда
-    // успешный ответ — текст.
-    let detail = response.statusText
-    let code: string | undefined
-    let params: Record<string, string | number> | undefined
-    try {
-      const body = await response.json()
-      if (body.detail && typeof body.detail === 'object' && !Array.isArray(body.detail)) {
-        detail = body.detail.message ?? detail
-        code = body.detail.code
-        params = body.detail.params
-      } else if (typeof body.detail === 'string') {
-        detail = body.detail
-      }
-    } catch {
-      // не JSON — довольствуемся статусом
-    }
-    if (response.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
-    throw new ApiError(response.status, detail, code, params)
-  }
-  return response.text()
-}
+// Текстового варианта запроса здесь нет намеренно. Он был — «для субтитров»,
+// с собственной, дословно повторённой копией разбора ошибок, — но субтитры к
+// нему никогда не ходили: `.ass` забирает плеер прямо по адресу
+// (`/api/stream/{id}/subtitles.ass`), потому что плагин определяет формат по
+// расширению. Копия разбора при этом жила своей жизнью и успела разойтись с
+// оригиналом: сетевой отказ она пропускала наружу голым `TypeError`.
 
 export const api = {
   get: <T>(path: string) => request<T>(path),
-  getText: (path: string) => requestText(path),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) }),
   put: <T>(path: string, body?: unknown) =>
