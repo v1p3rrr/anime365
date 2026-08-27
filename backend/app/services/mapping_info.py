@@ -59,7 +59,11 @@ def title_root_kind(series_id: int) -> str | None:
             .join(LibraryFolder, LibraryFolder.root_id == LibraryRoot.id)
             .join(TitleMapping, TitleMapping.folder_id == LibraryFolder.id)
             .where(TitleMapping.series_id == series_id)
-            .order_by(TitleMapping.is_primary.desc())
+            # ⚠️ Порядок тот же, что в `title_folder_paths`: сперва основная
+            # привязка, дальше по пути. Без второго ключа при двух неосновных
+            # привязках выбиралась бы произвольная строка, и вид корня мог не
+            # отвечать той папке, которая в `rel_paths` идёт первой.
+            .order_by(TitleMapping.is_primary.desc(), LibraryFolder.rel_path)
             .limit(1)
         ).scalar_one_or_none()
     return str(row) if row else None
