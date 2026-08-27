@@ -262,6 +262,13 @@ def build_quality_summary(
     best_by_episode: dict[float, int] = {}
     had_above_ceiling = False
     for item in translations:
+        # ⚠️ Трейлеры, реклама и заставки — не серии, и нумерация у них своя,
+        # с единицы. Соседняя `build_summary` их отсеивает давно, а здесь они
+        # считались сериями. Проверено прогоном: у тайтла из двух серий 720p
+        # и трёх трейлеров 1080p сводка обещала «1080p, серии 1–3» — и третьей
+        # серии нет, и тысячи ста восьмидесяти у настоящих серий не будет.
+        if (item.get("episode_type") or "").strip() in NON_CONTENT_EPISODE_TYPES:
+            continue
         episode = item.get("episode_num")
         height = item.get("height")
         if episode is None or not height:

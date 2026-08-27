@@ -439,4 +439,50 @@ class TestCoverageCountsOnlyMainEpisodes:
         )
         assert group["is_complete"] is True
         assert group["extra_count"] == 0
+class TestQualitySummaryIgnoresNonContent:
+    """Трейлеры и заставки не участвуют в сводке качества.
+
+    ⚠️ Соседняя `build_summary` отсеивает их давно — здесь это было упущено, и
+    у трейлеров **своя нумерация с единицы**. Прогон: тайтл из двух серий 720p
+    и трёх трейлеров 1080p давал «1080p, серии 1–3». И третьей серии нет, и
+    тысячи ста восьмидесяти у настоящих серий не будет.
+    """
+
+    @staticmethod
+    def _tr(episode: float, height: int, episode_type: str) -> dict:
+        return {
+            "id": int(episode * 100) + height,
+            "type_lang": "ru",
+            "type_kind": "sub",
+            "authors_summary": "Студия",
+            "episode_num": episode,
+            "episode_type": episode_type,
+            "height": height,
+        }
+
+    def test_trailers_do_not_invent_episodes(self) -> None:
+        items = [self._tr(1, 720, "tv"), self._tr(2, 720, "tv")]
+        items += [self._tr(n, 1080, "preview") for n in (1, 2, 3)]
+        summary = build_quality_summary(items, total_episodes=2)
+        assert summary["buckets"] == [{"height": 720, "episodes": "1–2", "count": 2}]
+        assert summary["uniform"] == 720
+
+    def test_openings_and_ads_are_ignored_too(self) -> None:
+        items = [self._tr(1, 480, "tv")]
+        items += [self._tr(1, 1080, "opening"), self._tr(1, 1080, "cm")]
+        assert build_quality_summary(items, total_episodes=1)["uniform"] == 480
+
+    def test_real_episodes_are_untouched(self) -> None:
+        # Обратная сторона: отсев не имеет права трогать содержательное.
+        items = [self._tr(1, 720, "tv"), self._tr(2, 1080, "ova"), self._tr(3, 1080, "special")]
+        summary = build_quality_summary(items, total_episodes=3)
+        assert summary["buckets"] == [
+            {"height": 1080, "episodes": "2–3", "count": 2},
+            {"height": 720, "episodes": "1", "count": 1},
+        ]
+
+    def test_items_without_episode_type_still_count(self) -> None:
+        # Поле появилось не сразу, и вызов без него обязан работать по-старому.
+        items = [{"episode_num": 1.0, "height": 720}, {"episode_num": 2.0, "height": 720}]
+        assert build_quality_summary(items, total_episodes=2)["uniform"] == 720
 
