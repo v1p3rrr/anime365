@@ -96,7 +96,16 @@ export interface RunResult {
   series?: number
   planned: number
   queued: number
+  /** Строка «автоскачивание выключено». Не путать с `skipped_reasons`. */
   skipped?: string
+  /**
+   * Почему серии не попали в план: ключ — причина, значение — сколько серий.
+   *
+   * Нужно ровно в одном случае, зато важном: проход нашёл ноль, и человеку
+   * непонятно, нечего качать или что-то сломалось. Разбор такого случая
+   * однажды занял вечер — субтитры лежали внутри видеофайлов.
+   */
+  skipped_reasons?: Partial<Record<'sidecar' | 'embedded' | 'out_of_scope', number>>
 }
 
 export const autodownloadApi = {

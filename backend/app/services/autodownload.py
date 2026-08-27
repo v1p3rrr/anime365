@@ -21,7 +21,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from sqlalchemy import delete, select
@@ -161,21 +161,41 @@ def _embedded_languages(file_ids: list[int]) -> dict[int, set[str]]:
     return known
 
 
-def missing_episodes(
-    series_id: int, resolved: Resolved, automatic: bool = False
-) -> list[float]:
-    """Серии, к которым субтитров этого языка заведомо нет.
+@dataclass
+class EpisodeScan:
+    """Что вышло при отборе серий — и **почему** остальные не попали.
 
-    Возвращает только те, у которых есть локальное видео: остальным качать
+    Причины нужны не для отчётности. Проход, который нашёл ноль, ничего о себе
+    не рассказывал, и разбираться приходилось руками по базе: у пользователя
+    вечер ушёл на выяснение, что субтитры уже лежат внутри видеофайлов.
+    Движок это знал с самого начала — просто молчал.
+    """
+
+    missing: list[float] = field(default_factory=list)
+    #: Субтитры этого языка уже лежат отдельным файлом рядом с видео.
+    skipped_sidecar: int = 0
+    #: Дорожка этого языка есть внутри видеофайла (снимается галкой).
+    skipped_embedded: int = 0
+    #: Файл старше границы автоматического прохода — ждёт кнопки.
+    skipped_out_of_scope: int = 0
+
+
+def scan_episodes(
+    series_id: int, resolved: Resolved, automatic: bool = False
+) -> EpisodeScan:
+    """Отбор серий с разбором причин отсева.
+
+    Смотрит только на те, у которых есть локальное видео: остальным качать
     нечего по определению.
 
     `automatic=True` — проход по расписанию: он берёт не всё подряд, а только
     прошедшее правила из `_in_automatic_scope`. Кнопка зовёт без этого флага и
     проверяет всё, что лежит.
     """
+    scan = EpisodeScan()
     videos = episodes_with_video(series_id)
     if not videos:
-        return []
+        return scan
 
     now = datetime.utcnow()
     sidecars = _sidecar_languages(series_id)
@@ -185,16 +205,25 @@ def missing_episodes(
         else _embedded_languages([fid for fid, _ in videos.values() if fid])
     )
 
-    missing = []
     for episode, (file_id, mtime) in sorted(videos.items()):
         if automatic and not _in_automatic_scope(mtime, resolved, now):
+            scan.skipped_out_of_scope += 1
             continue
         if resolved.lang in sidecars.get(episode, set()):
+            scan.skipped_sidecar += 1
             continue
         if file_id is not None and resolved.lang in embedded.get(file_id, set()):
+            scan.skipped_embedded += 1
             continue
-        missing.append(episode)
-    return missing
+        scan.missing.append(episode)
+    return scan
+
+
+def missing_episodes(
+    series_id: int, resolved: Resolved, automatic: bool = False
+) -> list[float]:
+    """Серии, к которым субтитров этого языка заведомо нет."""
+    return scan_episodes(series_id, resolved, automatic).missing
 
 
 def _subtitle_language(path: Path) -> str | None:
@@ -450,6 +479,7 @@ async def plan_for_series(
     series_id: int,
     automatic: bool = False,
     only: set[tuple[float, str]] | None = None,
+    skipped: dict[str, int] | None = None,
 ) -> tuple[list[Choice], list[tuple[float, str]]]:
     """Что скачать и к чему не нашлось. Ничего не ставит в очередь.
 
@@ -460,6 +490,11 @@ async def plan_for_series(
     `only` сужает проход до конкретных пар «серия, язык». Нужен повтору
     промахов: он обязан вернуться **к тем сериям, что однажды не нашлись**, а
     не ко всему тайтлу ([D-129](../../claude/09-decisions.md)).
+
+    `skipped` — необязательный словарь, куда складываются причины отсева.
+    Отдельным параметром, а не третьим значением в ответе: распаковка
+    `plan, misses = …` живёт в десятке мест, и ломать её ради счётчиков,
+    нужных одному вызывающему, не стоит.
     """
     rules = resolve_for_series(series_id)
     if not rules:
@@ -481,7 +516,14 @@ async def plan_for_series(
     dismissed = _dismissed_pairs(series_id) if automatic else set()
 
     for lang, resolved in rules.items():
-        missing = missing_episodes(series_id, resolved, automatic)
+        scan = scan_episodes(series_id, resolved, automatic)
+        if skipped is not None:
+            skipped["sidecar"] = skipped.get("sidecar", 0) + scan.skipped_sidecar
+            skipped["embedded"] = skipped.get("embedded", 0) + scan.skipped_embedded
+            skipped["out_of_scope"] = (
+                skipped.get("out_of_scope", 0) + scan.skipped_out_of_scope
+            )
+        missing = scan.missing
         if not missing:
             continue
         by_episode = _candidates(series_id, lang)
@@ -536,7 +578,8 @@ async def run_for_series(
     """
     from app.services.download_queue import QueueError, enqueue
 
-    plan, misses = await plan_for_series(series_id, automatic, only)
+    skipped: dict[str, int] = {}
+    plan, misses = await plan_for_series(series_id, automatic, only, skipped)
     remember_misses(series_id, misses)
     queued = 0
     for choice in plan:
@@ -565,7 +608,17 @@ async def run_for_series(
             len(plan),
             queued,
         )
-    return {"series_id": series_id, "planned": len(plan), "queued": queued}
+    return {
+        "series_id": series_id,
+        "planned": len(plan),
+        "queued": queued,
+        # Почему остальные серии не попали в план. Без этого проход, нашедший
+        # ноль, был неотличим от сломанного.
+        #
+        # ⚠️ Имя не `skipped`: там у прохода по библиотеке уже лежит строка
+        # «автоскачивание выключено», и фронтенд читает её как сообщение.
+        "skipped_reasons": skipped,
+    }
 
 
 def series_with_files() -> list[int]:
@@ -610,6 +663,7 @@ async def run_for_all(
     configured = set(configured_series_ids()) if only_configured else None
 
     planned = queued = touched = 0
+    reasons: dict[str, int] = {}
     for series_id in series_with_files():
         if configured is not None and series_id not in configured:
             continue
@@ -622,14 +676,26 @@ async def run_for_all(
             touched += 1
         planned += result["planned"]
         queued += result["queued"]
+        for reason, count in (result.get("skipped_reasons") or {}).items():
+            reasons[reason] = reasons.get(reason, 0) + count
 
     log.info(
-        "Автоскачивание: проход завершён — тайтлов с находками %d, выбрано %d, поставлено %d",
+        "Автоскачивание: проход завершён — тайтлов с находками %d, выбрано %d, "
+        "поставлено %d, пропущено %s",
         touched,
         planned,
         queued,
+        # ⚠️ Причины идут в ту же строку лога намеренно. Прежде проход,
+        # нашедший ноль, писал только нули — и по логу было не отличить
+        # «нечего качать» от «сломалось».
+        reasons or "ничего",
     )
-    return {"series": touched, "planned": planned, "queued": queued}
+    return {
+        "series": touched,
+        "planned": planned,
+        "queued": queued,
+        "skipped_reasons": reasons,
+    }
 
 
 def remember_misses(series_id: int, misses: list[tuple[float, str]]) -> None:

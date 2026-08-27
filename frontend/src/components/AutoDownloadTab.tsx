@@ -15,7 +15,12 @@ import { IconChevronDown, IconInfoCircle, IconSearch } from '@tabler/icons-react
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 
-import { autodownloadApi, type AutoLang, type LangRule } from '../api/autodownload'
+import {
+  autodownloadApi,
+  type AutoLang,
+  type LangRule,
+  type RunResult,
+} from '../api/autodownload'
 import { usePermissions } from '../hooks/usePermissions'
 import { usePreferences } from '../stores/preferences'
 import { useT } from '../i18n'
@@ -79,6 +84,24 @@ export function AutoDownloadTab() {
     queryFn: autodownloadApi.configured,
   })
 
+  /**
+   * Почему проход не нашёл чего качать — человеческой фразой.
+   *
+   * Пустой результат сам по себе не отличает «нечего качать» от «сломалось».
+   * Разбор такого случая однажды занял вечер: субтитры лежали внутри
+   * видеофайлов, движок честно считал серии закрытыми и молчал об этом.
+   */
+  const skipReasons = (reasons: RunResult['skipped_reasons']) => {
+    if (!reasons) return ''
+    const parts = [
+      reasons.embedded && t('autodownload.skipEmbedded', { count: reasons.embedded }),
+      reasons.sidecar && t('autodownload.skipSidecar', { count: reasons.sidecar }),
+      reasons.out_of_scope &&
+        t('autodownload.skipOutOfScope', { count: reasons.out_of_scope }),
+    ].filter(Boolean)
+    return parts.length > 0 ? t('autodownload.skipPrefix', { parts: parts.join(', ') }) : ''
+  }
+
   const save = useMutation({
     mutationFn: ({ lang, value }: { lang: AutoLang; value: LangDraft }) =>
       autodownloadApi.setRule(lang, {
@@ -102,10 +125,18 @@ export function AutoDownloadTab() {
         color: result.skipped ? 'yellow' : 'teal',
         message: result.skipped
           ? t('autodownload.runOff')
-          : t('autodownload.runDone', {
-              planned: result.planned,
-              queued: result.queued,
-            }),
+          : [
+              t('autodownload.runDone', {
+                planned: result.planned,
+                queued: result.queued,
+              }),
+              // Причины дописываем только когда качать оказалось нечего:
+              // при находках они лишние, а вот пустой результат без
+              // объяснения человеку разбирать нечем.
+              result.planned === 0 && skipReasons(result.skipped_reasons),
+            ]
+              .filter(Boolean)
+              .join(' '),
         autoClose: 8000,
       })
       queryClient.invalidateQueries({ queryKey: ['autodownload-misses'] })

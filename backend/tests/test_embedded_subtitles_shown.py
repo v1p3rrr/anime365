@@ -203,3 +203,54 @@ class TestThePageAgreesWithAutodownload:
         # Страница при этом по-прежнему честно говорит, что дорожка есть:
         # это факт о файле, а не о настройке.
         assert "ru" in _row()["embedded_subs"]
+
+
+class TestTheRunExplainsItself:
+    """Проход, нашедший ноль, обязан сказать почему.
+
+    ⚠️ Ровно та немота, из-за которой разбор занял вечер: движок честно считал
+    серии закрытыми, а наружу отдавал только «выбрано 0». Отличить «нечего
+    качать» от «сломалось» было нечем.
+    """
+
+    def test_an_embedded_track_is_counted_as_a_reason(self) -> None:
+        from app.services.autodownload import scan_episodes
+        from app.services.autodownload_rules import Resolved
+
+        _seed(ERAI_STREAMS)
+        scan = scan_episodes(SERIES, Resolved(lang="ru", priorities=["crunchyroll"]))
+
+        assert scan.missing == []
+        assert scan.skipped_embedded == 1
+        assert scan.skipped_sidecar == 0
+
+    def test_a_sidecar_is_a_different_reason(self) -> None:
+        from app.services.autodownload import scan_episodes
+        from app.services.autodownload_rules import Resolved
+
+        _seed(None, sidecar="ru")
+        scan = scan_episodes(SERIES, Resolved(lang="ru", priorities=["crunchyroll"]))
+
+        assert scan.skipped_sidecar == 1
+        assert scan.skipped_embedded == 0
+
+    def test_reasons_reach_the_run_result(self) -> None:
+        """Счётчик должен доехать до вызывающего, а не осесть внутри."""
+        import asyncio
+
+        from app.models.autodownload import AutoDownloadRule
+        from app.services.autodownload import run_for_series
+
+        _seed(ERAI_STREAMS)
+        with session_scope() as session:
+            session.merge(
+                AutoDownloadRule(lang="ru", mode="all", priorities=["crunchyroll"])
+            )
+        try:
+            result = asyncio.run(run_for_series(SERIES))
+        finally:
+            with session_scope() as session:
+                session.execute(delete(AutoDownloadRule))
+
+        assert result["planned"] == 0
+        assert result["skipped_reasons"]["embedded"] == 1
