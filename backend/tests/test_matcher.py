@@ -256,3 +256,62 @@ class TestNoMatch:
             MatchContext(folder_name="Zzzz Unmatchable Qqqq", scope="series")
         )
         assert result is None
+class TestGuessedSeasonDate:
+    """Отбор при неоднозначности берёт дату там же, где и сверка.
+
+    ⚠️ Ожидание здесь не «правильный сезон», а «одинаковый источник даты».
+    Расхождение было настоящим: `_expected_year` сознательно отдаёт `None`,
+    когда номер сезона выведен по именам файлов (D-91), а отбор читал год и
+    квартал напрямую из `tvshow.nfo` — то есть у первого сезона. Починить это
+    ниже по цепочке было нечем: `_disambiguate` возвращает **одного**
+    кандидата, и верный до сверки не доезжал вовсе.
+    """
+
+    def _index(self) -> TitleIndex:
+        # Оба сезона названы одинаково — по строке они неразличимы, и решает
+        # именно отбор.
+        return TitleIndex(
+            [
+                series(1, "Classroom of the Elite", year=2017, season="Лето 2017", episodes=12),
+                series(2, "Classroom of the Elite", year=2025, season="Лето 2025", episodes=13),
+            ]
+        )
+
+    def _ctx(self) -> MatchContext:
+        # Ни `season.nfo`, ни «Season 4» в имени: номер взят из `S04E01…`.
+        # А `tvshow.nfo` описывает первый сезон — его дата к четвёртому
+        # отношения не имеет.
+        parent = nfo(title="Classroom of the Elite", year=2017, premiered="2017-07-12")
+        return MatchContext(
+            folder_name="Classroom of the Elite",
+            scope="series",
+            nfo=parent,
+            own_nfo=parent,
+            own_name="Classroom of the Elite",
+            video_count=13,
+            local_episode_count=13,
+            season_from_files=4,
+        )
+
+    def test_quarter_of_first_season_does_not_narrow(self) -> None:
+        matcher = Matcher(self._index())
+        ctx = self._ctx()
+        assert matcher._expected_quarter(ctx) is None
+        assert matcher._expected_year(ctx) is None
+
+    def test_fourth_season_is_not_replaced_by_the_first(self) -> None:
+        matcher = Matcher(self._index())
+        result = matcher.match(self._ctx())
+        assert result is not None
+        assert result.series_id == 2
+
+    def test_own_season_date_is_still_trusted(self) -> None:
+        # Обратная сторона: когда дата **своя**, отбор обязан ею пользоваться.
+        matcher = Matcher(self._index())
+        ctx = self._ctx()
+        ctx.season_nfo = nfo("season", season=1, premiered="2017-07-12")
+        assert matcher._expected_quarter(ctx) == (2017, 7)
+        result = matcher.match(ctx)
+        assert result is not None
+        assert result.series_id == 1
+
