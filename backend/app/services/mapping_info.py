@@ -45,6 +45,26 @@ def title_folder_paths(series_id: int) -> list[str]:
     return [row.rel_path for row in rows if row.rel_path]
 
 
+def title_root_kind(series_id: int) -> str | None:
+    """Вид корня, где лежит ОСНОВНАЯ папка тайтла: `series` или `movie`.
+
+    Нужен сопоставлению с Jellyfin. Относительный путь корень не называет, а
+    одно и то же имя папки встречается в обоих корнях: на живой библиотеке это
+    `Bang Dream!` и `The Garden of Sinners` — два имени из 360. Без вида корня
+    выбор между ними произволен.
+    """
+    with session_scope() as session:
+        row = session.execute(
+            select(LibraryRoot.kind)
+            .join(LibraryFolder, LibraryFolder.root_id == LibraryRoot.id)
+            .join(TitleMapping, TitleMapping.folder_id == LibraryFolder.id)
+            .where(TitleMapping.series_id == series_id)
+            .order_by(TitleMapping.is_primary.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+    return str(row) if row else None
+
+
 def get_title_mappings(series_id: int) -> list[dict[str, Any]]:
     """Все папки, привязанные к тайтлу, с указанием происхождения связи."""
     # Основная папка нужна загрузке: без неё при нескольких папках непонятно,

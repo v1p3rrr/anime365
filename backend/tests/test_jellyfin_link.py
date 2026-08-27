@@ -257,3 +257,56 @@ class TestBadKey:
         finally:
             for key in ("jellyfin_url", "jellyfin_api_key"):
                 settings.set_db_override(key, None)
+class TestSameFolderNameInBothRoots:
+    """Одно имя папки — в сериалах и в фильмах одновременно.
+
+    ⚠️ Замерено на живой библиотеке: таких имён два из 360 — `Bang Dream!` и
+    `The Garden of Sinners`. Относительный путь корня не называет, поэтому оба
+    элемента Jellyfin совпадают с одним и тем же хвостом.
+
+    Разводились они «самым длинным путём», то есть по длине строки
+    монтирования: `/media/anime_movies/…` длиннее `/media/anime/…`, и сериал
+    всегда получал ссылку на **фильм**. Заодно и подсказка о расхождении
+    разметки сравнивала наши идентификаторы с чужими.
+    """
+
+    @pytest.fixture
+    def both_roots(self):
+        return _items(
+            ("id-series", "Series", "/media/anime/Bang Dream!"),
+            ("id-movie", "Movie", "/media/anime_movies/Bang Dream!/Poppin Dream.mkv"),
+        )
+
+    def test_series_root_gives_the_series(self, both_roots):
+        client = FakeClient(both_roots)
+        found = run(client.find_item(["Bang Dream!"], "series"))
+        assert found is not None
+        assert found["id"] == "id-series"
+        assert found["type"] == "Series"
+
+    def test_movie_root_gives_the_movie(self, both_roots):
+        client = FakeClient(both_roots)
+        found = run(client.find_item(["Bang Dream!"], "movie"))
+        assert found is not None
+        assert found["id"] == "id-movie"
+        assert found["type"] == "Movie"
+
+    def test_without_a_hint_the_old_behaviour_stays(self, both_roots):
+        # Обратная сторона: вид корня необязателен, и без него выбор прежний.
+        # Здесь важно не «какой именно», а что вызов по-прежнему работает.
+        client = FakeClient(both_roots)
+        assert run(client.find_item(["Bang Dream!"])) is not None
+
+    def test_a_hint_does_not_break_a_single_match(self, library):
+        # Когда совпадение одно, подсказка ничего не меняет — даже неверная.
+        client = FakeClient(library)
+        found = run(client.find_item(["Zombie Land Saga"], "movie"))
+        assert found is not None and found["id"] == "id-zombie"
+
+    def test_season_counts_as_series(self, library):
+        # У нас сезон — отдельный тайтл со своей папкой, и в Jellyfin это
+        # отдельный элемент типа Season. Он обязан считаться сериальным.
+        client = FakeClient(library)
+        found = run(client.find_item(["YuruYuri - Happy Go Lily/Season 2"], "series"))
+        assert found is not None and found["id"] == "id-yuru-s2"
+

@@ -17,7 +17,7 @@ from app.core.permissions import Permission, require
 from app.models.catalog import Series
 from app.services.anime365 import Anime365Error, SubscriptionRequired
 from app.services.jellyfin import jellyfin
-from app.services.mapping_info import title_folder_paths
+from app.services.mapping_info import title_folder_paths, title_root_kind
 from app.services.shikimori import (
     ShikimoriError,
     get_details,
@@ -223,7 +223,7 @@ async def series_jellyfin_link(series_id: int) -> dict[str, Any]:
         # Тайтл не привязан ни к одной папке — искать в Jellyfin нечего.
         return {"available": False, "reason": "not_mapped"}
 
-    found = await jellyfin.resolve_title(rel_paths)
+    found = await jellyfin.resolve_title(rel_paths, title_root_kind(series_id))
     if not found:
         return {"available": False, "reason": "not_found"}
 

@@ -457,7 +457,7 @@ async def jellyfin_verdict(series_id: int) -> dict[str, Any]:
     выключен, недоступен или медленен, и страница не должна его ждать.
     """
     from app.services.jellyfin import jellyfin
-    from app.services.mapping_info import title_folder_paths
+    from app.services.mapping_info import title_folder_paths, title_root_kind
 
     if not jellyfin.turned_on or not jellyfin.configured:
         return {"available": False, "reason": "disabled"}
@@ -472,7 +472,7 @@ async def jellyfin_verdict(series_id: int) -> dict[str, Any]:
     if not rel_paths:
         return {"available": False, "reason": "not_mapped"}
 
-    item = await jellyfin.find_item(rel_paths)
+    item = await jellyfin.find_item(rel_paths, title_root_kind(series_id))
     if item is None:
         return {"available": False, "reason": "not_found"}
 
@@ -567,13 +567,17 @@ async def list_jellyfin_collections(
 async def _resolve_items(series_ids: list[int]) -> tuple[list[str], list[int]]:
     """Тайтлы -> элементы Jellyfin. Второй список — кого не нашли."""
     from app.services.jellyfin import jellyfin
-    from app.services.mapping_info import title_folder_paths
+    from app.services.mapping_info import title_folder_paths, title_root_kind
 
     found: list[str] = []
     missing: list[int] = []
     for series_id in series_ids:
         rel_paths = title_folder_paths(series_id)
-        item = await jellyfin.find_item(rel_paths) if rel_paths else None
+        item = (
+            await jellyfin.find_item(rel_paths, title_root_kind(series_id))
+            if rel_paths
+            else None
+        )
         if item:
             found.append(item["id"])
         else:
