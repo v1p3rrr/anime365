@@ -86,6 +86,26 @@ def _persist_folder(
     existing.parent_id = parent_id
     existing.scanned_at = datetime.utcnow()
 
+    if folder.read_failed:
+        # Папку не удалось открыть: пустой список файлов здесь означает
+        # «неизвестно», а не «пусто».
+        #
+        # ⚠️ Раньше эта оговорка была **только** в `_forget_vanished_folders`, то
+        # есть берегла строку папки — а файлы внутри неё удалялись вот здесь,
+        # раньше, как «исчезнувшие». Проверено прогоном: отвались подпапка
+        # `Season 1`, и из базы уходили все её файлы, а с ними по каскаду —
+        # связи серий, включая ручные. Автоматические вернёт следующий
+        # удачный скан, ручные и ручной язык файла — никогда.
+        #
+        # Имя и номер сезона обновляются: они взяты из записи каталога
+        # родителя, а не из чтения самой папки, и известны точно.
+        existing.name = folder.name
+        existing.season_number = folder.season_number
+        session.flush()
+        for child in folder.children:
+            _persist_folder(session, root_id, child, parent_id=existing.id)
+        return existing
+
     if folder.unchanged:
         # Папка не менялась — её файлы уже лежат в БД разобранными. Перезаписать
         # их пустым списком означало бы стереть библиотеку, поэтому выходим
