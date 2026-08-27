@@ -46,7 +46,24 @@ from app.models.catalog import Series, SeriesDetails, SeriesRelations
 
 log = logging.getLogger(__name__)
 
-BASE_URL = "https://shikimori.one"
+#: Базовый адрес Шикимори.
+#:
+#: ⚠️ Был `shikimori.one`, и на нём **всё работало** — но каждый запрос шёл
+#: через редирект. Замерено живыми запросами:
+#:
+#:     shikimori.one/api/animes/21/franchise      -> 301 -> shikimori.io/…
+#:     shikimori.one/api/animes/21                -> 301 -> shikimori.io/…
+#:     shikimori.one/system/studios/original/…jpg -> 301 -> shikimori.io/…
+#:
+#: Сайт переехал на другой домен верхнего уровня, а `follow_redirects=True`
+#: это прятал: связи, детали и логотипы студий получались исправно, просто
+#: вдвое дороже. Опасность не в лишнем запросе, а в том, что держалось всё на
+#: чужом редиректе: перестань `.one` его отдавать — и разом отвалится вся
+#: интеграция, включая ссылки «Шикимори» на странице тайтла.
+#:
+#: Редиректы по-прежнему разрешены и остаются страховкой на случай следующего
+#: переезда.
+BASE_URL = "https://shikimori.io"
 
 # Связи меняются редко — по сути только когда анонсируют продолжение.
 RELATIONS_TTL = timedelta(days=7)
@@ -77,6 +94,38 @@ async def _fetch(path: str) -> Any:
 def _logo_ext(image_path: str) -> str:
     """Расширение файла логотипа из пути вида `/system/studios/original/314.jpg?123`."""
     return image_path.split("?")[0].rsplit(".", 1)[-1].lower()
+
+
+def _studio_logo_url(item: dict[str, Any]) -> str | None:
+    """Наш адрес логотипа студии — или `None`, если отдавать нечего.
+
+    Отдаём ССВОЙ адрес, а не адрес Шикимори: см. `studio_logo()`.
+
+    Три причины не дать ссылку, и все встречаются на живых данных:
+
+    * поля нет вовсе;
+    * у Шикимори «картинки нет» выражается не пустым полем, а ссылкой на
+      заглушку (`/assets/globals/missing_original.jpg`). Принять её за
+      настоящий логотип — значит нарисовать серый прямоугольник вместо студии;
+    * ⚠️ **расширение не разобралось.** У части студий путь приходит без него:
+      `/system/studios/original/18.?1446981470` — точка есть, а расширения за
+      ней нет. `_logo_ext` возвращает пустую строку, и `studio_logo()` такую
+      ссылку всё равно отвергнет по белому списку. То есть браузер получал бы
+      неработающий адрес на каждый показ — ровно то, чего этот отбор и должен
+      избегать.
+
+      Замерено на 12 студиях из двадцати тайтлов: таких **две** — Toei
+      Animation (18) и Kinema Citrus (290). Toei встречается часто.
+
+    Без ссылки бейдж остаётся с одним названием, как и задумано.
+    """
+    image = item.get("image") or ""
+    if not image or "missing" in image:
+        return None
+    ext = _logo_ext(image)
+    if ext not in STUDIO_LOGO_EXTENSIONS:
+        return None
+    return f"/api/shikimori/studio/{item['id']}.{ext}"
 
 
 def _node(item: dict[str, Any]) -> dict[str, Any]:
@@ -269,18 +318,7 @@ async def fetch_details(mal_id: int) -> dict[str, Any] | None:
         {
             "id": item.get("id"),
             "name": item.get("name") or "",
-            # Отдаём ССВОЙ адрес, а не адрес Шикимори: см. studio_logo().
-            # Признак наличия картинки берём из ответа — если её нет, ссылку
-            # не даём вовсе, иначе браузер получил бы 404 на каждый показ.
-            "image": (
-                f"/api/shikimori/studio/{item['id']}.{_logo_ext(item['image'])}"
-                # У Шикимори «нет картинки» выражается не пустым полем, а
-                # ссылкой на заглушку (`/assets/globals/missing_original.jpg`).
-                # Принять её за настоящий логотип значит нарисовать серый
-                # прямоугольник вместо студии.
-                if item.get("image") and "missing" not in item["image"]
-                else None
-            ),
+            "image": _studio_logo_url(item),
         }
         for item in (data.get("studios") or [])
         if item.get("name")
