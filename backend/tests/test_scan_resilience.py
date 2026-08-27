@@ -173,3 +173,75 @@ class TestCandidateTitles:
             "ゆるゆり",
             "YuruYuri - Happy Go Lily",
         ]
+
+
+class TestUnreadableFolderSeenForTheFirstTime:
+    """Папка не открылась, и записи о ней в базе ещё нет.
+
+    ⚠️ Найдено ревизией собственной правки: ветка `read_failed` выходит рано и
+    выставляет только имя с номером сезона. Для **новой** строки это значит, что
+    остальные колонки берут значения по умолчанию, — и если бы обязательная
+    колонка осталась без значения, вставка упала бы прямо в скане.
+
+    Раньше это было проверено чтением модели, а не прогоном. Теперь прогоном.
+    """
+
+    def test_a_row_appears_and_the_scan_survives(self, tmp_path: Path) -> None:
+        root = tmp_path / "first-sight"
+        title = root / "Kagerou Days"
+        _write(title, "tvshow.nfo", TVSHOW_NFO)
+        season = title / "Season 1"
+        _write(season, "season.nfo", _season_nfo(1, "2019-01-10"))
+        _write(season, "Kagerou Days S01E01 [Group] WEBDL-1080p.mkv")
+
+        result = scan_root(str(root), "series")
+        child = result.folders[0].children[0]
+        child.files = []
+        child.children = []
+        child.read_failed = True
+
+        # Базы для этой папки ещё нет: скан идёт впервые.
+        root_id = _persist_root(result)
+
+        with session_scope() as session:
+            folder = session.execute(
+                select(LibraryFolder).where(
+                    LibraryFolder.root_id == root_id,
+                    LibraryFolder.rel_path == "Kagerou Days/Season 1",
+                )
+            ).scalar_one()
+            assert folder.name == "Season 1", "имя известно из обхода каталога родителя"
+            assert folder.season_number == 1
+            # Остальное неизвестно — и это честные значения по умолчанию.
+            assert folder.video_count == 0
+            assert folder.size_bytes == 0
+            assert folder.nfo is None
+
+    def test_the_next_good_scan_fills_it_in(self, tmp_path: Path) -> None:
+        # Обратная сторона: первая неудача ничего не заморозила.
+        root = tmp_path / "first-sight-then-ok"
+        title = root / "Kagerou Days"
+        _write(title, "tvshow.nfo", TVSHOW_NFO)
+        season = title / "Season 1"
+        _write(season, "season.nfo", _season_nfo(1, "2019-01-10"))
+        _write(season, "Kagerou Days S01E01 [Group] WEBDL-1080p.mkv")
+
+        broken = scan_root(str(root), "series")
+        child = broken.folders[0].children[0]
+        child.files = []
+        child.children = []
+        child.read_failed = True
+        root_id = _persist_root(broken)
+
+        _persist_root(scan_root(str(root), "series"))
+
+        with session_scope() as session:
+            folder = session.execute(
+                select(LibraryFolder).where(
+                    LibraryFolder.root_id == root_id,
+                    LibraryFolder.rel_path == "Kagerou Days/Season 1",
+                )
+            ).scalar_one()
+            assert folder.video_count == 1
+            assert folder.nfo is not None
+

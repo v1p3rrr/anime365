@@ -149,6 +149,17 @@ class TestManualLanguageIsKept:
                 session.get(LibraryFile, file_id).lang == "ru"
             ), "связка серий переписала ручной язык"
 
+            # ⚠️ И роль обязана следовать ручному языку, а не языку перевода.
+            # Правка выносила `role = SUB_ROLE[...]` внутрь ветки, и это было
+            # сделано намеренно — но проверено рассуждением, а не прогоном.
+            roles = {
+                row[0]
+                for row in session.execute(
+                    select(EpisodeMapping.role).where(EpisodeMapping.file_id == file_id)
+                ).all()
+            }
+            assert roles == {"sub_ru"}, f"роль не пошла за ручным языком: {roles}"
+
     def test_automatic_language_is_still_corrected(self, tmp_path: Path) -> None:
         # Обратная сторона: без ручной пометки подпись по переводу нужна — ради
         # неё правило и заводилось.

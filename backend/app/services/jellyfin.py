@@ -148,8 +148,13 @@ def _auth_headers(key: str) -> dict[str, str]:
 #:
 #: Сезон здесь наравне с сериалом: у нас сезон — отдельный тайтл со своей
 #: папкой, и Jellyfin держит его отдельным элементом типа `Season`.
+#:
+#: ⚠️ Значения перечислены ровно те, что бывают в индексе: его строит
+#: `_ensure_index` по `ITEM_TYPES`, а там `Series,Season,Movie`. `Episode`
+#: приходит только в другой запрос (`FILE_ITEM_TYPES`, сверка нераспознанного),
+#: и в `find_item` встретиться не может.
 _EXPECTED_TYPES = {
-    "series": frozenset({"Series", "Season", "Episode"}),
+    "series": frozenset({"Series", "Season"}),
     "movie": frozenset({"Movie"}),
 }
 

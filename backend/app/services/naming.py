@@ -84,6 +84,12 @@ def sanitize_author(authors: str) -> str:
     return cleaned or "unknown"
 
 
+#: Приставка метки загрузки. Вынесена в константу, потому что её длина нужна
+#: ещё и для подсчёта бюджета в `_subtitle_markers`: литерал в двух местах —
+#: это ровно та болезнь, которую чинили D-187…D-191.
+MARKER_PREFIX = "anime365_"
+
+
 def author_marker(authors: str, translation_id: int | None = None) -> str:
     """Метка загрузки: кто перевёл и какой это перевод.
 
@@ -98,7 +104,7 @@ def author_marker(authors: str, translation_id: int | None = None) -> str:
     группы идёт по `MAX_AUTHOR_CHARS`, и попади номер внутрь — от него осталась
     бы половина, то есть ссылка на чужой перевод.
     """
-    marker = f"anime365_{sanitize_author(authors)}"
+    marker = f"{MARKER_PREFIX}{sanitize_author(authors)}"
     return f"{marker}_t{translation_id}" if translation_id else marker
 
 
@@ -330,10 +336,12 @@ def _subtitle_markers(authors: str, translation_id: int | None, budget: int) -> 
     author = sanitize_author(authors)
     out: list[str] = []
     if translation_id:
-        out.append(f"anime365_{author}_t{translation_id}")
-    out.append(f"anime365_{author}")
+        out.append(author_marker(authors, translation_id))
+    out.append(author_marker(authors))
 
-    room = budget - len(b"anime365_")
+    # Имя группы урезаем по байтам, а собирает метку всё равно `author_marker`:
+    # формат приставки и разделителя знает только он.
+    room = budget - len(MARKER_PREFIX.encode("utf-8"))
     if room > 0:
         kept: list[str] = []
         used = 0
@@ -345,7 +353,7 @@ def _subtitle_markers(authors: str, translation_id: int | None, budget: int) -> 
             used += size
         trimmed = "".join(kept).rstrip("_ .")
         if trimmed and trimmed != author:
-            out.append(f"anime365_{trimmed}")
+            out.append(author_marker(trimmed))
     return out
 
 
