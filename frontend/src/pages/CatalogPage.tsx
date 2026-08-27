@@ -103,7 +103,10 @@ export function CatalogPage({ onlyAiring = false }: Props) {
   // «Ничего не найдено» имеет три разные причины, и советы к ним противоположные.
   // Раньше здесь всегда предлагалась синхронизация — при полном каталоге и
   // слишком узком фильтре это отправляло пользователя не туда.
-  const catalogIsEmpty = (statusQuery.data?.total_series ?? 0) === 0
+  // Именно `data !== undefined`, а не `?? 0`: пока состояние не приехало (или
+  // не приехало вовсе), «ноль тайтлов» — это наша догадка, а совет из неё
+  // выходит вредный — «нажмите синхронизацию», которая тоже не сработает.
+  const catalogIsEmpty = statusQuery.data !== undefined && statusQuery.data.total_series === 0
   const hasFilters =
     Boolean(
       filters.type ||
@@ -114,6 +117,10 @@ export function CatalogPage({ onlyAiring = false }: Props) {
     ) ||
     filters.yearFrom !== undefined ||
     filters.yearTo !== undefined ||
+    // Онгоинги сужают выборку наравне с остальными, поэтому и совет должен быть
+    // тот же — «ослабьте условия». Раньше единственный включённый тумблер
+    // «только онгоинги» отправлял в ветку «причина неизвестна».
+    filters.isAiring !== undefined ||
     filters.scoreFrom !== undefined
 
   const emptyReason = catalogIsEmpty
@@ -169,7 +176,15 @@ export function CatalogPage({ onlyAiring = false }: Props) {
         <ErrorState compact error={genresQuery.error} onRetry={() => genresQuery.refetch()} />
       )}
 
-      {!catalog.isLoading && !catalog.isError && ids.length === 0 && (
+      {/* Связи нет — запрос отложен, а не провален, и объяснять пустую сетку
+          фильтрами нельзя: сервер про эту выборку ещё не спрашивали. */}
+      {catalog.isPaused && ids.length === 0 && (
+        <Alert color="yellow" title={t('errorCodes.offline')} style={{ flexShrink: 0 }}>
+          {t('errorCodes.offlineHint')}
+        </Alert>
+      )}
+
+      {!catalog.isLoading && !catalog.isError && !catalog.isPaused && ids.length === 0 && (
         <Alert color="gray" title={t('common.nothingFound')} style={{ flexShrink: 0 }}>
           {emptyReason}
         </Alert>

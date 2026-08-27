@@ -33,6 +33,17 @@ export interface CatalogIdsState {
   total: number
   isLoading: boolean
   isError: boolean
+  /**
+   * Запрос не начат и не провален — он **отложен**: связи нет.
+   *
+   * Отдельное состояние, а не разновидность ошибки. TanStack при `networkMode:
+   * 'online'` (значение по умолчанию) не отправляет запрос вовсе, пока браузер
+   * считает себя офлайн, и не переводит его в ошибку — он ждёт возвращения
+   * связи. Внешне это неотличимо от «пришёл пустой ответ», и каталог на этом
+   * попадался: он объявлял «под выбранные фильтры не подошёл ни один тайтл»,
+   * когда на самом деле не спрашивал.
+   */
+  isPaused: boolean
   error: unknown
   refetch: () => void
   /** Есть ли что подгружать дальше. Только для режима `scroll`. */
@@ -78,6 +89,7 @@ export function useCatalogIds({ filters, mode, pageSize, page }: Options): Catal
       total: paged.data?.total ?? 0,
       isLoading: paged.isLoading,
       isError: paged.isError,
+      isPaused: paged.isPaused,
       error: paged.error,
       refetch: () => void paged.refetch(),
       hasMore: false,
@@ -91,6 +103,7 @@ export function useCatalogIds({ filters, mode, pageSize, page }: Options): Catal
     total: scroll.data?.pages[0]?.total ?? 0,
     isLoading: scroll.isLoading,
     isError: scroll.isError,
+    isPaused: scroll.isPaused,
     error: scroll.error,
     refetch: () => void scroll.refetch(),
     hasMore: scroll.hasNextPage,
