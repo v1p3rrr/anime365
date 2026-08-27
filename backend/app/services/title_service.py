@@ -1063,7 +1063,13 @@ quality_refiner = QualityRefiner()
 
 
 def exact_heights_for_series(series_id: int) -> dict[float, list[int]]:
-    """Точные ступени по сериям — из кэша embed, без единого запроса в сеть."""
+    """Точные ступени по сериям — из кэша embed, без единого запроса в сеть.
+
+    ⚠️ Несодержательные эпизоды отсеиваются точно так же, как в `_pick_representatives`.
+    Иначе две функции расходятся: уточнение трейлеры пропускает, а чтение
+    подбирало их кэш и приписывало настоящим сериям — у трейлеров нумерация
+    своя и начинается с единицы.
+    """
     with session_scope() as session:
         rows = session.execute(
             select(Translation.episode_id, TranslationEmbed.download_heights)
@@ -1073,7 +1079,10 @@ def exact_heights_for_series(series_id: int) -> dict[float, list[int]]:
         episodes = {
             e.id: e.episode_num
             for e in session.execute(
-                select(Episode).where(Episode.series_id == series_id)
+                select(Episode).where(
+                    Episode.series_id == series_id,
+                    Episode.episode_type.not_in(NON_CONTENT_EPISODE_TYPES),
+                )
             ).scalars()
         }
 
