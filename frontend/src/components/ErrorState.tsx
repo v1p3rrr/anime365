@@ -78,6 +78,12 @@ function describe(
   fallbackTitle?: string,
 ): { heading: string; hint?: string } {
   if (error instanceof ApiError) {
+    // Нулевой статус означает, что ответа не было вовсе: запрос не дошёл.
+    // Отдельной строкой, а не общим «Ошибка {status}»: «Ошибка 0» не сообщает
+    // ничего, а причина здесь всегда одна и та же и чинится не на этой странице.
+    if (error.status === 0) {
+      return { heading: t('errorCodes.offline'), hint: t('errorCodes.offlineHint') }
+    }
     switch (error.status) {
       case 401:
         return { heading: t('errorCodes.e401'), hint: t('errorCodes.e401hint') }
@@ -95,10 +101,6 @@ function describe(
       default:
         return { heading: fallbackTitle ?? t('errorCodes.generic', { status: error.status }) }
     }
-  }
-
-  if (error instanceof TypeError) {
-    return { heading: t('errorCodes.offline'), hint: t('errorCodes.offlineHint') }
   }
 
   return { heading: fallbackTitle ?? t('errors.title') }

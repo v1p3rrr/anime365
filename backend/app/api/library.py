@@ -1457,7 +1457,15 @@ async def probe_one_file(file_id: int) -> dict[str, Any]:
         # смешивать их в одну структуру значило бы засорить маппинг.
         media = await probe_media_info(path)
     except AudioError as exc:
-        raise ApiError(422, errors.PROBE_FAILED, f"ffprobe не смог прочитать файл: {exc}")
+        # Причина идёт отдельным параметром, а не только внутри текста: клиент
+        # собирает сообщение по своему словарю, и из склеенной строки её уже
+        # не достать ([D-48](../../../claude/09-decisions.md)).
+        raise ApiError(
+            422,
+            errors.PROBE_FAILED,
+            f"ffprobe не смог прочитать файл: {exc}",
+            reason=str(exc),
+        )
 
     # Запись — тем же методом, что у фоновой джобы: одна логика на оба пути,
     # включая отметку «смотрели» при пустом результате.
