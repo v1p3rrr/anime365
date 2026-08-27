@@ -378,3 +378,65 @@ class TestQualityRefinement:
         # Пустой список ступеней — это «данных нет», а не «доступно 0p».
         summary = build_quality_summary(self._translations((1, 1080)), 1, exact={1: []})
         assert summary["uniform"] == 1080
+class TestCoverageCountsOnlyMainEpisodes:
+    """Покрытие в строке описывает то же, что скачает кнопка.
+
+    ⚠️ Раньше номера серий собирались и с основного, и с добавки, а `count` и
+    состав батча — только с основного. Строка обещала одно, кнопка делала
+    другое, и расхождение было видно глазами в двух живых раскладках.
+    """
+
+    @staticmethod
+    def _translation(tid: int, episode_type: str, episode_num: float) -> dict:
+        return {
+            "id": tid,
+            "type_lang": "ru",
+            "type_kind": "sub",
+            "authors_summary": "Студия",
+            "episode_num": episode_num,
+            "episode_type": episode_type,
+        }
+
+    def _group(self, items: list[dict], total: int, series_type: str = "tv") -> dict:
+        return build_summary(items, total_episodes=total, series_type=series_type)[0]["groups"][0]
+
+    def test_author_of_ova_only_does_not_claim_main_episodes(self) -> None:
+        # У сериала автор перевёл одни OVA. В батч по умолчанию не уйдёт ничего,
+        # значит и покрытия по основным сериям у него нет.
+        group = self._group(
+            [self._translation(1, "ova", 1), self._translation(2, "ova", 2)], total=12
+        )
+        assert group["count"] == 0
+        assert group["coverage"] == ""
+        # Но строка не пустеет: добавка считается и подписывается отдельно.
+        assert group["extra_count"] == 2
+        assert group["extra_coverage"] == "1–2"
+
+    def test_specials_numbered_past_the_finale_do_not_complete_a_title(self) -> None:
+        # Основных десять из двенадцати, а спешлы пронумерованы 11 и 12.
+        # Вместе они добирали до «все серии», хотя двух серий так и нет.
+        items = [self._translation(i, "tv", i) for i in range(1, 11)]
+        items += [self._translation(11, "special", 11), self._translation(12, "special", 12)]
+        group = self._group(items, total=12)
+        assert group["is_complete"] is False
+        assert group["coverage"] == "1–10"
+        assert group["extra_coverage"] == "11–12"
+
+    def test_full_translation_is_still_complete(self) -> None:
+        # Обратная сторона: зелёный маркер обязан остаться там, где он верен.
+        group = self._group([self._translation(i, "tv", i) for i in range(1, 13)], total=12)
+        assert group["is_complete"] is True
+        assert group["coverage"] == "все серии"
+        assert group["extra_count"] == 0
+
+    def test_ova_title_counts_its_ova_as_main(self) -> None:
+        # У тайтла-OVA основное — это и есть OVA (D-по типу тайтла), и покрытие
+        # должно считаться по ним, а не уезжать в добавку.
+        group = self._group(
+            [self._translation(1, "ova", 1), self._translation(2, "ova", 2)],
+            total=2,
+            series_type="ova",
+        )
+        assert group["is_complete"] is True
+        assert group["extra_count"] == 0
+

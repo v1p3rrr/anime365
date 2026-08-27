@@ -121,7 +121,13 @@ class AuthorGroup:
     # обязан менять СОСТАВ задач, а не только своё положение. Разделение делаем
     # здесь, потому что тип эпизода известен только на сервере.
     extra_translation_ids: list[int] = field(default_factory=list)
+    #: Номера серий только по **основному**: из них считается покрытие.
+    #:
+    #: ⚠️ Раньше сюда шли и спешлы с OVA, а `count` и батч брали только
+    #: основное — то есть строка обещала одно, а кнопка делала другое.
     episode_numbers: list[float] = field(default_factory=list)
+    #: То же по добавке — считается отдельно и с основным не смешивается.
+    extra_episode_numbers: list[float] = field(default_factory=list)
     # Максимальная высота исходников этого автора — ОЦЕНКА, не точные ступени.
     max_height: int | None = None
     # Ссылка на самую раннюю серию этого автора: кнопка «смотреть» должна вести
@@ -135,9 +141,11 @@ class AuthorGroup:
         return {
             "authors": self.authors,
             "count": len(self.translation_ids),
+            "extra_count": len(self.extra_translation_ids),
             "translation_ids": self.translation_ids,
             "extra_translation_ids": self.extra_translation_ids,
             "coverage": "все серии" if complete else format_ranges(covered),
+            "extra_coverage": format_ranges(self.extra_episode_numbers),
             "is_complete": complete,
             "max_height_estimate": self.max_height,
             "first_url": self.first_url,
@@ -183,14 +191,22 @@ def build_summary(
         # отдельном списке, чтобы тумблер в батче реально менял состав задач.
         # Пустой тип трактуем как основной: он встречается у переводов, чей
         # эпизод ещё не подтянулся в кэш, и прятать их в добавку неверно.
-        if episode_type and episode_type not in main_types:
+        is_extra = bool(episode_type) and episode_type not in main_types
+        if is_extra:
             group.extra_translation_ids.append(item["id"])
         else:
             group.translation_ids.append(item["id"])
 
+        # ⚠️ Номер уходит в тот же список, что и сам перевод. Иначе покрытие
+        # говорит об одном наборе, а счётчик и кнопка — о другом: автор,
+        # перевёдший только OVA, показывал «1–2» при нуле переводов в батче, а
+        # спешлы с номерами 11 и 12 доводили десять серий до зелёного «все серии».
         episode_num = item.get("episode_num")
         if episode_num is not None:
-            group.episode_numbers.append(episode_num)
+            if is_extra:
+                group.extra_episode_numbers.append(episode_num)
+            else:
+                group.episode_numbers.append(episode_num)
 
         # Запоминаем ссылку на самую раннюю серию: с неё логично начинать просмотр.
         url = item.get("url")

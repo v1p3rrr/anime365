@@ -57,10 +57,19 @@ export interface EpisodeItem {
 export interface AuthorGroup {
   authors: string
   count: number
+  /** Сколько у автора спешлов и OVA. Ноль основных при ненулевом здесь — обычное дело. */
+  extra_count: number
   /** Основные серии. Спешлы и OVA лежат отдельно — их берём только по запросу. */
   translation_ids: number[]
   extra_translation_ids: number[]
+  /**
+   * Покрытие по основным сериям. Спешлы и OVA сюда НЕ входят: счётчик и батч
+   * считают только основное, и смешивать их в одной строке значило бы обещать
+   * то, чего кнопка не сделает.
+   */
   coverage: string
+  /** То же по добавке — отдельной подписью. */
+  extra_coverage: string
   is_complete: boolean
   max_height_estimate: number | null
   /** Страница самой ранней серии этого перевода на сайте — туда ведёт «Смотреть». */

@@ -546,6 +546,7 @@ export const en: Dictionary = {
     checking: 'checking…',
     hardsubAsk: 'burned-in or a file?',
     countShort: '{count} pcs',
+    extras: '+ specials and OVA: {coverage} ({count} pcs)',
     upTo: 'up to {height}p',
     watch: 'Watch',
     columnAuthor: 'Author',

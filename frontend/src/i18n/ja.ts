@@ -545,6 +545,7 @@ export const ja: Dictionary = {
     checking: '確認中…',
     hardsubAsk: '焼き込み？ファイル？',
     countShort: '{count} 件',
+    extras: '+ スペシャル・OVA: {coverage} ({count} 件)',
     upTo: '最大 {height}p',
     watch: '視聴',
     columnAuthor: '翻訳者',
