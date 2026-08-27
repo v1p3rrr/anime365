@@ -545,6 +545,7 @@ export const ru = {
     checking: 'проверяю…',
     hardsubAsk: 'вшитые или файлом?',
     countShort: '{count} шт.',
+    extras: '+ спешлы и OVA: {coverage} ({count} шт.)',
     upTo: 'до {height}p',
     watch: 'Смотреть',
     columnAuthor: 'Автор',

@@ -245,6 +245,13 @@ function AuthorRow({
         <Text size="xs" c="dimmed">
           {t('groups.countShort', { count: group.count })}
         </Text>
+        {/* Добавка отдельной строкой: у автора, переведшего одни OVA, основных
+            серий ноль — и без этой подписи строка выглядела бы пустой. */}
+        {group.extra_count > 0 && (
+          <Text size="xs" c="dimmed">
+            {t('groups.extras', { count: group.extra_count, coverage: group.extra_coverage })}
+          </Text>
+        )}
       </Table.Td>
 
       <Table.Td>
