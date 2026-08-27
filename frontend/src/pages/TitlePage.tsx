@@ -51,7 +51,7 @@ import { EpisodeRow } from '../components/EpisodeRow'
 import { ErrorState } from '../components/ErrorState'
 import { MappingPanel } from '../components/MappingPanel'
 import { TranslationGroups } from '../components/TranslationGroups'
-import { TitleDetails } from '../components/TitleDetails'
+import { TitleDetails, useAnnouncedShown } from '../components/TitleDetails'
 import { useSeriesTypeLabel } from '../i18n/seriesType'
 import { useT, type TranslationKey } from '../i18n'
 import { useSeasonLabel } from '../i18n/season'
@@ -111,6 +111,10 @@ export function TitlePage() {
   const titleName = useTitleName()
   const format = useFormat()
   const [showNonContent, setShowNonContent] = useState(false)
+  // Тот же запрос, что рисует блок с Шикимори, — react-query отдаёт его из
+  // кэша по общему ключу. Нужен здесь ради одного вопроса: сказано ли уже на
+  // странице, что тайтл ещё не вышел.
+  const announcedShown = useAnnouncedShown(seriesId)
   const [binding, setBinding] = useState(false)
   // Отдельно от `binding`: та модалка привязывает папку ТАЙТЛА, а ссылка в
   // плашке обещает настройку папок ОТДЕЛЬНЫХ СЕРИЙ. Раньше обе вели в одно
@@ -235,14 +239,6 @@ export function TitlePage() {
     data.episodes.filter((e) => e.is_content && e.episode_num != null).map((e) => e.episode_num!),
   )
   const hiddenCount = data.episodes.length - data.episodes.filter((e) => e.is_content).length
-  // То же правило, что на сервере (см. is_announced): ни одной серии-контента,
-  // не идёт сейчас, год не в прошлом. Дублировать его сюда пришлось потому, что
-  // карточка каталога и страница тайтла считаются разными эндпоинтами, а
-  // тащить признак через всю страницу ради одного условия — дороже.
-  const isAnnounced =
-    !data.episodes.some((e) => e.is_content) &&
-    !series.is_airing &&
-    (series.year == null || series.year >= new Date().getFullYear())
   // Частей у тайтла: по нему решается, связка это или одиночный фильм.
   const contentEpisodeCount = data.episodes.filter((e) => e.is_content).length
 
@@ -688,8 +684,15 @@ export function TitlePage() {
       ) : (
         /* Записей нет. У анонса это ожидаемо и уже сказано чипом выше, поэтому
            повторяться незачем — а вот у вышедшего тайтла это значит, что на
-           Anime365 его просто ещё не выложили, и об этом стоит сказать прямо. */
-        !isAnnounced && (
+           Anime365 его просто ещё не выложили, и об этом стоит сказать прямо.
+
+           ⚠️ Спрашиваем именно «показан ли чип», а не «похож ли тайтл на
+           анонс». Раньше здесь стояло собственное правило, скопированное с
+           серверного `is_announced`, — и оно молчало не про тот чип: чип
+           ставится по статусу Шикимори, а правило считало по годам и сериям.
+           Там, где источники расходились (замер: 6 случаев из 15), страница не
+           показывала ни чипа, ни объяснения — просто обрывалась. */
+        !announcedShown && (
           <Alert color="gray">
             {series.effective_is_movie ? t('title.noEpisodesMovie') : t('title.noEpisodesYet')}
           </Alert>

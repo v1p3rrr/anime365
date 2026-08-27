@@ -32,16 +32,33 @@ function useDate() {
  * Блок молча исчезает, если данных нет: у тайтла может не быть `mal_id`, а
  * Шикимори может быть недоступен. Ради студии страницу тайтла не ломаем.
  */
-export function TitleDetails({ seriesId, availableEpisodes }: Props) {
-  const { t } = useT()
-  const formatDate = useDate()
-
-  const query = useQuery({
+/**
+ * Данные Шикимори по тайтлу. Один запрос на страницу — ключ общий.
+ *
+ * Вынесен из компонента потому, что ответ нужен ещё и самой странице: она
+ * решает по нему, надо ли объяснять пустой список серий. Раньше она решала это
+ * своим правилом, не зная, показался ли чип «Анонс», — и молчали оба.
+ */
+export function useTitleDetails(seriesId: number) {
+  return useQuery({
     queryKey: ['shikimori-details', seriesId],
     queryFn: () => titleApi.details(seriesId),
     staleTime: 60 * 60 * 1000,
     retry: false,
   })
+}
+
+/** Показан ли чип «Анонс». Единственное место, где это решается. */
+export function useAnnouncedShown(seriesId: number): boolean {
+  const { data } = useTitleDetails(seriesId)
+  return data?.available === true && data.status === 'anons'
+}
+
+export function TitleDetails({ seriesId, availableEpisodes }: Props) {
+  const { t } = useT()
+  const formatDate = useDate()
+
+  const query = useTitleDetails(seriesId)
 
   const data = query.data
   if (!data?.available) return null
