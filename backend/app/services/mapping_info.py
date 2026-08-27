@@ -15,6 +15,7 @@ from app.core.db import session_scope
 from app.models.catalog import Episode, Series
 from app.models.library import EpisodeMapping, LibraryFile, LibraryFolder, LibraryRoot, TitleMapping
 from app.services.coverage import NON_CONTENT_EPISODE_TYPES, format_ranges
+from app.services.languages import normalize_lang
 
 # Какие роли считаем за «есть локально» при подсчёте покрытия.
 ROLE_LABELS = {
@@ -23,6 +24,45 @@ ROLE_LABELS = {
     "sub_ja": "JA-субтитры",
     "sub_en": "EN-субтитры",
 }
+
+
+def embedded_subtitle_episodes(
+    series_ids: list[int] | None = None,
+) -> dict[int, dict[str, set[float]]]:
+    """Серии, у которых субтитры лежат дорожкой ВНУТРИ видеофайла.
+
+    Разметка серий (`EpisodeMapping`) знает только про соседние файлы: дорожка
+    внутри контейнера отдельным файлом не существует и в роли `sub_*` не
+    попадает никогда. Поэтому счётчики её не видели — и говорили «не хватает»
+    про серию, которую автоскачивание считает закрытой
+    ([D-185](../../../claude/09-decisions.md), [D-203](../../../claude/09-decisions.md)).
+
+    Возвращается по сериям и ролям: `{series_id: {"sub_ru": {8.0}}}`.
+    """
+    stmt = (
+        select(EpisodeMapping.series_id, EpisodeMapping.episode, LibraryFile.streams)
+        .join(LibraryFile, LibraryFile.id == EpisodeMapping.file_id)
+        .where(EpisodeMapping.role == "video")
+    )
+    if series_ids is not None:
+        if not series_ids:
+            return {}
+        stmt = stmt.where(EpisodeMapping.series_id.in_(series_ids))
+
+    with session_scope() as session:
+        rows = session.execute(stmt).all()
+
+    out: dict[int, dict[str, set[float]]] = {}
+    for series_id, episode, streams in rows:
+        for raw in (streams or {}).get("subtitle_languages") or []:
+            lang = normalize_lang(raw)
+            role = f"sub_{lang}" if lang else None
+            # Языки за пределами трёх интересующих просто не считаем: роли под
+            # них нет, и заводить её ради счётчика незачем.
+            if role is None or role not in ROLE_LABELS:
+                continue
+            out.setdefault(series_id, {}).setdefault(role, set()).add(float(episode))
+    return out
 
 
 def title_folder_paths(series_id: int) -> list[str]:
@@ -177,6 +217,11 @@ def get_local_coverage(series_id: int, total_episodes: int) -> dict[str, Any]:
     for role, episode in rows:
         by_role.setdefault(role, set()).add(float(episode))
 
+    # Дорожка внутри контейнера — тоже наличие: отдельного файла нет, но
+    # субтитры есть, и движок такую серию не качает. Держим отдельным набором,
+    # чтобы карточка могла сказать, скольким сериям файла всё-таки нет.
+    embedded = embedded_subtitle_episodes([series_id]).get(series_id, {})
+
     expected = api_episodes or {float(i) for i in range(1, (total_episodes or 0) + 1)}
 
     duplicates: dict[str, list[float]] = {}
@@ -185,7 +230,10 @@ def get_local_coverage(series_id: int, total_episodes: int) -> dict[str, Any]:
 
     coverage = {}
     for role, label in ROLE_LABELS.items():
-        have = by_role.get(role, set())
+        as_file = by_role.get(role, set())
+        # Серии, закрытые ТОЛЬКО дорожкой в контейнере: файла рядом нет.
+        only_embedded = embedded.get(role, set()) - as_file
+        have = as_file | only_embedded
         missing = sorted(expected - have)
         dups = sorted(duplicates.get(role, []))
         coverage[role] = {
@@ -194,6 +242,11 @@ def get_local_coverage(series_id: int, total_episodes: int) -> dict[str, Any]:
             "total": len(expected),
             "complete": bool(expected) and not missing,
             "missing_ranges": format_ranges(missing),
+            # Сколько из них закрыто дорожкой внутри видеофайла. Отдельным
+            # числом, а не сноской в тексте: «8 из 8» и «8 из 8, одна дорожкой
+            # в контейнере» — разные вещи для того, кто собирает файлы.
+            "embedded": len(only_embedded),
+            "embedded_ranges": format_ranges(sorted(only_embedded)),
             # Серии, лежащие более чем в одной копии.
             "duplicate_count": len(dups),
             "duplicate_ranges": format_ranges(dups),
@@ -379,12 +432,14 @@ def series_badges(series_ids: list[int] | None = None) -> dict[int, dict[str, An
     тайтлов локальных серий бывает больше, чем знает сайт.
     """
     with session_scope() as session:
+        # Различные номера, а не агрегат: к ним потом добавляются серии,
+        # закрытые дорожкой внутри контейнера, а объединить два числа нельзя —
+        # серия может быть закрыта и файлом, и дорожкой сразу.
         role_stmt = select(
             EpisodeMapping.series_id,
             EpisodeMapping.role,
-            func.count(func.distinct(EpisodeMapping.episode)),
-            func.max(EpisodeMapping.episode),
-        ).group_by(EpisodeMapping.series_id, EpisodeMapping.role)
+            EpisodeMapping.episode,
+        ).distinct()
 
         api_stmt = (
             select(Episode.series_id, func.count(func.distinct(Episode.episode_num)))
@@ -419,12 +474,26 @@ def series_badges(series_ids: list[int] | None = None) -> dict[int, dict[str, An
             size_stmt = size_stmt.where(TitleMapping.series_id.in_(series_ids))
         sizes = dict(session.execute(size_stmt).all())
 
-    out: dict[int, dict[str, Any]] = {}
+    episodes_by_role: dict[int, dict[str, set[float]]] = {}
     local_max: dict[int, float] = {}
-    for series_id, role, count, highest in rows:
-        entry = out.setdefault(series_id, {})
-        entry[role] = count
-        local_max[series_id] = max(local_max.get(series_id, 0.0), float(highest or 0))
+    for series_id, role, episode in rows:
+        number = float(episode)
+        episodes_by_role.setdefault(series_id, {}).setdefault(role, set()).add(number)
+        local_max[series_id] = max(local_max.get(series_id, 0.0), number)
+
+    # ⚠️ Дорожка субтитров внутри видеофайла — это тоже наличие. Значок на
+    # постере считал только соседние файлы и писал «RU 7/8» там, где у восьмой
+    # серии субтитры лежат в самом контейнере, а движок её не качает
+    # ([D-203](../../../claude/09-decisions.md)).
+    for series_id, roles in embedded_subtitle_episodes(series_ids).items():
+        entry = episodes_by_role.setdefault(series_id, {})
+        for role, numbers in roles.items():
+            entry.setdefault(role, set()).update(numbers)
+
+    out: dict[int, dict[str, Any]] = {
+        series_id: {role: len(numbers) for role, numbers in roles.items()}
+        for series_id, roles in episodes_by_role.items()
+    }
 
     # Тайтл может быть привязан к папке, в которой ещё нет ни одной серии
     # (пустая папка с одним tvshow.nfo — такое в библиотеке встречается).

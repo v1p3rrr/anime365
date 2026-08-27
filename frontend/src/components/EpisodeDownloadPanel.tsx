@@ -33,7 +33,12 @@ import {
   type TranslationType,
 } from '../stores/preferences'
 import { usePermissions } from '../hooks/usePermissions'
-import { DownloadButton, type Emphasis } from './DownloadButton'
+import {
+  downloadActions,
+  DownloadButton,
+  type DownloadAction,
+  type Emphasis,
+} from './DownloadButton'
 import { SaveToComputer } from './SaveToComputer'
 import rowClasses from './StripedRows.module.css'
 
@@ -75,10 +80,7 @@ const KIND_ICON: Record<Kind, typeof IconPhoto> = {
   sub: IconTextCaption,
 }
 
-/** Что можно скачать у перевода с субтитрами. */
-type SubAction = 'subtitle' | 'both' | 'video'
-
-const ACTION_LABEL: Record<SubAction, TranslationKey> = {
+const ACTION_LABEL: Record<DownloadAction, TranslationKey> = {
   subtitle: 'episode.actionSubs',
   both: 'episode.actionVideoSubs',
   video: 'episode.actionVideo',
@@ -149,18 +151,19 @@ export function EpisodeDownloadPanel({ episode, types }: Props) {
   const sections = useMemo(() => buildSections(episode, types), [episode, types])
 
   /**
-   * Порядок и акценты кнопок у перевода с субтитрами.
+   * Что предложить у перевода с субтитрами и в каком порядке.
    *
-   * Первой идёт та, которая закрывает то, чего не хватает. Приглушённая не
-   * значит «нельзя»: скачать повторно можно, просто незачем — и это должно быть
-   * видно до нажатия, а не после появления второго файла рядом.
+   * Сама таблица общая с батчем по всему тайтлу (`downloadActions`): это один и
+   * тот же выбор, только вход разный — здесь наличие у одной серии, там
+   * собранное по тайтлу целиком.
+   *
+   * Своя здесь только первая строка: вшитые субтитры отдельным файлом не
+   * существуют, скачать можно лишь видео — и оно уже несёт их в картинке.
    */
   const subActions = (
     lang: string,
     isHardsub: boolean,
-  ): Array<{ kind: SubAction; emphasis: Emphasis; disabled?: boolean }> => {
-    // Вшитые субтитры отдельным файлом не существуют — скачать можно только
-    // видео, и оно уже несёт их в картинке.
+  ): Array<{ kind: DownloadAction; emphasis: Emphasis; disabled?: boolean }> => {
     if (isHardsub) {
       return [
         { kind: 'video', emphasis: 'primary' },
@@ -168,40 +171,10 @@ export function EpisodeDownloadPanel({ episode, types }: Props) {
         { kind: 'both', emphasis: 'dimmed', disabled: true },
       ]
     }
-
-    const hasVideo = episode.have.includes('video')
-    const hasSub = episode.have.includes(`sub_${lang}`)
-
-    if (!hasVideo && !hasSub) {
-      // Нет ничего — одним действием закрывается и то и другое.
-      return [
-        { kind: 'both', emphasis: 'primary' },
-        { kind: 'subtitle', emphasis: 'secondary' },
-        { kind: 'video', emphasis: 'secondary' },
-      ]
-    }
-    if (!hasVideo) {
-      // Субтитры есть, видео нет — не хватает именно видео.
-      return [
-        { kind: 'video', emphasis: 'primary' },
-        { kind: 'subtitle', emphasis: 'dimmed' },
-        { kind: 'both', emphasis: 'dimmed' },
-      ]
-    }
-    if (!hasSub) {
-      // Видео есть — нужен только файл субтитров, второй видеофайл ни к чему.
-      return [
-        { kind: 'subtitle', emphasis: 'primary' },
-        { kind: 'both', emphasis: 'dimmed' },
-        { kind: 'video', emphasis: 'dimmed' },
-      ]
-    }
-    // Есть и то и другое: раздел и так уедет в «уже есть», выделять нечего.
-    return [
-      { kind: 'subtitle', emphasis: 'dimmed' },
-      { kind: 'both', emphasis: 'dimmed' },
-      { kind: 'video', emphasis: 'dimmed' },
-    ]
+    return downloadActions(
+      episode.have.includes('video'),
+      episode.have.includes(`sub_${lang}`),
+    )
   }
 
   const missing = sections.filter((section) => section.covered === null)

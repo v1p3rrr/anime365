@@ -20,6 +20,57 @@ import { useFormat } from '../i18n/format'
  */
 export type Emphasis = 'primary' | 'secondary' | 'dimmed'
 
+/** Что можно скачать у перевода с субтитрами. */
+export type DownloadAction = 'subtitle' | 'both' | 'video'
+
+/**
+ * Порядок и яркость вариантов загрузки: первым идёт то, чего не хватает.
+ *
+ * Одна таблица на оба места, где этот выбор делается, — панель загрузки серии и
+ * батч по всему тайтлу. Различаются они только тем, что подставляют на вход:
+ * панель — наличие у одной серии, батч — собранное по тайтлу целиком. Сам выбор
+ * один и тот же, и держать его двумя копиями нельзя: разъедутся молча, а
+ * заметно это будет только тому, кто сравнит два экрана подряд.
+ *
+ * Приглушённое не означает «нельзя»: скачать повторно можно, просто незачем — и
+ * это должно быть видно до нажатия, а не после появления второго файла рядом.
+ */
+export function downloadActions(
+  hasVideo: boolean,
+  hasSubs: boolean,
+): Array<{ kind: DownloadAction; emphasis: Emphasis }> {
+  // Нет ничего — одним действием закрывается и то и другое.
+  if (!hasVideo && !hasSubs) {
+    return [
+      { kind: 'both', emphasis: 'primary' },
+      { kind: 'subtitle', emphasis: 'secondary' },
+      { kind: 'video', emphasis: 'secondary' },
+    ]
+  }
+  // Субтитры есть, видео нет — не хватает именно видео.
+  if (!hasVideo) {
+    return [
+      { kind: 'video', emphasis: 'primary' },
+      { kind: 'subtitle', emphasis: 'dimmed' },
+      { kind: 'both', emphasis: 'dimmed' },
+    ]
+  }
+  // Видео есть — нужен только файл субтитров, второй видеофайл ни к чему.
+  if (!hasSubs) {
+    return [
+      { kind: 'subtitle', emphasis: 'primary' },
+      { kind: 'both', emphasis: 'dimmed' },
+      { kind: 'video', emphasis: 'dimmed' },
+    ]
+  }
+  // Есть и то и другое: выделять нечего.
+  return [
+    { kind: 'subtitle', emphasis: 'dimmed' },
+    { kind: 'both', emphasis: 'dimmed' },
+    { kind: 'video', emphasis: 'dimmed' },
+  ]
+}
+
 interface Props {
   translationId: number
   /** `both` ставит две задачи разом — видео и субтитры к нему. */
