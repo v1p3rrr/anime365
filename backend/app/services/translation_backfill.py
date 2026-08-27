@@ -46,6 +46,25 @@ log = logging.getLogger(__name__)
 #: начала; на сервере пользователя это шло каждые две минуты сутками.
 RETRY_AFTER = timedelta(hours=24)
 
+#: Через сколько повторять то, что не ответило по сети.
+#:
+#: ⚠️ Отдельное окно, потому что причины разные по сути, и это записано и в
+#: модели `TranslationMiss`, и в [D-156](../../../claude/09-decisions.md):
+#: «сайт не знает перевода» и «тайтл ответил, перевода в нём нет» — состояния
+#: устойчивые, а отказ сети — случайность.
+#:
+#: Раньше различие было только на бумаге: отбор смотрел на одну лишь дату
+#: попытки, и разовый обрыв связи откладывал идентификатор на **сутки**. Поле
+#: `reason` при этом писалось и не читалось ни разу.
+#:
+#: Час, а не минуты: проход зовётся после каждого сканирования, а сканов при
+#: активной загрузке бывает много. Даже при недоступном сайте это не больше
+#: одной попытки в час на идентификатор, и все они идут через ограничитель.
+ERROR_RETRY_AFTER = timedelta(hours=1)
+
+#: Причина, означающая «попробуем снова скоро».
+TEMPORARY_REASON = "error"
+
 #: По сколько идентификаторов подставлять в `IN (…)` — потолок параметров SQLite.
 IN_CHUNK = 500
 
@@ -106,16 +125,32 @@ def unknown_translation_ids(limit: int | None = None) -> list[int]:
     if not wanted:
         return []
 
+    now = datetime.utcnow()
     with session_scope() as session:
         # Таблица маленькая (это остатки), поэтому берём её целиком и вычитаем
-        # множествами — так не упираемся в потолок параметров запроса.
-        recent = set(
-            session.execute(
-                select(TranslationMiss.translation_id).where(
-                    TranslationMiss.last_try_at > datetime.utcnow() - RETRY_AFTER
-                )
-            ).scalars()
-        )
+        # множествами — так не упираемся в потолок параметров запроса. Заодно
+        # это позволяет развести окна по причине прямо здесь, не городя
+        # условие в SQL.
+        rows = session.execute(
+            select(
+                TranslationMiss.translation_id,
+                TranslationMiss.reason,
+                TranslationMiss.last_try_at,
+            )
+        ).all()
+
+    recent = set()
+    for translation_id, reason, last_try_at in rows:
+        if last_try_at is None:
+            # Попытки не было — держать нечего.
+            continue
+        # ⚠️ Быстрое окно даётся только явному `error`. Всё остальное, включая
+        # пустую причину у записей из старых версий, идёт по суточному: иначе
+        # мы вернули бы тот самый вечный поход в сеть, ради которого таблица и
+        # заведена.
+        window = ERROR_RETRY_AFTER if reason == TEMPORARY_REASON else RETRY_AFTER
+        if now - last_try_at < window:
+            recent.add(translation_id)
 
     return sorted(wanted - recent)[:cap]
 

@@ -28,6 +28,7 @@ from app.models.catalog import Series, Translation, TranslationMiss
 from app.models.library import LibraryFile, LibraryFolder, LibraryRoot
 from app.services import translation_backfill
 from app.services.translation_backfill import (
+    ERROR_RETRY_AFTER,
     RETRY_AFTER,
     backfill,
     remember_outcome,
@@ -181,3 +182,70 @@ class TestTheLoopIsClosed:
 
         with session_scope() as session:
             assert len(session.execute(select(TranslationMiss.translation_id)).all()) == 1
+class TestNetworkRefusalComesBackSooner:
+    """Отказ сети — случайность, а «перевода нет» — состояние.
+
+    ⚠️ Различие было записано в трёх местах — в комментарии модели, в докстроке
+    `resolve_series` и в [D-156](../../claude/09-decisions.md), — и ни в одном
+    не исполнялось: отбор смотрел только на дату попытки, а поле `reason`
+    писалось и **не читалось ни разу**. Разовый обрыв связи откладывал
+    идентификатор на сутки наравне с переводом, удалённым с сайта.
+    """
+
+    @staticmethod
+    def _age(translation_id: int, delta) -> None:
+        with session_scope() as session:
+            session.get(TranslationMiss, translation_id).last_try_at = (
+                datetime.utcnow() - delta
+            )
+
+    def test_a_network_refusal_is_retried_after_its_own_window(self) -> None:
+        _library_file_with(GONE_ID)
+        remember_outcome([GONE_ID], {GONE_ID: "error"})
+        self._age(GONE_ID, ERROR_RETRY_AFTER + timedelta(minutes=1))
+
+        assert GONE_ID in unknown_translation_ids(), "сетевой отказ временный"
+
+    def test_a_missing_translation_still_waits_a_day(self) -> None:
+        # Тот же возраст записи, но причина другая — и ждать ей сутки.
+        _library_file_with(GONE_ID)
+        remember_outcome([GONE_ID], {})
+        self._age(GONE_ID, ERROR_RETRY_AFTER + timedelta(minutes=1))
+
+        assert GONE_ID not in unknown_translation_ids(), "перевода нет — не дёргаем"
+
+    def test_a_fresh_network_refusal_is_not_retried(self) -> None:
+        # Обратная сторона: короткое окно не означает «каждый скан».
+        _library_file_with(GONE_ID)
+        remember_outcome([GONE_ID], {GONE_ID: "error"})
+        self._age(GONE_ID, ERROR_RETRY_AFTER - timedelta(minutes=1))
+
+        assert GONE_ID not in unknown_translation_ids()
+
+    def test_an_unknown_reason_waits_a_day(self) -> None:
+        """Быстрое окно даётся только явному `error`.
+
+        ⚠️ Сперва здесь проверялась причина `None` — и тест справедливо упал:
+        колонка объявлена непустой со значением по умолчанию, то есть `NULL` в
+        ней быть не может. Настоящий пограничный случай — пустая строка.
+
+        Всё, что не `error`, идёт по суточному окну: иначе правка вернула бы
+        ровно тот вечный поход в сеть, ради которого таблица и заведена.
+        """
+        _library_file_with(GONE_ID)
+        remember_outcome([GONE_ID], {})
+        with session_scope() as session:
+            row = session.get(TranslationMiss, GONE_ID)
+            row.reason = ""
+            row.last_try_at = datetime.utcnow() - ERROR_RETRY_AFTER - timedelta(minutes=1)
+
+        assert GONE_ID not in unknown_translation_ids()
+
+    def test_after_a_full_day_even_a_missing_one_is_asked(self) -> None:
+        # И прежнее правило на месте: сутки прошли — спрашиваем снова.
+        _library_file_with(GONE_ID)
+        remember_outcome([GONE_ID], {})
+        self._age(GONE_ID, RETRY_AFTER + timedelta(minutes=1))
+
+        assert GONE_ID in unknown_translation_ids()
+
