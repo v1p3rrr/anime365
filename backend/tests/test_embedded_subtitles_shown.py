@@ -254,3 +254,63 @@ class TestTheRunExplainsItself:
 
         assert result["planned"] == 0
         assert result["skipped_reasons"]["embedded"] == 1
+
+
+class TestCountersAgreeWithTheFlag:
+    """Найдено пользователем на живых данных, тайтл 40024.
+
+    Флаг у серии показывал субтитры на месте (дорожка в контейнере), а счётчик
+    на постере писал «RU 7/8» и сводка покрытия — «не хватает: 8». Разошлись
+    ровно те же две стороны, что и в [D-185](../../claude/09-decisions.md), но
+    на другом экране: счётчики считают по разметке серий, а она знает только
+    соседние файлы.
+
+    Отдельно проверяется, что «дорожкой в контейнере» не растворилось в общем
+    числе: собирающему файлы важно, что отдельного файла у серии нет.
+    """
+
+    def test_the_poster_badge_counts_a_track_inside_the_file(self) -> None:
+        from app.services.mapping_info import series_badges
+
+        _seed(ERAI_STREAMS)
+
+        assert series_badges([SERIES])[SERIES].get("sub_ru") == 1
+
+    def test_coverage_does_not_call_such_an_episode_missing(self) -> None:
+        from app.services.mapping_info import get_local_coverage
+
+        _seed(ERAI_STREAMS)
+        role = get_local_coverage(SERIES, 1)["coverage"]["sub_ru"]
+
+        assert role["have"] == 1
+        assert role["complete"] is True
+        assert role["missing_ranges"] == ""
+
+    def test_but_it_says_there_is_no_separate_file(self) -> None:
+        from app.services.mapping_info import get_local_coverage
+
+        _seed(ERAI_STREAMS)
+        role = get_local_coverage(SERIES, 1)["coverage"]["sub_ru"]
+
+        assert role["embedded"] == 1
+        assert role["embedded_ranges"] == "1"
+
+    def test_a_sidecar_is_not_reported_as_embedded(self) -> None:
+        """Файл рядом есть — оговорка не нужна, даже если дорожка тоже на месте."""
+        from app.services.mapping_info import get_local_coverage
+
+        _seed(ERAI_STREAMS, sidecar="ru")
+        role = get_local_coverage(SERIES, 1)["coverage"]["sub_ru"]
+
+        assert role["have"] == 1
+        assert role["embedded"] == 0
+
+    def test_a_language_we_do_not_have_stays_missing(self) -> None:
+        """Дорожек ru и ja в файле нет — английский обязан остаться нулём."""
+        from app.services.mapping_info import get_local_coverage
+
+        _seed(ERAI_STREAMS)
+        role = get_local_coverage(SERIES, 1)["coverage"]["sub_en"]
+
+        assert role["have"] == 0
+        assert role["missing_ranges"] == "1"

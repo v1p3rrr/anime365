@@ -8,7 +8,7 @@ import { downloadsApi } from '../api/downloads'
 import { usePermissions } from '../hooks/usePermissions'
 import { useT, type TranslationKey } from '../i18n'
 import { useApiError } from '../i18n/apiError'
-import type { Emphasis } from './DownloadButton'
+import { downloadActions, type Emphasis } from './DownloadButton'
 import type { AuthorGroup } from '../api/title'
 
 interface Props {
@@ -26,6 +26,7 @@ interface Props {
 
 type BatchWhat = 'subtitle' | 'video' | 'both'
 
+
 const BATCH_LABEL: Record<BatchWhat, TranslationKey> = {
   subtitle: 'batch.subsOnly',
   video: 'batch.videoOnly',
@@ -36,43 +37,6 @@ const BATCH_STYLE: Record<Emphasis, { variant: string; color?: string }> = {
   primary: { variant: 'filled' },
   secondary: { variant: 'light' },
   dimmed: { variant: 'subtle', color: 'gray' },
-}
-
-/**
- * Порядок и яркость вариантов батча — по тем же правилам, что и у отдельной
- * серии. Держать их разными нельзя: это один и тот же выбор, сделанный сразу
- * на весь тайтл вместо одной серии.
- */
-function batchActions(
-  hasVideo: boolean,
-  hasSubs: boolean,
-): Array<{ what: BatchWhat; emphasis: Emphasis }> {
-  if (!hasVideo && !hasSubs) {
-    return [
-      { what: 'both', emphasis: 'primary' },
-      { what: 'subtitle', emphasis: 'secondary' },
-      { what: 'video', emphasis: 'secondary' },
-    ]
-  }
-  if (!hasVideo) {
-    return [
-      { what: 'video', emphasis: 'primary' },
-      { what: 'subtitle', emphasis: 'dimmed' },
-      { what: 'both', emphasis: 'dimmed' },
-    ]
-  }
-  if (!hasSubs) {
-    return [
-      { what: 'subtitle', emphasis: 'primary' },
-      { what: 'both', emphasis: 'dimmed' },
-      { what: 'video', emphasis: 'dimmed' },
-    ]
-  }
-  return [
-    { what: 'subtitle', emphasis: 'dimmed' },
-    { what: 'both', emphasis: 'dimmed' },
-    { what: 'video', emphasis: 'dimmed' },
-  ]
 }
 
 /** Ступени качества. Подписи собираются из словаря: «до 720p» переводится. */
@@ -205,27 +169,27 @@ export function BatchDownload({
               // яркость зависят от того, что уже закрыто по тайтлу целиком:
               // приглушённое — это «можно, но у вас и так есть».
               <>
-                {batchActions(hasVideo, hasSubs).map((action) => (
+                {downloadActions(hasVideo, hasSubs).map((action) => (
                   // Две кнопки на каждый вариант: «все» и «только те, чего нет
                   // локально». Второе — обычный сценарий дозагрузки, и без него
                   // приходилось ставить весь тайтл и ждать, пока очередь сама
                   // отсеет уже скачанное.
-                  <Group key={action.what} gap={4} wrap="nowrap">
+                  <Group key={action.kind} gap={4} wrap="nowrap">
                     <Button
                       size="compact-xs"
                       variant={BATCH_STYLE[action.emphasis].variant}
                       color={BATCH_STYLE[action.emphasis].color}
                       style={{ flex: 1 }}
-                      onClick={() => run.mutate({ what: action.what, onlyMissing: false })}
+                      onClick={() => run.mutate({ what: action.kind, onlyMissing: false })}
                     >
-                      {t(BATCH_LABEL[action.what])}
+                      {t(BATCH_LABEL[action.kind])}
                     </Button>
                     <Tooltip label={t('batch.missingHint')}>
                       <Button
                         size="compact-xs"
                         variant="subtle"
                         color={BATCH_STYLE[action.emphasis].color}
-                        onClick={() => run.mutate({ what: action.what, onlyMissing: true })}
+                        onClick={() => run.mutate({ what: action.kind, onlyMissing: true })}
                       >
                         {t('batch.missingShort')}
                       </Button>

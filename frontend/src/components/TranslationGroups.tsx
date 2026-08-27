@@ -26,7 +26,6 @@ interface Props {
   seriesUrl: string | null
   /** Номера серий, считающихся контентом: нужны батч-загрузке. */
   contentEpisodes: Set<number>
-  /** Есть ли спешлы или OVA — тумблер показываем только тогда. */
 }
 
 /**

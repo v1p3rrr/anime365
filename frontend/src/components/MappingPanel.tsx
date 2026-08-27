@@ -345,6 +345,14 @@ export function MappingPanel({
                     {t('mapping.missingRanges', { ranges: info.missing_ranges })}
                   </Text>
                 )}
+                {/* Часть серий закрыта дорожкой внутри контейнера, а не файлом
+                    рядом. В счётчик они входят — движок их не качает, — но
+                    отдельного файла у них нет, и об этом надо сказать. */}
+                {info.embedded > 0 && (
+                  <Text size="xs" c="dimmed">
+                    {t('mapping.embeddedRanges', { ranges: info.embedded_ranges })}
+                  </Text>
+                )}
                 {/* Счётчик считает различные серии, а не файлы. Если серия лежит
                     в двух копиях, об этом надо сказать, а не молча схлопнуть. */}
                 {info.duplicate_count > 0 && (

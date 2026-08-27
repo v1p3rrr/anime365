@@ -137,6 +137,15 @@ export interface RoleCoverage {
   total: number
   complete: boolean
   missing_ranges: string
+  /**
+   * Сколько серий закрыто дорожкой ВНУТРИ видеофайла, а не соседним файлом.
+   *
+   * Входит в `have`: субтитры есть, и автоскачивание такую серию не берёт.
+   * Отдельным числом — потому что для того, кто собирает файлы, «8 из 8» и
+   * «8 из 8, одна дорожкой в контейнере» это разные вещи.
+   */
+  embedded: number
+  embedded_ranges: string
   duplicate_count: number
   duplicate_ranges: string
 }
