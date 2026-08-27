@@ -718,7 +718,20 @@ def _own_downloads(
     LIVE» и прочие. Одна папка на восемь тайтлов в модели «папка → тайтл» не
     раскладывается никак, а пять из восьми файлов знают свой тайтл сами.
     """
-    wanted = {f.anime365_translation_id: f.id for f in files if f.anime365_translation_id}
+    # ⚠️ Один и тот же `t{id}` несут **несколько** файлов, и это обычный
+    # случай, а не редкость: рядом с нашим видео лежат его субтитры и то,
+    # что дописал Jellyfin (`.nfo`, обложки) — всё под тем же именем. В живой
+    # библиотеке таких групп девять, самая большая — из семи файлов.
+    #
+    # Раньше здесь стояло `{tid: file.id}`, то есть из группы опознавался
+    # **один** файл — тот, что оказался в списке последним. Субтитры терялись
+    # и уезжали к тайтлу папки — то есть ровно туда, откуда `t{id}` и должен
+    # был их забрать. Причём кто именно выживал, решал порядок выдачи SQLite:
+    # выборка идёт без `ORDER BY`, и сегодня там повезло видео, а могло бы и `.nfo`.
+    wanted: dict[int, list[int]] = {}
+    for file in files:
+        if file.anime365_translation_id:
+            wanted.setdefault(file.anime365_translation_id, []).append(file.id)
     if not wanted:
         return {}
 
@@ -737,7 +750,9 @@ def _own_downloads(
     for translation_id, series_id, episode_num, type_lang in rows:
         if series_id is None or episode_num is None:
             continue
-        out[wanted[translation_id]] = (series_id, float(episode_num), type_lang or "")
+        found = (series_id, float(episode_num), type_lang or "")
+        for file_id in wanted[translation_id]:
+            out[file_id] = found
     return out
 
 
@@ -876,10 +891,15 @@ def _map_episodes(root_id: int, only_folders: set[int] | None = None) -> int:
                     # есть `type_lang`. Так подписываются наши же файлы,
                     # скачанные до того, как языковой суффикс появился в
                     # правилах именования, — они лежали как `sub_unknown`.
+                    #
+                    # ⚠️ Кроме тех, где язык проставлен рукой: человек уже сказал, как
+                    # есть. Скан это правило соблюдает давно (`lang_is_manual` в
+                    # `_persist_folder`), а здесь оно не было учтено.
                     if file.kind == "subtitle" and exact[2] in SUB_ROLE:
-                        if file.lang != exact[2]:
-                            file.lang = exact[2]
-                        role = SUB_ROLE[exact[2]]
+                        if not file.lang_is_manual:
+                            if file.lang != exact[2]:
+                                file.lang = exact[2]
+                            role = SUB_ROLE[exact[2]]
                     targets = [(exact[0], exact[1])]
                 elif file.episode is not None:
                     targets = [
