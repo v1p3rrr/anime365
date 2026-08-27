@@ -90,9 +90,20 @@ class NfoData:
         if not self.premiered or len(self.premiered) < 7:
             return None
         try:
-            return int(self.premiered[0:4]), int(self.premiered[5:7])
+            year, month = int(self.premiered[0:4]), int(self.premiered[5:7])
         except ValueError:
             return None
+        # ⚠️ Месяц проверяется на диапазон, а не только на «это число».
+        #
+        # Дальше он уходит в `season_label_from_premiered`, а там просто
+        # `_MONTH_TO_SEASON[month]`. `<premiered>2012-00-01</premiered>` — то есть
+        # частичная дата, какие отдают внешние базы, когда известен один
+        # год, — давало `KeyError`, а он вылетал из `matcher.match()` наружу и
+        # ронял скан целиком — оба корня, а не одну папку. В живой
+        # библиотеке все 729 дат корректны, то есть это запас на будущее.
+        if not 1 <= month <= 12:
+            return None
+        return year, month
 
 
 _ROOT_TO_KIND = {
@@ -201,8 +212,12 @@ def candidate_titles(nfo: NfoData | None, folder_name: str) -> list[str]:
     out: list[str] = []
 
     def add(value: str | None) -> None:
-        if value and value.strip() and value not in out:
-            out.append(value.strip())
+        # Сравнивается то же, что кладётся. Раньше проверялась исходная
+        # строка, а добавлялась обрезанная, и «Yuru Yuri» из `.nfo` рядом с
+        # « Yuru Yuri » из имени папки давали два одинаковых варианта.
+        cleaned = value.strip() if value else ""
+        if cleaned and cleaned not in out:
+            out.append(cleaned)
 
     if nfo is not None:
         add(nfo.title)
