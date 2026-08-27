@@ -1102,11 +1102,14 @@ class Matcher:
         # Слабое совпадение по названию оставляем, но с пометкой: пусть человек
         # посмотрит, а не узнаёт об ошибке по уехавшим файлам.
         #
-        # ⚠️ Кроме спешла, опознанного по имени файла. У него похожесть с
-        # названием франшизы низкая по устройству (сравнивается «Toradora!» с
-        # «Toradora!: The True Meaning of Bento»), а опознание при этом точное —
-        # совпал конкретный вариант названия конкретного вхождения. Пометка
-        # здесь означала бы «проверьте» на ровном месте.
+        # ⚠️ Кроме точного совпадения строки — любого, не только спешла.
+        #
+        # Здесь сравнивается не та строка, по которой опознали: похожесть
+        # считается от имени папки, а точное совпадение могло случиться по имени
+        # файла или названию из `.nfo`. Самый явный случай — спешл: сравнивается
+        # «Toradora!» с «Toradora!: The True Meaning of Bento», похожесть низкая по
+        # устройству, а опознание точное: совпал вариант названия конкретного
+        # вхождения. Пометка здесь означала бы «проверьте» на ровном месте.
         if title < SUGGEST_TITLE_FLOOR and proposal.source is not MatchSource.EXACT_TITLE:
             result.needs_confirmation = True
         return score, result
@@ -1118,47 +1121,10 @@ class Matcher:
         из `<premiered>` считается наравне с `<year>`: в `season.nfo` бывает
         только дата.
 
-        ⚠️ Когда номер сезона вычислен по именам файлов, года у нас нет: тот,
-        что лежит в `tvshow.nfo`, относится к первому сезону. Выдавать его за
-        ожидаемый нельзя — он зарубит единственного верного кандидата.
+        Каким `.nfo` здесь можно верить, решает `_dated_sources` — там же
+        записано, почему в трёх случаях нельзя верить никакому.
         """
-        if ctx.season_is_guessed:
-            return None
-
-        # ⚠️ `.nfo` описывает чужой тайтл — значит и год в нём чужой.
-        #
-        # Мы уже отказываемся предлагать его идентификаторы ([D-86]), но год
-        # продолжали брать, и он отвергал верного кандидата. Живой случай:
-        # у папки `Kagerou Daze - In a Day's` нет `movie.nfo`, а `tvshow.nfo`
-        # описывает постороннее аниме 2021 года. Фильму расхождение в годах не
-        # прощается (у него ровно один год выхода), и верный кандидат 2016 года
-        # отвергался — папка оставалась без привязки вовсе.
-        #
-        # Собственную дату сезона это не трогает: `season.nfo` описывает именно
-        # эту подпапку, и к спору «имя папки против названия в `.nfo`» отношения
-        # не имеет.
-        if self.nfo_disagrees_with_folder(ctx):
-            source = ctx.season_nfo
-            if source is not None:
-                if source.year:
-                    return source.year
-                quarter = source.season_quarter
-                if quarter:
-                    return quarter[0]
-            return None
-
-        # У сезона со вторым и дальше номером годится только **его собственная**
-        # дата. Год из `tvshow.nfo` родителя описывает первый сезон, и подставлять
-        # его сюда — значит зарубить верного кандидата: у подпапки
-        # `[Ohys-Raws] … 2nd Season` ожидаемым годом оказывался 2019-й, а второй
-        # сезон вышел в 2021-м, и проверка отвергала именно его.
-        sources: tuple[NfoData | None, ...]
-        if ctx.season_number is not None and ctx.season_number > 1:
-            sources = (ctx.season_nfo, ctx.own_nfo)
-        else:
-            sources = (ctx.season_nfo, ctx.own_nfo, ctx.nfo)
-
-        for source in sources:
+        for source in self._dated_sources(ctx):
             if source is None:
                 continue
             if source.year:
@@ -1167,6 +1133,48 @@ class Matcher:
             if quarter:
                 return quarter[0]
         return None
+
+    def _expected_quarter(self, ctx: MatchContext) -> tuple[int, int] | None:
+        """Квартал премьеры — из тех же источников, что и год.
+
+        ⚠️ Заведён потому, что отбор при неоднозначности читал квартал и год
+        **напрямую** из `ctx.nfo`, минуя все три отказа ниже. Разница не
+        косметическая: `_disambiguate` возвращает **одного** кандидата, и
+        дальше в предложения попадает только он — то есть верный кандидат до
+        сверки не доходит вовсе, и исправить это уже нечем.
+        """
+        for source in self._dated_sources(ctx):
+            if source is None:
+                continue
+            quarter = source.season_quarter
+            if quarter:
+                return quarter
+        return None
+
+    def _dated_sources(self, ctx: MatchContext) -> tuple[NfoData | None, ...]:
+        """`.nfo`, чьей дате в этой папке можно верить.
+
+        Три отказа, и каждый заведён по живому промаху:
+
+        * **номер сезона выведен по именам файлов** — своей даты у папки нет, а
+          год из `tvshow.nfo` описывает первый сезон. Подставив его, зарубим
+          единственного верного кандидата ([D-91](../../../claude/09-decisions.md));
+        * **`.nfo` описывает чужой тайтл** — значит и год в нём чужой. Остаётся
+          только `season.nfo`: он описывает именно эту подпапку и к спору «имя
+          папки против названия в `.nfo`» отношения не имеет
+          ([D-136](../../../claude/09-decisions.md));
+        * **сезон со вторым и дальше номером** — родительский `tvshow.nfo`
+          описывает первый ([D-108](../../../claude/09-decisions.md)).
+
+        Пустой кортеж означает «даты нет вовсе», и это честнее чужой даты.
+        """
+        if ctx.season_is_guessed:
+            return ()
+        if self.nfo_disagrees_with_folder(ctx):
+            return (ctx.season_nfo,)
+        if ctx.season_number is not None and ctx.season_number > 1:
+            return (ctx.season_nfo, ctx.own_nfo)
+        return (ctx.season_nfo, ctx.own_nfo, ctx.nfo)
 
     @staticmethod
     def _season_claimed_by(candidate: SeriesCandidate) -> int | None:
@@ -1411,11 +1419,14 @@ class Matcher:
                     return candidates[0].id
 
         # Квартал премьеры — самый сильный признак после типа.
-        quarter = None
-        if ctx.season_nfo is not None:
-            quarter = ctx.season_nfo.season_quarter
-        if quarter is None and ctx.nfo is not None:
-            quarter = ctx.nfo.season_quarter
+        #
+        # ⚠️ Берётся через `_expected_quarter`, а не напрямую из `ctx.nfo`.
+        # Раньше читалось напрямую, и отбор пользовался датой, которую сверка
+        # использовать отказывается: у папки с номером сезона, выведенным по
+        # именам файлов, это год **первого** сезона из родительского
+        # `tvshow.nfo`. Проверено прогоном — отбор сужал до первого сезона
+        # ровно в том случае, ради которого [D-91] и писался.
+        quarter = self._expected_quarter(ctx)
         if quarter is not None:
             label = season_label_from_premiered(*quarter)
             by_season = [c for c in candidates if c.season == label]
@@ -1423,10 +1434,8 @@ class Matcher:
                 return by_season[0].id
             candidates = by_season or candidates
 
-        # Год.
-        year = (ctx.season_nfo.year if ctx.season_nfo else None) or (
-            ctx.nfo.year if ctx.nfo else None
-        )
+        # Год — тоже через общий выбор источников.
+        year = self._expected_year(ctx)
         if year is not None:
             by_year = [c for c in candidates if c.year == year]
             if len(by_year) == 1:
