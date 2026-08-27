@@ -88,16 +88,23 @@ export interface Preferences {
   paging: PagingMode
   /** Сколько тайтлов запрашивать за раз. Меньше — легче слабому устройству. */
   pageSize: number
-  /**
-   * Показывать ромадзи главным названием, а перевод — вторым.
-   *
-   * Отдельно от языка интерфейса намеренно: это разные вопросы. Язык
-   * интерфейса — на каком языке подписи и кнопки; здесь — под каким названием
-   * человек привык узнавать тайтл. Многие читают интерфейс по-русски, но
-   * ищут и обсуждают аниме по ромадзи.
-   */
-  preferRomaji: boolean
 }
+
+/*
+ * ⚠️ `preferRomaji` здесь намеренно нет, хотя ключ соседний.
+ *
+ * Он лежал и тут, и в отдельном хранилище ниже — у одного значения оказалось
+ * два хозяина, и они писали в один и тот же ключ. Работало это так: человек
+ * включал ромадзи (пишет отдельное хранилище), потом менял на той же панели
+ * что угодно ещё — и эффект `usePreferences` записывал **весь** свой снимок, в
+ * котором `preferRomaji` остался прежним. Настройка молча возвращалась к
+ * старому значению, причём тумблер продолжал показывать включённое положение:
+ * своё состояние у него живое, а в хранилище уже ложь. Пропажа обнаруживалась
+ * только после перезагрузки страницы.
+ *
+ * Проверено в браузере: включить ромадзи → `preferRomaji=true`; переключить
+ * режим листания → `preferRomaji=false` при включённом тумблере.
+ */
 
 /** Допустимые размеры порции. Ограничены сверху лимитом сервера. */
 export const PAGE_SIZES = [50, 100, 200] as const
@@ -108,7 +115,6 @@ const DEFAULTS: Preferences = {
   types: ['sub_ja', 'sub_ru', 'raw_ja', 'voice_ru'],
   paging: 'scroll',
   pageSize: 200,
-  preferRomaji: false,
 }
 
 function read<T>(key: string, fallback: T): T {
@@ -172,7 +178,6 @@ export function usePreferences() {
     pageSize: PAGE_SIZES.includes(read('pageSize', DEFAULTS.pageSize) as never)
       ? read('pageSize', DEFAULTS.pageSize)
       : DEFAULTS.pageSize,
-    preferRomaji: read('preferRomaji', DEFAULTS.preferRomaji),
   }))
 
   useEffect(() => {
@@ -201,11 +206,7 @@ export function usePreferences() {
     setPrefs((prev) => ({ ...prev, pageSize }))
   }, [])
 
-  const setPreferRomaji = useCallback((preferRomaji: boolean) => {
-    setPrefs((prev) => ({ ...prev, preferRomaji }))
-  }, [])
-
-  return { prefs, setPrefs, toggleType, setPaging, setPageSize, setPreferRomaji }
+  return { prefs, setPrefs, toggleType, setPaging, setPageSize }
 }
 
 
@@ -222,10 +223,11 @@ export function usePreferences() {
  * одного булева значения незачем.
  */
 const ROMAJI_KEY = 'preferRomaji'
+const ROMAJI_DEFAULT = false
 const romajiListeners = new Set<(value: boolean) => void>()
 
 export function getPreferRomaji(): boolean {
-  return read(ROMAJI_KEY, DEFAULTS.preferRomaji)
+  return read(ROMAJI_KEY, ROMAJI_DEFAULT)
 }
 
 export function setPreferRomajiGlobal(value: boolean): void {

@@ -82,11 +82,42 @@ function useKindLabel() {
   }
 }
 
+/** Подпись статуса. Рядом с `useKindLabel`, потому что нужна в тех же двух местах. */
+function useStatusLabel() {
+  const { t } = useT()
+  return (status: string) => t(`status.${status}` as TranslationKey)
+}
+
+/**
+ * Накладывает живые байты на задачу из списка — вместе с процентом.
+ *
+ * ⚠️ Процент приходится считать здесь. События несут `bytes_done`,
+ * `bytes_total` и скорость, но не `progress`: тот приезжает только со списком,
+ * то есть раз в пятнадцать секунд. Полоса из-за этого стояла на месте, пока
+ * подпись прямо под ней бежала, — загрузка выглядела зависшей ровно тогда,
+ * когда шла быстрее всего.
+ *
+ * Формула та же, что у `DownloadTask.progress` на сервере: доля скачанного с
+ * потолком в сотню. Второго правила здесь заводить нельзя — полоса и список
+ * обязаны показывать одно и то же число.
+ */
+function withLiveProgress(task: DownloadTask, live?: Partial<DownloadTask>): DownloadTask {
+  if (!live) return task
+  const merged = { ...task, ...live }
+  return {
+    ...merged,
+    progress:
+      merged.bytes_total > 0
+        ? Math.min(100, (merged.bytes_done / merged.bytes_total) * 100)
+        : merged.progress,
+  }
+}
+
 export function QueuePage() {
   const { t } = useT()
   const kindLabel = useKindLabel()
   const apiError = useApiError()
-  const statusLabel = (key: string) => t(`status.${key}` as TranslationKey)
+  const statusLabel = useStatusLabel()
   const queryClient = useQueryClient()
   // Прогресс приходит событиями и живёт отдельно от списка: перезапрашивать
   // весь список несколько раз в секунду незачем.
@@ -195,7 +226,7 @@ export function QueuePage() {
 
   const data = queue.data
   const tasks = data?.tasks ?? []
-  const merged = tasks.map((task) => ({ ...task, ...(live[task.id] ?? {}) }))
+  const merged = tasks.map((task) => withLiveProgress(task, live[task.id]))
 
   const active = merged.filter((t) => ACTIVE_STATUSES.includes(t.status))
   const finished = merged.filter((t) => !ACTIVE_STATUSES.includes(t.status))
@@ -437,7 +468,7 @@ function TaskRow({
   const sortable = useSortable({ id: task.id, disabled: !draggable })
   const kindLabel = useKindLabel()
   const format = useFormat()
-  const statusLabel = (key: string) => t(`status.${key}` as TranslationKey)
+  const statusLabel = useStatusLabel()
   const canPause = task.status === 'downloading' || task.status === 'queued'
   const canResume = task.status === 'paused'
   // Перезапуск нужен и зависшей загрузке, а не только упавшей: активную
