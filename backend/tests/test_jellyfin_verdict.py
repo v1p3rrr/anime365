@@ -95,7 +95,12 @@ def jellyfin_says(monkeypatch):
     def _install(providers: dict[str, str] | None) -> None:
         from app.services import jellyfin as module
 
-        async def fake_find_item(_self, _rel_paths: list[str]) -> dict[str, Any] | None:
+        async def fake_find_item(
+            _self, _rel_paths: list[str], _expect: str | None = None
+        ) -> dict[str, Any] | None:
+            # ⚠️ Второй аргумент — вид корня (`series`/`movie`). Он появился,
+            # чтобы развести одноимённые папки в двух корнях; заглушке он
+            # безразличен, но принять его она обязана.
             if providers is None:
                 return None
             return {

@@ -144,6 +144,16 @@ def _auth_headers(key: str) -> dict[str, str]:
     return {"Authorization": ", ".join(parts), "X-Emby-Token": key}
 
 
+#: Какие виды элементов Jellyfin отвечают нашему виду корня.
+#:
+#: Сезон здесь наравне с сериалом: у нас сезон — отдельный тайтл со своей
+#: папкой, и Jellyfin держит его отдельным элементом типа `Season`.
+_EXPECTED_TYPES = {
+    "series": frozenset({"Series", "Season", "Episode"}),
+    "movie": frozenset({"Movie"}),
+}
+
+
 def _normalize(path: str) -> str:
     """Приводит путь к виду, пригодному для сравнения хвостов.
 
@@ -378,15 +388,26 @@ class JellyfinClient:
     # Сопоставление
     # ------------------------------------------------------------------ #
 
-    async def find_item(self, rel_paths: list[str]) -> dict[str, Any] | None:
+    async def find_item(
+        self, rel_paths: list[str], expect: str | None = None
+    ) -> dict[str, Any] | None:
         """Ищет элемент Jellyfin по относительным путям папок тайтла.
 
         `rel_paths` — пути папок относительно наших корней, в порядке
-        предпочтения (первым идёт основная привязка).
+        предпочтения (первым идёт основная привязка). `expect` — вид корня,
+        где эта папка лежит у нас (`series` или `movie`).
 
         Совпадением считается элемент, чей путь **заканчивается** на наш
-        относительный путь. Из нескольких берём самый длинный: если у тайтла
-        привязана и `Show`, и `Show/Season 2`, точнее вторая.
+        относительный путь.
+
+        ⚠️ `expect` нужен потому, что относительный путь корня не называет, а
+        одно и то же имя папки встречается в обоих корнях. На живой библиотеке
+        таких имён два из 360 — `Bang Dream!` и `The Garden of Sinners`, — и
+        оба совпадали сразу с двумя элементами Jellyfin. Разводились они
+        «самым длинным путём», то есть по длине строки монтирования: у
+        `/media/anime_movies/…` она больше, чем у `/media/anime/…`, поэтому
+        сериал всегда получал ссылку на **фильм**. Заодно и подсказка о
+        расхождении разметки сравнивала наши идентификаторы с чужими.
         """
         if not self.enabled:
             return None
@@ -406,9 +427,15 @@ class JellyfinClient:
             ]
             if not hits:
                 continue
-            # Самый длинный путь — самое конкретное совпадение. Короткое
-            # «Show» совпало бы и с «Other Show», если бы мы не требовали
-            # границу компонента, а требуем: сравнение идёт по «/» + хвост.
+            # Сначала отсекаем заведомо чужой вид: элемент из другого корня.
+            if expect and len(hits) > 1:
+                wanted = _EXPECTED_TYPES.get(expect)
+                if wanted:
+                    same_kind = [pair for pair in hits if pair[1].get("type") in wanted]
+                    if same_kind:
+                        hits = same_kind
+            # Дальше — самый длинный путь. Он разводит `Show` и `Show/Season 2`,
+            # когда обе папки привязаны к тайтлу.
             full, meta = max(hits, key=lambda pair: len(pair[0]))
             return {
                 "id": meta["id"],
@@ -584,9 +611,11 @@ class JellyfinClient:
             return None
         return f"{base}/web/#/details?id={item_id}&serverId={server}"
 
-    async def resolve_title(self, rel_paths: list[str]) -> dict[str, str] | None:
+    async def resolve_title(
+        self, rel_paths: list[str], expect: str | None = None
+    ) -> dict[str, str] | None:
         """Всё вместе: от путей папок до готовой ссылки."""
-        item = await self.find_item(rel_paths)
+        item = await self.find_item(rel_paths, expect)
         if not item:
             return None
         url = await self.item_url(item["id"])
