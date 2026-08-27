@@ -312,6 +312,43 @@ def name_from_neighbour(neighbour: str, ctx: NamingContext) -> str | None:
     return fit_name(short, f" {fixed}")
 
 
+def _subtitle_markers(authors: str, translation_id: int | None, budget: int) -> list[str]:
+    """Варианты метки по убыванию полноты — каждый целый.
+
+    ⚠️ Смысл функции в том, что **номер перевода никогда не режется**. Раньше
+    метка стояла в голове имени и укорачивалась посимвольно, а в конце её лежит
+    `_t{id}`. Прогон по ста длинам имени видео дал шесть, на которых из
+    `t4505262` получалось `t450526`, `t4505`, `t45`. Это не испорченное имя, а
+    **ссылка на чужой перевод**: разбор прочтёт её как годный идентификатор и
+    привяжет файл к другому тайтлу. Ровно об этом предупреждает `author_marker`
+    — только там защита была, а здесь нет.
+
+    Порядок жертв тот же, что был обещан: сперва номер перевода целиком, потом
+    имя группы. Имя группы укорачивать можно — это подпись для человека, а не
+    ссылка на запись каталога.
+    """
+    author = sanitize_author(authors)
+    out: list[str] = []
+    if translation_id:
+        out.append(f"anime365_{author}_t{translation_id}")
+    out.append(f"anime365_{author}")
+
+    room = budget - len(b"anime365_")
+    if room > 0:
+        kept: list[str] = []
+        used = 0
+        for char in author:
+            size = len(char.encode("utf-8"))
+            if used + size > room:
+                break
+            kept.append(char)
+            used += size
+        trimmed = "".join(kept).rstrip("_ .")
+        if trimmed and trimmed != author:
+            out.append(f"anime365_{trimmed}")
+    return out
+
+
 def subtitle_name_for_video(
     video_filename: str,
     authors: str,
@@ -337,13 +374,19 @@ def subtitle_name_for_video(
     # Если у видео уже был языковой суффикс, второй добавлять не нужно.
     stem = re.sub(r"\.(ru|en|ja|jpn|eng|rus)$", "", stem, flags=re.IGNORECASE)
 
-    marker = author_marker(authors, translation_id)
-    suffix = SUB_LANG_SUFFIX.get(lang, "")
-    # Основа имени взята у видео и укоротить её нельзя — на её совпадении и
-    # держится связь. Поэтому в жертву идёт наша метка: сперва номер перевода,
-    # потом имя группы. Язык и расширение остаются в любом случае — без языка
-    # Jellyfin не поймёт, какие это субтитры.
-    return fit_name(f"{stem}.{marker}", f"{suffix}{extension}")
+    # Язык и расширение остаются в любом случае: без языка Jellyfin не поймёт,
+    # какие это субтитры.
+    tail = f"{SUB_LANG_SUFFIX.get(lang, '')}{extension}"
+    head = f"{stem}."
+    budget = MAX_FILENAME_BYTES - len(head.encode("utf-8")) - len(tail.encode("utf-8"))
+
+    for marker in _subtitle_markers(authors, translation_id, budget):
+        if len(marker.encode("utf-8")) <= budget:
+            return f"{head}{marker}{tail}"
+
+    # Ни один вариант метки не поместился. Основа имени взята у видео, и
+    # укоротить её значит порвать связь с ним — но другого выхода здесь нет.
+    return fit_name(stem, tail)
 
 
 def pick_neighbour(filenames: list[str], video_extensions: set[str]) -> str | None:

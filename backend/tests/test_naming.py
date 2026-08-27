@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.services.filename_rules import get_rules, parse_filename
 from app.services.naming import (
     NamingContext,
     audio_name,
@@ -366,3 +367,56 @@ class TestUniquePath:
 def test_language_suffix_table(kind: str, lang: str, expected: str) -> None:
     name = canonical_name(ctx(kind=kind, lang=lang, extension=".mp4"))
     assert name.endswith(f"{expected}.mp4")
+class TestSubtitleMarkerIsNeverCutInHalf:
+    """Номер перевода в имени субтитров либо целый, либо его нет вовсе.
+
+    ⚠️ Здесь проверяется не длина и не язык — это уже закрыто соседним классом.
+    Проверяется то, что он пропускал: метка субтитров лежит в **голове** имени,
+    а укорачивалась она посимвольно, и в конце метки стоит `_t{id}`.
+
+    Прогон по ста длинам имени видео дал шесть, где из `t4505262` получалось
+    `t450526`, `t4505`, `t45`. Разбор читает такое как **годный** идентификатор
+    и привязывает файл к чужому переводу — то есть отказ молчаливый, а цена
+    ровно та, о которой предупреждает `author_marker`.
+    """
+
+    TID = 4505262
+
+    @staticmethod
+    def _video(length: int) -> str:
+        return f"{'A' * length} S01E01 [Group] Bluray-1080p.mkv"
+
+    def _name(self, length: int, authors: str = "Crunchyroll") -> str:
+        return subtitle_name_for_video(
+            self._video(length), authors, "ru", ".ass", self.TID
+        )
+
+    def test_no_length_yields_a_cut_identifier(self) -> None:
+        rules = get_rules()
+        cut: list[tuple[int, int]] = []
+        for length in range(150, 250):
+            name = self._name(length)
+            assert len(name.encode("utf-8")) <= 250, length
+            got = parse_filename(name, "series", rules).translation_id
+            if got is not None and got != self.TID:
+                cut.append((length, got))
+        assert cut == [], f"номер обрезан и ведёт к чужому переводу: {cut}"
+
+    def test_the_ladder_goes_down_in_whole_steps(self) -> None:
+        # Проверка по существу: с ростом длины имени метка деградирует
+        # ступенями — полная, без номера, с укороченной группой, никакой.
+        assert self._name(185).endswith(".anime365_Crunchyroll_t4505262.ru.ass")
+        assert self._name(190).endswith(".anime365_Crunchyroll.ru.ass")
+        assert "anime365_" not in self._name(215)
+
+    def test_a_short_name_is_untouched(self) -> None:
+        # Обратная сторона: у обычного имени метка обязана остаться целиком.
+        video = "Show S01E06 [anime365_Kazoku_t111] WEBDL-1080p.mp4"
+        assert subtitle_name_for_video(video, "Wakanim", "ru", ".ass", 222) == (
+            "Show S01E06 [anime365_Kazoku_t111] WEBDL-1080p.anime365_Wakanim_t222.ru.ass"
+        )
+
+    def test_language_and_extension_always_survive(self) -> None:
+        for length in (150, 190, 215, 240):
+            assert self._name(length).endswith(".ru.ass"), length
+
