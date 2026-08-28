@@ -283,8 +283,11 @@ def schedule_translation_refresh(series_id: int) -> bool:
     try:
         asyncio.get_running_loop().create_task(_run())
     except RuntimeError:
-        # Вне цикла событий (тесты, CLI) фоновая задача не нужна.
+        # Вне цикла событий (тесты, CLI) фоновая задача не нужна. Отметку о
+        # походе снимаем вместе с флагом: похода не было, и держать минуту
+        # запрета не за что.
         _refreshing.discard(series_id)
+        _last_refresh.pop(series_id, None)
         return False
     return True
 
