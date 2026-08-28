@@ -15,7 +15,7 @@ from app.core.db import session_scope
 from app.services.subtitle_authors import remember_authors
 from app.core.events import bus
 from app.models.catalog import Episode, Series, Translation, TranslationEmbed
-from app.models.library import LibraryFile
+from app.models.library import EpisodeMapping, LibraryFile
 from app.services.anime365 import Anime365Client, Anime365Error
 from app.services.audio import normalize_lang
 from app.services.coverage import (
@@ -131,6 +131,20 @@ _failures: dict[int, "RefreshFailure"] = {}
 REFRESH_RETRY_BASE = timedelta(seconds=60)
 REFRESH_RETRY_CAP = timedelta(minutes=30)
 
+#: Когда по тайтлу последний раз отработала фоновая догрузка — успешно или нет.
+_last_refresh: dict[int, datetime] = {}
+
+#: Нижний предел между двумя догрузками одного тайтла.
+#:
+#: ⚠️ Страховка от зацикливания, а не оптимизация. Догрузка заводится, пока кэш
+#: считается несвежим, а свежесть выводится из данных — и любая причина, по
+#: которой она не наступает после успешного похода, превращается в бесконечный
+#: цикл: клиент опрашивает страницу раз в полторы секунды, каждый опрос заводит
+#: новую задачу. Один такой путь найден и закрыт ([D-205](../../../claude/09-decisions.md)),
+#: но выводимая свежесть — конструкция хрупкая, и цену ошибки лучше держать
+#: ограниченной сверху: минута вместо полутора секунд.
+REFRESH_FLOOR = timedelta(seconds=60)
+
 
 @dataclass(frozen=True)
 class RefreshFailure:
@@ -185,11 +199,16 @@ def forget_refresh_failure(series_id: int | None = None) -> None:
 
     Нужно там, где повтор запросил человек — он ждать отступа не обязан.
     Без аргумента забывается всё; этим пользуются тесты.
+
+    Снимается и нижний предел между походами (`REFRESH_FLOOR`): кнопка
+    «обновить» обязана срабатывать сразу, иначе она выглядит сломанной.
     """
     if series_id is None:
         _failures.clear()
+        _last_refresh.clear()
     else:
         _failures.pop(series_id, None)
+        _last_refresh.pop(series_id, None)
 
 
 def translations_are_fresh(series_id: int) -> bool:
@@ -232,6 +251,17 @@ def schedule_translation_refresh(series_id: int) -> bool:
     if failure is not None and datetime.utcnow() < failure.retry_at:
         return False
 
+    # Нижний предел между походами — независимо от того, стала ли свежесть
+    # свежестью. Смысл в `REFRESH_FLOOR`.
+    #
+    # ⚠️ Только для успешного пути. У неудачи свой отступ, и он растёт от
+    # шестидесяти секунд вверх; наложить сверху ещё и этот предел значило бы
+    # сдвинуть чужое расписание вслепую.
+    last = _last_refresh.get(series_id)
+    if failure is None and last is not None and datetime.utcnow() - last < REFRESH_FLOOR:
+        return False
+
+    _last_refresh[series_id] = datetime.utcnow()
     _refreshing.add(series_id)
 
     async def _run() -> None:
@@ -261,6 +291,56 @@ def schedule_translation_refresh(series_id: int) -> bool:
 
 def translations_pending(series_id: int) -> bool:
     return series_id in _refreshing
+
+
+#: До какого локального номера серии список уже пытались догрузить.
+#:
+#: Живёт в памяти процесса и после перезапуска пустеет — это осознанно. Цена
+#: пустоты: один лишний поход на тайтл при первом открытии, и то лишь у тех, у
+#: кого локальных серий больше, чем знает сайт.
+_local_max_checked: dict[int, float] = {}
+
+
+def should_recheck_episode_list(series_id: int) -> bool:
+    """Локальный файл знает о серии, которой нет в нашем списке.
+
+    ⚠️ Список серий обновляется только вместе с переводами, а те — не чаще раза
+    в шесть часов (`TRANSLATIONS_TTL`) и только при заходе на страницу. Для
+    онгоинга это значит, что вышедшая серия появляется строкой с задержкой до
+    шести часов: файл уже скачан и разложен, сканер его видит, а строки в
+    таблице нет ([D-206](../../../claude/09-decisions.md)).
+
+    Локальный файл с бóльшим номером — точный сигнал, что список отстал, и
+    гадать тут не о чем: спрашивать надо.
+
+    ⚠️ **Но ровно один раз на номер.** Локальных серий законно бывает больше,
+    чем знает сайт (страница библиотеки про это даже пишет отдельной строкой), и
+    без памяти этот же сигнал превратился бы в вечный поход в сеть — ту самую
+    петлю, от которой лечит [D-205](../../../claude/09-decisions.md).
+    """
+    with session_scope() as session:
+        local_max = session.execute(
+            select(func.max(EpisodeMapping.episode)).where(
+                EpisodeMapping.series_id == series_id
+            )
+        ).scalar()
+        if local_max is None:
+            return False
+        known_max = session.execute(
+            select(func.max(Episode.episode_num)).where(
+                Episode.series_id == series_id,
+                Episode.is_active.is_(True),
+            )
+        ).scalar()
+
+    local_max = float(local_max)
+    if known_max is not None and local_max <= float(known_max):
+        return False
+    if _local_max_checked.get(series_id) == local_max:
+        return False
+
+    _local_max_checked[series_id] = local_max
+    return True
 
 
 async def ensure_translations(series_id: int, force: bool = False) -> list[dict[str, Any]]:
@@ -403,6 +483,7 @@ def _reconcile_with_site(series_id: int, present_episodes: set[int] | None = Non
     """
     stats = {"episodes_deleted": 0, "episodes_marked": 0,
              "translations_deleted": 0, "translations_marked": 0, "restored": 0}
+    now = datetime.utcnow()
 
     with session_scope() as session:
         bound = _bound_translation_ids(session, series_id)
@@ -421,6 +502,20 @@ def _reconcile_with_site(series_id: int, present_episodes: set[int] | None = Non
             deleted, marked = _forget_or_mark(session, gone, bound, lambda row: row.id)
             stats["translations_deleted"] = deleted
             stats["translations_marked"] = marked
+
+            # ⚠️ Оставшаяся с пометкой строка ТОЖЕ проверена — просто ответ был
+            # «её больше нет». Без этой отметки она навсегда сохраняла старый
+            # `synced_at`, а свежесть кэша считается по МИНИМУМУ по тайтлу.
+            # Дальше складывалось само: тайтл вечно «несвежий» → каждый запрос
+            # страницы заводит фоновую догрузку → клиент видит
+            # `translations_pending` и опрашивает раз в полторы секунды → и так
+            # без конца. У пользователя это крутилось на тайтле 40024 — том
+            # самом, у которого Anime365 удалил ONA-нарезку
+            # ([D-205](../../../claude/09-decisions.md)).
+            for row in gone:
+                # Удалённые уже вычеркнуты; у оставшихся пометка проставлена.
+                if row.missing_since is not None:
+                    row.synced_at = now
 
         if present_episodes:
             rows = list(
@@ -572,7 +667,11 @@ async def build_title_page(series_id: int, force_refresh: bool = False) -> dict[
     # популярного тайтла бывает больше двух тысяч — именно они превращали
     # открытие в 13 секунд ожидания. Поэтому берём то, что есть в кэше, а
     # просроченное обновляем фоном.
-    if force_refresh or not translations_are_fresh(series_id):
+    # Третье условие — про список серий, а не про переводы: у онгоинга файл
+    # новой серии появляется раньше, чем мы узнаём саму серию.
+    if force_refresh or not translations_are_fresh(series_id) or should_recheck_episode_list(
+        series_id
+    ):
         # Обновление запросил человек — ждать отступа после прошлой неудачи он
         # не обязан, иначе кнопка «обновить» выглядела бы сломанной.
         if force_refresh:

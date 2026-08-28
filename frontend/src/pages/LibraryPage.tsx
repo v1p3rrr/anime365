@@ -277,7 +277,19 @@ export function LibraryPage() {
         </Card>
       )}
 
-      <Tabs defaultValue={data && data.folders_unmapped > 0 ? 'unmapped' : 'mappings'}>
+      {/* ⚠️ Вкладки появляются только вместе с состоянием библиотеки, и это
+          не украшательство. `defaultValue` читается ОДИН РАЗ, при монтировании:
+          при первом заходе `data` ещё не приехала, и правило «открыть
+          непривязанные, если они есть» не срабатывало никогда — как раз тогда,
+          когда оно и нужно. Проверено на живом сервере: «Без маппинга 19», а
+          открыта «Связи».
+
+          `keepMounted={false}` — по той же проверке: Mantine по умолчанию
+          держит в DOM ВСЕ панели сразу, и заход в библиотеку тянул отчёт о
+          качестве привязок, фонотеку и четыре запроса автозагрузки, ни одну из
+          которых человек не открывал. Одиннадцать запросов вместо пяти. */}
+      {data && (
+      <Tabs keepMounted={false} defaultValue={data.folders_unmapped > 0 ? 'unmapped' : 'mappings'}>
         <Tabs.List>
           <Tabs.Tab
             value="unmapped"
@@ -522,6 +534,7 @@ export function LibraryPage() {
         )}
 
       </Tabs>
+      )}
 
       {canEdit && (
         <MapFolderModal folder={mappingFolder} onClose={() => setMappingFolder(null)} />
