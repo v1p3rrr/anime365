@@ -130,8 +130,12 @@ class TestLoginEndpoint:
         login, _ = admin
         response = client.post("/api/auth/login", json={"login": login, "password": "мимо"})
         assert response.status_code == 401
+        detail = response.json()["detail"]
         # Сообщение одно на оба случая: иначе видно, какие имена существуют.
-        assert "логин или пароль" in response.json()["detail"]
+        assert "логин или пароль" in detail["message"]
+        # И оно приходит с кодом: экран входа переводится на клиенте, как
+        # и остальные отказы ([D-48](../../claude/09-decisions.md)).
+        assert detail["code"] == "bad_credentials"
 
     def test_login_is_required(self, client, admin) -> None:
         """Входа «по одному паролю без имени» больше не существует.

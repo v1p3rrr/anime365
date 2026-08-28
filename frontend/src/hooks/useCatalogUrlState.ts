@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
-import type { CatalogFilters as Filters, SortField } from '../api/client'
+import { SORT_FIELDS, type CatalogFilters as Filters, type SortField } from '../api/client'
 
 /**
  * Состояние каталога живёт в адресе страницы, а не в `useState`.
@@ -60,6 +60,10 @@ function readNumber(raw: string | null): number | undefined {
   return Number.isFinite(value) ? value : undefined
 }
 
+function readSort(raw: string | null): SortField {
+  return (SORT_FIELDS as string[]).includes(raw ?? '') ? (raw as SortField) : DEFAULT_SORT
+}
+
 function readList(raw: string | null): string[] | undefined {
   if (!raw) return undefined
   const items = raw.split(',').filter(Boolean)
@@ -101,7 +105,11 @@ export function parseCatalogState(
       mappingProblem: params.get('problem') === '1' || undefined,
       has: readList(params.get('has')),
       hasAll: params.get('hasAll') === '1' || undefined,
-      sort: (params.get('sort') as SortField) || DEFAULT_SORT,
+      // По списку, а не на слово — по той же причине, что и `local` ниже:
+      // чужой набор букв уезжал в запрос, и сервер отвечал 422. Ссылка с
+      // испорченным хвостом ломала каталог вместо того, чтобы открыть его
+      // сортировкой по умолчанию.
+      sort: readSort(params.get('sort')),
       sortDir: params.get('dir') === 'asc' ? 'asc' : DEFAULT_SORT_DIR,
     },
   }

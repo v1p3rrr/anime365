@@ -37,16 +37,19 @@ const LANG_BY_TYPE: Record<string, AutoLang> = {
   sub_ja: 'ja',
 }
 
+/** Порядок вкладок. Фиксированный: иначе они менялись бы местами при правке фильтров. */
+export const ALL_AUTO_LANGS: AutoLang[] = ['ru', 'en', 'ja']
+
 /**
  * Языки, включённые у человека в настройках субтитров.
  *
- * Порядок фиксированный, а не порядок в настройках: иначе вкладки менялись бы
- * местами при правке фильтров каталога.
+ * ⚠️ Это личный фильтр показа, а не список того, что настроено. Прятать по
+ * нему работающее правило нельзя — см. `AutoDownloadTab`.
  */
 export function useSubtitleLangs(): AutoLang[] {
   const { prefs } = usePreferences()
   const enabled = new Set(prefs.types.map((type) => LANG_BY_TYPE[type]).filter(Boolean))
-  return (['ru', 'en', 'ja'] as AutoLang[]).filter((lang) => enabled.has(lang))
+  return ALL_AUTO_LANGS.filter((lang) => enabled.has(lang))
 }
 
 const EMPTY: LangDraft = {
@@ -72,12 +75,28 @@ export function AutoDownloadTab() {
   const { t } = useT()
   const { can } = usePermissions()
   const queryClient = useQueryClient()
-  const langs = useSubtitleLangs()
+  const ownLangs = useSubtitleLangs()
 
   const rules = useQuery({
     queryKey: ['autodownload-rules'],
     queryFn: autodownloadApi.rules,
   })
+
+  // ⚠️ Личная настройка не имеет права прятать работающее правило.
+  //
+  // Вкладки языков идут от того, какие типы субтитров человек оставил себе в
+  // «Отображении». Настройка личная и живёт в браузере, а правило
+  // автозагрузки — общее и лежит на сервере: выключив у себя показ английских
+  // субтитров, человек переставал видеть английское правило, а оно
+  // продолжало качать. Английский вдобавок выключен по умолчанию.
+  //
+  // Поэтому к своим языкам добавляем те, у которых на сервере что-то настроено.
+  const configuredLangs = ALL_AUTO_LANGS.filter(
+    (lang) => (rules.data?.rules[lang]?.mode ?? 'off') !== 'off',
+  )
+  const langs = ALL_AUTO_LANGS.filter(
+    (lang) => ownLangs.includes(lang) || configuredLangs.includes(lang),
+  )
 
   const configured = useQuery({
     queryKey: ['autodownload-configured'],

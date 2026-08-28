@@ -285,8 +285,8 @@ rank` не используем вовсе — FTS5 считает BM25 по в�
 
 ## Роли
 
-`core/permissions.py`: `Permission` (`CATALOG`, `WATCH`, `DOWNLOADS`, `LIBRARY`,
-`SETTINGS`), `CurrentUser.can()`, зависимости `require()` и `require_admin()`.
+`core/permissions.py`: `Permission` (`CATALOG`, `WATCH`, `DEVICE_DOWNLOADS`,
+`DOWNLOADS`, `LIBRARY`, `SETTINGS`), `CurrentUser.can()`, зависимости `require()` и `require_admin()`.
 Проверка **серверная** — прятать кнопку в UI недостаточно, эндпоинт обязан
 отказывать сам. Полная таблица «право → эндпоинты → что прячется в интерфейсе» —
 в `docs/admin.md`.

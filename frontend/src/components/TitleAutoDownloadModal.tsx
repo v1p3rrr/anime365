@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { autodownloadApi, type AutoLang } from '../api/autodownload'
 import { useT } from '../i18n'
+import { ALL_AUTO_LANGS } from './AutoDownloadTab'
 import { AutoDownloadLangTabs } from './AutoDownloadLangTabs'
 import type { LangDraft } from './AutoDownloadLangPanel'
 
@@ -46,6 +47,13 @@ export function TitleAutoDownloadModal({ seriesId, title, opened, onClose, langs
     queryFn: () => autodownloadApi.series(seriesId),
     enabled: opened,
   })
+
+  // Та же оговорка, что и во вкладке библиотеки: личный фильтр показа не должен
+  // прятать язык, у которого У ЭТОГО ТАЙТЛА уже что-то настроено. Иначе
+  // настройку не увидеть и не снять.
+  const withOwn = ALL_AUTO_LANGS.filter(
+    (lang) => langs.includes(lang) || settings.data?.own?.[lang] !== undefined,
+  )
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['autodownload-series', seriesId] })
@@ -102,7 +110,7 @@ export function TitleAutoDownloadModal({ seriesId, title, opened, onClose, langs
       ) : (
         <Stack gap="sm">
           <AutoDownloadLangTabs
-            langs={langs}
+            langs={withOwn}
             saved={(lang) => ({ ...BLANK, ...(own[lang] ?? {}) })}
             onSave={(lang, value) => save.mutate({ lang, value })}
             saving={save.isPending}
