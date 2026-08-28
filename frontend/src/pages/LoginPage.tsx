@@ -19,6 +19,7 @@ import { api } from '../api/client'
 import { Logo } from '../components/Logo'
 import { ThemeToggle } from '../components/ThemeToggle'
 import { LOCALES, useT, type Locale } from '../i18n'
+import { useApiError } from '../i18n/apiError'
 
 interface LoginPageProps {
   onSuccess: () => void
@@ -28,6 +29,10 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
   const [password, setPassword] = useState('')
   const [login_, setLogin] = useState('')
   const { t, locale, setLocale } = useT()
+  // Отказ во входе переводится так же, как любой другой: сервер шлёт код.
+  // Раньше здесь стояло сырое сообщение, и первый же экран объяснялся
+  // по-русски независимо от выбранного языка.
+  const apiError = useApiError()
 
   const login = useMutation({
     mutationFn: () =>
@@ -73,7 +78,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
 
           {login.isError && (
             <Alert color="red" p="xs">
-              <Text size="xs">{(login.error as Error).message}</Text>
+              <Text size="xs">{apiError(login.error)}</Text>
             </Alert>
           )}
 

@@ -126,21 +126,52 @@ export function UsersPanel({ onDirtyChange }: Props = {}) {
       // Правки идут раньше удалений: если человек снял админа с одного и
       // удаляет другого, порядок «сначала снять, потом удалить» может упереться
       // в защиту последнего администратора, а обратный — нет.
+      //
+      // ⚠️ Отказ на одной записи не отменяет остальные и не прерывает проход.
+      // Раньше первая же ошибка выбрасывала наружу: часть правок уже
+      // применилась, черновик остался нетронутым, таблица не обновилась — и
+      // повтор сохранения натыкался на удаление уже удалённого, то есть
+      // застревал навсегда. Собираем имена и говорим о них вслух.
+      const failed: string[] = []
+      const nameOf = (id: number) =>
+        users.data?.users.find((user) => user.id === id)?.name ?? `#${id}`
+
       for (const [id, patch] of Object.entries(draft)) {
         if (toRemove.includes(Number(id))) continue
-        await usersApi.update(Number(id), {
-          is_admin: patch.is_admin,
-          permissions: patch.permissions,
-        })
+        try {
+          await usersApi.update(Number(id), {
+            is_admin: patch.is_admin,
+            permissions: patch.permissions,
+          })
+        } catch {
+          failed.push(nameOf(Number(id)))
+        }
       }
-      for (const id of toRemove) await usersApi.remove(id)
+      for (const id of toRemove) {
+        try {
+          await usersApi.remove(id)
+        } catch {
+          failed.push(nameOf(id))
+        }
+      }
+      return failed
     },
-    onSuccess: () => {
+    onSuccess: (failed) => {
+      // Черновик снимаем в любом случае: он описывал то, что уже применено или
+      // уже отказано, и оставлять его значило бы предлагать повторить.
       setDraft({})
       setToRemove([])
       setConfirming(false)
       invalidate()
-      notifications.show({ message: t('users.saved'), color: 'teal' })
+      if (failed.length > 0) {
+        notifications.show({
+          color: 'red',
+          title: t('users.savePartial'),
+          message: failed.join(', '),
+        })
+      } else {
+        notifications.show({ message: t('users.saved'), color: 'teal' })
+      }
     },
   })
 

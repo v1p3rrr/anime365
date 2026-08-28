@@ -14,6 +14,7 @@ import secrets
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field
 
+from app.core import errors
 from app.core.security import (
     SESSION_COOKIE,
     SESSION_TTL_SECONDS,
@@ -82,7 +83,18 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
     wait = max(login_limiter.check(key), login_name_limiter.check(name_key))
     if wait > 0:
         response.status_code = 429
-        return {"ok": False, "detail": f"Слишком много попыток, подождите {int(wait) + 1} с"}
+        seconds = int(wait) + 1
+        # Форма с кодом, как у всех остальных отказов ([D-48](../../../claude/09-decisions.md)):
+        # экран входа — первое, что человек видит, и объясняться там по-русски
+        # независимо от языка интерфейса было последним таким местом.
+        return {
+            "ok": False,
+            "detail": {
+                "code": errors.LOGIN_THROTTLED,
+                "message": f"Слишком много попыток, подождите {seconds} с",
+                "params": {"seconds": seconds},
+            },
+        }
 
     user_id = verify_user(payload.login, payload.password)
     if user_id is None:
@@ -98,7 +110,14 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
         response.status_code = 401
         # Формулировка одна на оба случая: «такого пользователя нет» подсказало
         # бы подбирающему, какие имена существуют.
-        return {"ok": False, "detail": "Неверный логин или пароль"}
+        return {
+            "ok": False,
+            "detail": {
+                "code": errors.BAD_CREDENTIALS,
+                "message": "Неверный логин или пароль",
+                "params": {},
+            },
+        }
 
     login_limiter.reset(key)
     login_name_limiter.reset(name_key)
