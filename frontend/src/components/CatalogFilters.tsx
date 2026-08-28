@@ -32,6 +32,7 @@ import {
   type SortField,
 } from '../api/client'
 import { useT, type TranslationKey } from '../i18n'
+import { DEFAULT_SORT, DEFAULT_SORT_DIR } from '../hooks/useCatalogUrlState'
 import { LangTag } from './Flag'
 import { LANG_COLORS } from '../api/title'
 import { splitType, TRANSLATION_TYPES } from '../stores/preferences'
@@ -68,8 +69,11 @@ export function CatalogFilters({
 
   const patch = (part: Partial<Filters>) => onChange({ ...filters, ...part })
 
-  const sort = filters.sort ?? 'id'
-  const sortDir = filters.sortDir ?? 'desc'
+  // Умолчания берём оттуда же, откуда их берёт адрес страницы: третья копия
+  // здесь молча разошлась бы с ними — селектор показывал бы «по id», пока
+  // выборка сортируется по оценке.
+  const sort = filters.sort ?? DEFAULT_SORT
+  const sortDir = filters.sortDir ?? DEFAULT_SORT_DIR
 
   // Значение селектора кодирует и поле, и направление: повторный выбор того же поля
   // переворачивает порядок, а подпись сразу говорит, какой он сейчас.
@@ -111,6 +115,8 @@ export function CatalogFilters({
     (filters.season ? 1 : 0) +
     (filters.scoreFrom !== undefined ? 1 : 0) +
     (filters.local ? 1 : 0) +
+    // Онгоинги сужают выборку наравне с остальными — значит и считаются.
+    (filters.isAiring ? 1 : 0) +
     (filters.mappingProblem ? 1 : 0) +
     (filters.has?.length ? 1 : 0)
 
