@@ -144,8 +144,23 @@ class TestCacheRefresh:
 
         assert asyncio.run(site_refresh.original(SERIES)) is False
 
-    def test_a_failed_trip_pauses_the_rest_of_the_pass(self, site_refresh, monkeypatch) -> None:
-        """Сайт лёг — остальные тайтлы прохода не должны платить тем же отказом."""
+    def test_one_failure_backs_off_that_title_only(self, site_refresh, monkeypatch) -> None:
+        """Один отказ бывает и у здорового сайта — соседи по проходу не виноваты."""
+        attempts: list[int] = []
+
+        async def boom(series_id: int, force: bool = False):
+            attempts.append(series_id)
+            raise RuntimeError("bad record")
+
+        monkeypatch.setattr("app.services.title_service.ensure_details", boom)
+
+        assert asyncio.run(site_refresh.original(SERIES)) is False
+        assert asyncio.run(site_refresh.original(SERIES)) is False
+        assert asyncio.run(site_refresh.original(SERIES + 1)) is False
+        assert attempts == [SERIES, SERIES + 1], "неудачник ждёт, сосед идёт"
+
+    def test_three_failures_in_a_row_pause_everyone(self, site_refresh, monkeypatch) -> None:
+        """Три отказа подряд на разных тайтлах — это сайт, а не запись."""
         attempts: list[int] = []
 
         async def boom(series_id: int, force: bool = False):
@@ -154,9 +169,34 @@ class TestCacheRefresh:
 
         monkeypatch.setattr("app.services.title_service.ensure_details", boom)
 
+        for offset in range(4):
+            assert asyncio.run(site_refresh.original(SERIES + offset)) is False
+
+        assert attempts == [SERIES, SERIES + 1, SERIES + 2], "четвёртый в паузу не ходит"
+        assert autodownload._refresh_paused_until is not None
+
+    def test_a_success_resets_the_failure_streak(self, site_refresh, monkeypatch) -> None:
+        calls: list[str] = []
+
+        async def flaky_details(series_id: int, force: bool = False):
+            calls.append(f"details:{series_id}")
+            if series_id != SERIES + 1:
+                raise RuntimeError("bad record")
+
+        async def fine(series_id: int, force: bool = False):
+            return []
+
+        monkeypatch.setattr("app.services.title_service.ensure_details", flaky_details)
+        monkeypatch.setattr("app.services.title_service.ensure_translations", fine)
+
         assert asyncio.run(site_refresh.original(SERIES)) is False
-        assert asyncio.run(site_refresh.original(SERIES + 1)) is False
-        assert attempts == [SERIES], "второй тайтл в паузу на сайт не ходит"
+        assert asyncio.run(site_refresh.original(SERIES + 1)) is True
+        assert asyncio.run(site_refresh.original(SERIES + 2)) is False
+        assert asyncio.run(site_refresh.original(SERIES + 3)) is False
+
+        # Отказ, успех, два отказа: без сброса это были бы три подряд и пауза.
+        assert calls == [f"details:{SERIES + offset}" for offset in range(4)]
+        assert autodownload._refresh_paused_until is None, "серия прервана успехом"
 
     def test_the_pause_ends(self, site_refresh, monkeypatch) -> None:
         attempts: list[int] = []
@@ -174,6 +214,25 @@ class TestCacheRefresh:
         assert asyncio.run(site_refresh.original(SERIES)) is True
         assert attempts == [SERIES, SERIES]
         assert autodownload._refresh_paused_until is None, "успех снимает паузу"
+
+    def test_the_title_backoff_ends(self, site_refresh, monkeypatch) -> None:
+        attempts: list[int] = []
+
+        async def fine(series_id: int, force: bool = False):
+            attempts.append(series_id)
+            return []
+
+        monkeypatch.setattr("app.services.title_service.ensure_details", fine)
+        monkeypatch.setattr("app.services.title_service.ensure_translations", fine)
+        monkeypatch.setattr(
+            autodownload,
+            "_failed_series",
+            {SERIES: datetime.utcnow() - autodownload.REFRESH_PAUSE - timedelta(seconds=1)},
+        )
+
+        assert asyncio.run(site_refresh.original(SERIES)) is True
+        assert attempts == [SERIES, SERIES]
+        assert SERIES not in autodownload._failed_series, "успех снимает отступ тайтла"
 
     def test_a_page_refresh_in_flight_is_not_doubled(self, site_refresh, monkeypatch) -> None:
         """Страница тайтла уже обновляет кэш фоном — второй поход за тем же не нужен."""
