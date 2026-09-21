@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 
 from pathlib import Path
 
@@ -46,6 +46,15 @@ VIDEO_ROLE = "video"
 
 #: Расширения, которые считаем субтитрами при проверке на диске.
 SUBTITLE_SUFFIXES = frozenset({".ass", ".ssa", ".srt", ".sub", ".vtt"})
+
+#: Сколько не ходить на сайт после отказа. Отказ здесь почти всегда общий —
+#: сайт лёг, прокси не отвечает, токен не принят, — и повторять его на каждом
+#: следующем тайтле прохода значило бы платить полным перебором зеркал за
+#: каждый (четыре зеркала по десять секунд на подключение) и топить журнал
+#: одинаковыми строками. Та же мысль, что у `RefreshFailure` в
+#: `title_service`, только пауза одна на всех: причина не в тайтле.
+REFRESH_PAUSE = timedelta(minutes=30)
+_refresh_paused_until: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -521,9 +530,24 @@ async def _refresh_translations(series_id: int) -> bool:
     Зовётся только когда есть к чему качать и кэш не свежее
     `TRANSLATIONS_TTL`: у тайтла с недостающей серией это один поход на сайт
     в шесть часов, у остальных — ни одного. Отказ сети не роняет проход:
-    считаем по тому, что есть в кэше, как раньше.
+    считаем по тому, что есть в кэше, как раньше, — и ставим паузу
+    `REFRESH_PAUSE`, чтобы остальные тайтлы прохода не повторяли тот же отказ.
+
+    Если страница тайтла уже обновляет этот кэш фоном
+    (`translations_pending`), второй поход за теми же данными не нужен.
     """
-    from app.services.title_service import ensure_details, ensure_translations
+    global _refresh_paused_until
+    from app.services.title_service import (
+        ensure_details,
+        ensure_translations,
+        translations_pending,
+    )
+
+    now = datetime.utcnow()
+    if _refresh_paused_until is not None and now < _refresh_paused_until:
+        return False
+    if translations_pending(series_id):
+        return False
 
     try:
         # Сначала серии, потом переводы: перевод привязан к серии по `episode_id`,
@@ -531,8 +555,16 @@ async def _refresh_translations(series_id: int) -> bool:
         await ensure_details(series_id, force=True)
         await ensure_translations(series_id, force=True)
     except Exception as exc:  # noqa: BLE001 — сеть, чужой сайт
-        log.warning("Автоскачивание: переводы тайтла %s не обновлены: %s", series_id, exc)
+        _refresh_paused_until = now + REFRESH_PAUSE
+        log.warning(
+            "Автоскачивание: переводы тайтла %s не обновлены: %s. "
+            "Походы на сайт приостановлены до %s",
+            series_id,
+            exc,
+            _refresh_paused_until.strftime("%H:%M:%S"),
+        )
         return False
+    _refresh_paused_until = None
     return True
 
 
@@ -607,14 +639,9 @@ async def plan_for_series(
         ]
         if not missing:
             continue
-        if not refresh_checked:
-            refresh_checked = True
-            # Есть к чему качать — убедимся, что кэш переводов не отстал от
-            # сайта. Свежий не трогаем: страница тайтла его только что
-            # обновила, а лишний запрос к чужому API ничего не добавит.
-            if not _cache_is_fresh(series_id):
-                await _refresh_translations(series_id)
-        by_episode = _candidates(series_id, lang)
+        # Кандидаты читаются после похода на сайт, поэтому лениво: до первой
+        # серии, которой они действительно нужны.
+        by_episode: dict[float, list[dict]] | None = None
         for episode in missing:
             # Последняя проверка — по диску, а не по индексу: файл могли
             # удалить, а субтитры положить руками уже после скана.
@@ -626,6 +653,18 @@ async def plan_for_series(
                 if settled is not None:
                     settled.add((episode, lang))
                 continue
+
+            if not refresh_checked:
+                refresh_checked = True
+                # Есть к чему качать — убедимся, что кэш переводов не отстал
+                # от сайта. Свежий не трогаем: страница тайтла его только что
+                # обновила, а лишний запрос к чужому API ничего не добавит.
+                # Именно здесь, после диска: серия без файла или с субтитрами,
+                # положенными руками, похода не стоит.
+                if not _cache_is_fresh(series_id):
+                    await _refresh_translations(series_id)
+            if by_episode is None:
+                by_episode = _candidates(series_id, lang)
 
             ranked = rank_candidates(by_episode.get(episode, []), resolved)
             chosen = await _first_soft_subtitle(ranked) if ranked else None
@@ -855,15 +894,18 @@ def clear_settled_misses(series_id: int, settled: set[tuple[float, str]]) -> Non
     if not settled:
         return
     with session_scope() as session:
-        for episode, lang in settled:
-            session.execute(
-                delete(AutoDownloadMiss).where(
-                    AutoDownloadMiss.series_id == series_id,
-                    AutoDownloadMiss.episode == episode,
-                    AutoDownloadMiss.lang == lang,
-                    AutoDownloadMiss.dismissed.is_(False),
-                )
+        session.execute(
+            delete(AutoDownloadMiss).where(
+                AutoDownloadMiss.series_id == series_id,
+                AutoDownloadMiss.dismissed.is_(False),
+                or_(
+                    *(
+                        and_(AutoDownloadMiss.episode == episode, AutoDownloadMiss.lang == lang)
+                        for episode, lang in settled
+                    )
+                ),
             )
+        )
 
 
 def pending_miss_targets() -> dict[int, set[tuple[float, str]]]:

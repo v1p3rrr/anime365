@@ -102,4 +102,7 @@ def site_refresh(monkeypatch):
         return False
 
     monkeypatch.setattr(autodownload, "_refresh_translations", fake_refresh)
+    # Пауза после отказа — состояние модуля; тест, уронивший поход, не должен
+    # выключать походы всем следующим.
+    monkeypatch.setattr(autodownload, "_refresh_paused_until", None)
     return recorder

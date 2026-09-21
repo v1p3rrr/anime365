@@ -29,6 +29,35 @@ log = logging.getLogger(__name__)
 _scheduler: AsyncIOScheduler | None = None
 
 
+#: Через сколько минут повторить джобу, которой помешала соседняя.
+RETRY_SOON_MINUTES = 10
+
+
+def _retry_soon(job_id: str, func, what: str) -> None:
+    """Одноразовый повтор джобы через несколько минут — вместо пропуска на интервал.
+
+    Сдвиг первого запуска (`_every`) убирает столкновения по расписанию, но не
+    те, что заводит человек: нажатая кнопка синхронизации каталога в момент
+    суточного сбора переводов отложила бы его на сутки, как раньше. Повтор
+    ставится `DateTrigger`-ом с постоянным `id`, поэтому второй конфликт подряд
+    не плодит очередь, а переносит тот же повтор ещё раз.
+
+    Вне планировщика (тесты, CLI) — только запись в журнал.
+    """
+    when = datetime.now(UTC) + timedelta(minutes=RETRY_SOON_MINUTES)
+    log.info("%s: соседняя задача ещё идёт, повтор в %s", what, when.strftime("%H:%M:%S"))
+    if _scheduler is None:
+        return
+    _scheduler.add_job(
+        func,
+        DateTrigger(run_date=when),
+        id=f"{job_id}:retry",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+
 def _every(hours: int, offset_minutes: int) -> IntervalTrigger:
     """Интервал со сдвигом первого запуска от старта.
 
@@ -46,7 +75,9 @@ def _every(hours: int, offset_minutes: int) -> IntervalTrigger:
     Сдвиги ниже подобраны так, чтобы суточные джобы не совпадали ни друг с
     другом, ни с почасовыми: почасовые идут в `:00` и `:30` от старта, суточные
     — в промежутках. Порядок тоже не случаен: сначала скан библиотеки, через
-    десять минут — дорожки к тому, что он расставил.
+    десять минут — дорожки к тому, что он расставил. Столкновения, которых
+    расписание предвидеть не может (кнопка в интерфейсе), разбирает
+    `_retry_soon`.
     """
     return IntervalTrigger(
         hours=hours, start_date=datetime.now(UTC) + timedelta(minutes=offset_minutes)
@@ -63,6 +94,9 @@ async def _incremental_job() -> None:
 
 
 async def _full_job() -> None:
+    if catalog_sync.running:
+        _retry_soon("catalog_full", _full_job, "полная синхронизация каталога")
+        return
     try:
         await catalog_sync.full()
     except Exception:
@@ -103,7 +137,7 @@ async def _translation_job() -> None:
     стараемся держать низкой.
     """
     if catalog_sync.running:
-        log.info("Синхронизация каталога идёт, сбор сведений о переводах отложен")
+        _retry_soon("translation_scan", _translation_job, "сбор сведений о переводах")
         return
     try:
         await translation_scan.run()
@@ -122,6 +156,7 @@ async def _stream_probe_job() -> None:
     просто ничего не делает и не стоит ничего.
     """
     if library_scanner.running:
+        _retry_soon("stream_probe", _stream_probe_job, "определение дорожек")
         return
     try:
         await stream_probe.run()
@@ -162,7 +197,7 @@ async def _autodownload_retry_job() -> None:
     каждый час дороже, чем раз в сутки.
     """
     if library_scanner.running:
-        log.info("Сканирование библиотеки идёт, повтор автоскачивания отложен")
+        _retry_soon("autodownload_retry", _autodownload_retry_job, "повтор автоскачивания")
         return
     try:
         await autodownload.retry_misses()
