@@ -47,14 +47,21 @@ VIDEO_ROLE = "video"
 #: Расширения, которые считаем субтитрами при проверке на диске.
 SUBTITLE_SUFFIXES = frozenset({".ass", ".ssa", ".srt", ".sub", ".vtt"})
 
-#: Сколько не ходить на сайт после отказа. Отказ здесь почти всегда общий —
-#: сайт лёг, прокси не отвечает, токен не принят, — и повторять его на каждом
-#: следующем тайтле прохода значило бы платить полным перебором зеркал за
-#: каждый (четыре зеркала по десять секунд на подключение) и топить журнал
-#: одинаковыми строками. Та же мысль, что у `RefreshFailure` в
-#: `title_service`, только пауза одна на всех: причина не в тайтле.
+#: Сколько не ходить на сайт после отказа — за конкретным тайтлом после его
+#: отказа и за всеми после `FAILURES_MEANING_SITE_IS_DOWN` отказов подряд на
+#: разных тайтлах. Различать обязательно: один отказ бывает и у здорового
+#: сайта (моргнула сеть, битая запись), и общая пауза по нему оставила бы без
+#: обновления все тайтлы, идущие в проходе следом, — а поскольку неудачник
+#: остаётся несвежим, то и в каждом следующем проходе. Три подряд на разных
+#: тайтлах — уже не совпадение, и тогда платить полным перебором зеркал (четыре
+#: по десять секунд на подключение) за каждый следующий незачем. Та же мысль,
+#: что у `RefreshFailure` в `title_service` и у сбора сведений о переводах.
 REFRESH_PAUSE = timedelta(minutes=30)
 _refresh_paused_until: datetime | None = None
+#: Тайтл → когда его поход не удался. Свой отступ, независимо от общей паузы.
+_failed_series: dict[int, datetime] = {}
+#: Тайтлы, у которых походы не удались подряд, без успеха между ними.
+_consecutive_failures: list[int] = []
 
 #: Сколько идентификаторов в одном `DELETE … IN (…)`: с запасом от предела
 #: в 999 переменных у старых сборок SQLite.
@@ -534,8 +541,9 @@ async def _refresh_translations(series_id: int) -> bool:
     Зовётся только когда есть к чему качать и кэш не свежее
     `TRANSLATIONS_TTL`: у тайтла с недостающей серией это один поход на сайт
     в шесть часов, у остальных — ни одного. Отказ сети не роняет проход:
-    считаем по тому, что есть в кэше, как раньше, — и ставим паузу
-    `REFRESH_PAUSE`, чтобы остальные тайтлы прохода не повторяли тот же отказ.
+    считаем по тому, что есть в кэше, как раньше. Отказавший тайтл получает
+    отступ `REFRESH_PAUSE`; после трёх отказов подряд на разных тайтлах тот же
+    отступ получают все (см. пояснение у `REFRESH_PAUSE`).
 
     Если страница тайтла уже обновляет этот кэш фоном
     (`translations_pending`), второй поход за теми же данными не нужен.
@@ -546,9 +554,13 @@ async def _refresh_translations(series_id: int) -> bool:
         ensure_translations,
         translations_pending,
     )
+    from app.services.translation_scan import FAILURES_MEANING_SITE_IS_DOWN
 
     now = datetime.utcnow()
     if _refresh_paused_until is not None and now < _refresh_paused_until:
+        return False
+    failed_at = _failed_series.get(series_id)
+    if failed_at is not None and now - failed_at < REFRESH_PAUSE:
         return False
     if translations_pending(series_id):
         return False
@@ -559,15 +571,31 @@ async def _refresh_translations(series_id: int) -> bool:
         await ensure_details(series_id, force=True)
         await ensure_translations(series_id, force=True)
     except Exception as exc:  # noqa: BLE001 — сеть, чужой сайт
-        _refresh_paused_until = now + REFRESH_PAUSE
-        log.warning(
-            "Автоскачивание: переводы тайтла %s не обновлены: %s. "
-            "Походы на сайт приостановлены до %s",
-            series_id,
-            exc,
-            _refresh_paused_until.strftime("%H:%M:%S"),
-        )
+        _failed_series[series_id] = now
+        if series_id not in _consecutive_failures:
+            _consecutive_failures.append(series_id)
+        site_looks_down = len(_consecutive_failures) >= FAILURES_MEANING_SITE_IS_DOWN
+        if site_looks_down:
+            _refresh_paused_until = now + REFRESH_PAUSE
+            log.warning(
+                "Автоскачивание: переводы тайтла %s не обновлены: %s. "
+                "Отказов подряд %d — походы на сайт приостановлены до %s",
+                series_id,
+                exc,
+                len(_consecutive_failures),
+                _refresh_paused_until.strftime("%H:%M:%S"),
+            )
+        else:
+            log.warning(
+                "Автоскачивание: переводы тайтла %s не обновлены: %s. "
+                "Следующая попытка по нему не раньше %s",
+                series_id,
+                exc,
+                (now + REFRESH_PAUSE).strftime("%H:%M:%S"),
+            )
         return False
+    _failed_series.pop(series_id, None)
+    _consecutive_failures.clear()
     _refresh_paused_until = None
     return True
 
