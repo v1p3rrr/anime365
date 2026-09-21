@@ -67,3 +67,39 @@ def with_password():
     settings.set_db_override("admin_login", None)
     settings.set_db_override("ui_password", None)
     sessions.drop_all()
+
+
+@pytest.fixture(autouse=True)
+def site_refresh(monkeypatch):
+    """Автоскачивание не ходит на сайт за переводами: поход подменён.
+
+    ⚠️ Без этой заглушки движок при пустом или устаревшем кэше зовёт
+    `_refresh_translations`, а тот — настоящий `Anime365Client`. Первый же
+    прогон после появления обновления ушёл в `smotret-anime.app` прямо из
+    теста и прошёл только потому, что сеть была. На чистой машине это был бы
+    таймаут на каждый тест с недостающей серией.
+
+    Фикстура отдаёт `calls` — тайтлы, за которыми движок «сходил» (тесты
+    обновления проверяют по нему, что поход случился или не случился), и
+    `original` — настоящий поход, для тестов его самого.
+    """
+    from app.services import autodownload
+
+    class SiteRefresh:
+        #: Тайтлы, за которыми движок «сходил».
+        calls: list[int]
+        #: Настоящий поход — для тестов его самого, с подменёнными
+        #: `ensure_details`/`ensure_translations`.
+        original = staticmethod(autodownload._refresh_translations)
+
+        def __init__(self) -> None:
+            self.calls = []
+
+    recorder = SiteRefresh()
+
+    async def fake_refresh(series_id: int) -> bool:
+        recorder.calls.append(series_id)
+        return False
+
+    monkeypatch.setattr(autodownload, "_refresh_translations", fake_refresh)
+    return recorder
