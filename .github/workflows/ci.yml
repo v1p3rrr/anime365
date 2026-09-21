@@ -8,6 +8,14 @@ name: CI
 # Разделение доведено до конца: образ собирается в работе БЕЗ токена и уезжает
 # дальше архивом. Работа, у которой токен есть, репозиторий даже не выкачивает —
 # она разжимает готовый архив и толкает его в реестр (D-163).
+#
+# Архив едет через кэш Actions, а не через артефакты: у бесплатной
+# организации хранилище Actions — 500 МБ в месяц (в гигабайт-часах), и оно
+# кончалось на второй неделе: архивы образа по 186 МБ плюс кэш слоёв
+# `mode=max` под гигабайт держали ~0,7 ГБ круглые сутки. Артефакт при
+# исчерпании не загружается вовсе (публикация встаёт до следующего месяца),
+# кэш — грузится; свою запись работа `cleanup` стирает сразу после
+# публикации, а слоёв кэшируется ровно итоговый образ (D-213).
 on:
   push:
     branches: [main]
@@ -148,7 +156,12 @@ jobs:
           tags: anime365-downloader:ci
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # `min`, не `max`: max кладёт в кэш все промежуточные слои (под
+          # гигабайт), и именно они съедали месячную квоту хранения. С `min`
+          # в кэше только слои итогового образа; промежуточные стадии
+          # пересобираются, на это уходят минуты — их у бесплатного плана
+          # две тысячи в месяц, а хранилища 500 МБ.
+          cache-to: type=gha,mode=min
           # Экспортёр docker подписи происхождения не умеет; чем собран образ,
           # удостоверяет подпись cosign в работе publish.
           provenance: false
@@ -169,16 +182,14 @@ jobs:
           format: table
 
       # На пул-реквесте публиковать нечего, и 180 МБ гонять незачем.
+      # Ключ — номер прогона и попытки: архив нужен только следующей работе
+      # этого же прогона, и после публикации работа `cleanup` его стирает.
       - name: Передать архив дальше
         if: github.event_name == 'push'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          name: image
           path: ${{ runner.temp }}/image.tar
-          # Архив нужен только следующей работе этого же прогона.
-          retention-days: 1
-          # Слои внутри уже сжаты; сильнее жать — тратить минуты впустую.
-          compression-level: 1
+          key: image-${{ github.run_id }}-${{ github.run_attempt }}
 
   publish:
     name: Публикация в Docker Hub
@@ -212,10 +223,13 @@ jobs:
           echo "IMAGE=${OVERRIDE:-$USERNAME/anime365-downloader}" >> "$GITHUB_ENV"
           echo "Публикуем в ${OVERRIDE:-$USERNAME/anime365-downloader}"
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          name: image
-          path: ${{ runner.temp }}
+          path: ${{ runner.temp }}/image.tar
+          key: image-${{ github.run_id }}-${{ github.run_attempt }}
+          # Промах здесь — не «соберём заново», а ошибка: собирать в этой
+          # работе нельзя, см. комментарий выше.
+          fail-on-cache-miss: true
 
       - name: Разжать образ
         run: docker load --input "$RUNNER_TEMP/image.tar"
@@ -288,3 +302,23 @@ jobs:
             echo "digest: $DIGEST"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Уборка за прогоном: архив образа из кэша стирается сразу, удалась
+  # публикация или нет, — иначе он лежал бы до автоматического вытеснения
+  # (семь дней без обращений) и тратил квоту хранения впустую. Отдельная
+  # работа, а не шаг в publish: ей нужно право `actions: write`, а работе с
+  # токеном Docker Hub лишних прав не даём.
+  cleanup:
+    name: Уборка кэша
+    needs: [publish]
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Стереть архив образа из кэша
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: image-${{ github.run_id }}-${{ github.run_attempt }}
+        run: gh cache delete "$KEY" -R "$GITHUB_REPOSITORY" || echo "::warning::Запись $KEY в кэше не найдена"
