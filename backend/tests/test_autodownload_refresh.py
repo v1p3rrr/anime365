@@ -297,6 +297,24 @@ class TestSettledMissIsCleared:
 
         assert _misses() == [(1.0, False)]
 
+    def test_a_thousand_episode_title_does_not_break_the_cleanup(self) -> None:
+        """One Piece с дорожками внутри — две тысячи закрытых пар за проход.
+
+        `OR` из стольких условий упирался в предел глубины выражения SQLite,
+        и проход по тайтлу падал до постановки в очередь.
+        """
+        from app.services.autodownload import clear_settled_misses
+
+        _miss(1.0)
+        _miss(2.0, dismissed=True)
+        _miss(3.0)
+        settled = {(float(n), lang) for n in range(1, 1101) for lang in ("ru", "en")}
+        settled.discard((3.0, "ru"))
+
+        clear_settled_misses(SERIES, settled)
+
+        assert _misses() == [(2.0, True), (3.0, False)]
+
     def test_only_narrows_the_cleanup_as_well(self) -> None:
         """Повтор промахов смотрит на свои пары — и чистит только их."""
         _miss(1.0)
