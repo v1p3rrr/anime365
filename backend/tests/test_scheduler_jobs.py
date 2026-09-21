@@ -8,9 +8,10 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.date import DateTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from app.workers import scheduler as jobs
 
@@ -31,33 +32,50 @@ class TestStagger:
 
 
 class TestRetrySoon:
-    def test_a_blocked_job_is_rearmed_once(self, monkeypatch) -> None:
-        loop = asyncio.new_event_loop()
+    @staticmethod
+    def _started(monkeypatch) -> AsyncIOScheduler:
         # Запущенный, но на паузе: у незапущенного планировщика задачи лежат
-        # в списке ожидания, и `replace_existing` там не действует — в проде
-        # повтор ставится из работающего.
+        # в списке ожидания, и `modify_job` их не находит — в проде перенос
+        # ставится из работающего.
+        loop = asyncio.new_event_loop()
         scheduler = AsyncIOScheduler(timezone="UTC", event_loop=loop)
         scheduler.start(paused=True)
+        monkeypatch.setattr(jobs, "_scheduler", scheduler)
+        return scheduler
+
+    def test_the_same_job_is_moved_not_duplicated(self, monkeypatch) -> None:
+        """Вторая одноразовая джоба обошла бы `max_instances=1` и пошла бы параллельно штатной."""
+        scheduler = self._started(monkeypatch)
         try:
-            monkeypatch.setattr(jobs, "_scheduler", scheduler)
 
             async def job() -> None:
                 pass
 
-            jobs._retry_soon("translation_scan", job, "сбор сведений о переводах")
-            jobs._retry_soon("translation_scan", job, "сбор сведений о переводах")
+            scheduler.add_job(job, jobs._every(24, 15), id="translation_scan", max_instances=1)
+            before = scheduler.get_job("translation_scan").next_run_time
 
-            retries = [j for j in scheduler.get_jobs() if j.id == "translation_scan:retry"]
-            assert len(retries) == 1, "второй конфликт переносит тот же повтор, а не плодит очередь"
-            assert isinstance(retries[0].trigger, DateTrigger)
+            jobs._retry_soon("translation_scan", "сбор сведений о переводах")
+
+            assert [j.id for j in scheduler.get_jobs()] == ["translation_scan"], (
+                "джоба одна, с тем же id"
+            )
+            moved = scheduler.get_job("translation_scan").next_run_time
+            assert moved < before, "перенесено ближе, а не на следующий интервал"
+            assert isinstance(scheduler.get_job("translation_scan").trigger, IntervalTrigger)
+            assert 9 * 60 <= (moved - datetime.now(UTC)).total_seconds() <= 11 * 60
         finally:
             scheduler.shutdown(wait=False)
-            loop.close()
+
+    def test_a_job_missing_from_the_schedule_is_only_logged(self, monkeypatch) -> None:
+        """Джоба выключена настройкой, а вызвали руками — переносить нечего."""
+        scheduler = self._started(monkeypatch)
+        try:
+            jobs._retry_soon("translation_scan", "сбор сведений о переводах")
+            assert scheduler.get_jobs() == []
+        finally:
+            scheduler.shutdown(wait=False)
 
     def test_without_a_scheduler_it_only_logs(self, monkeypatch) -> None:
         monkeypatch.setattr(jobs, "_scheduler", None)
 
-        async def job() -> None:
-            pass
-
-        jobs._retry_soon("stream_probe", job, "определение дорожек")
+        jobs._retry_soon("stream_probe", "определение дорожек")

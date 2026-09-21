@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -33,14 +34,20 @@ _scheduler: AsyncIOScheduler | None = None
 RETRY_SOON_MINUTES = 10
 
 
-def _retry_soon(job_id: str, func, what: str) -> None:
-    """Одноразовый повтор джобы через несколько минут — вместо пропуска на интервал.
+def _retry_soon(job_id: str, what: str) -> None:
+    """Переносит следующий запуск джобы на несколько минут — вместо пропуска на интервал.
 
     Сдвиг первого запуска (`_every`) убирает столкновения по расписанию, но не
     те, что заводит человек: нажатая кнопка синхронизации каталога в момент
-    суточного сбора переводов отложила бы его на сутки, как раньше. Повтор
-    ставится `DateTrigger`-ом с постоянным `id`, поэтому второй конфликт подряд
-    не плодит очередь, а переносит тот же повтор ещё раз.
+    суточного сбора переводов отложила бы его на сутки, как раньше.
+
+    ⚠️ Переносится **та же** джоба (`modify_job` с `next_run_time`), а не
+    ставится вторая одноразовая. У второй был бы свой `id`, и `max_instances=1`
+    её не касался бы: повтор и штатный запуск могли бы пойти одновременно, а
+    `translation_scan.run()` и `stream_probe.run()` на это отвечают
+    исключением, `retry_misses` — двойным проходом. После переноса интервал
+    отсчитывается от фактического запуска, то есть фаза сдвигается на те же
+    минуты; сетка сдвигов в `_every` это переживает.
 
     Вне планировщика (тесты, CLI) — только запись в журнал.
     """
@@ -48,14 +55,12 @@ def _retry_soon(job_id: str, func, what: str) -> None:
     log.info("%s: соседняя задача ещё идёт, повтор в %s", what, when.strftime("%H:%M:%S"))
     if _scheduler is None:
         return
-    _scheduler.add_job(
-        func,
-        DateTrigger(run_date=when),
-        id=f"{job_id}:retry",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
+    try:
+        _scheduler.modify_job(job_id, next_run_time=when)
+    except JobLookupError:
+        # Джобы нет в расписании (выключена настройкой, а вызвали руками) —
+        # переносить нечего.
+        log.warning("%s: задачи %s нет в расписании, повтор не поставлен", what, job_id)
 
 
 def _every(hours: int, offset_minutes: int) -> IntervalTrigger:
@@ -78,6 +83,15 @@ def _every(hours: int, offset_minutes: int) -> IntervalTrigger:
     десять минут — дорожки к тому, что он расставил. Столкновения, которых
     расписание предвидеть не может (кнопка в интерфейсе), разбирает
     `_retry_soon`.
+
+    ⚠️ Сдвиг — это и **первый запуск**: суточные джобы теперь отрабатывают
+    через 5–40 минут после старта контейнера, а не через сутки, как раньше
+    (у `IntervalTrigger` без `start_date` первый запуск — через интервал).
+    Это сознательно: раньше контейнер, который перезапускают чаще раза в сутки,
+    суточных джоб не видел вовсе, а сверочный скан библиотеки сразу после
+    старта как раз и нужен — он подбирает изменения, случившиеся, пока сервис
+    лежал. Цена — полная синхронизация каталога (44 запроса) и первый сбор
+    переводов при каждом старте.
     """
     return IntervalTrigger(
         hours=hours, start_date=datetime.now(UTC) + timedelta(minutes=offset_minutes)
@@ -95,7 +109,7 @@ async def _incremental_job() -> None:
 
 async def _full_job() -> None:
     if catalog_sync.running:
-        _retry_soon("catalog_full", _full_job, "полная синхронизация каталога")
+        _retry_soon("catalog_full", "полная синхронизация каталога")
         return
     try:
         await catalog_sync.full()
@@ -137,7 +151,7 @@ async def _translation_job() -> None:
     стараемся держать низкой.
     """
     if catalog_sync.running:
-        _retry_soon("translation_scan", _translation_job, "сбор сведений о переводах")
+        _retry_soon("translation_scan", "сбор сведений о переводах")
         return
     try:
         await translation_scan.run()
@@ -156,7 +170,7 @@ async def _stream_probe_job() -> None:
     просто ничего не делает и не стоит ничего.
     """
     if library_scanner.running:
-        _retry_soon("stream_probe", _stream_probe_job, "определение дорожек")
+        _retry_soon("stream_probe", "определение дорожек")
         return
     try:
         await stream_probe.run()
@@ -197,7 +211,7 @@ async def _autodownload_retry_job() -> None:
     каждый час дороже, чем раз в сутки.
     """
     if library_scanner.running:
-        _retry_soon("autodownload_retry", _autodownload_retry_job, "повтор автоскачивания")
+        _retry_soon("autodownload_retry", "повтор автоскачивания")
         return
     try:
         await autodownload.retry_misses()
