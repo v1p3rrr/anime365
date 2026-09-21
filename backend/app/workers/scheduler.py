@@ -29,6 +29,30 @@ log = logging.getLogger(__name__)
 _scheduler: AsyncIOScheduler | None = None
 
 
+def _every(hours: int, offset_minutes: int) -> IntervalTrigger:
+    """Интервал со сдвигом первого запуска от старта.
+
+    ⚠️ Без сдвига все джобы отсчитывают интервал от одной и той же секунды —
+    момента старта, — и раз в сутки, когда кратные интервалы сходятся, стартуют
+    **одновременно**. На сервере пользователя это выглядело так: в `19:43:46`
+    почасовой инкремент каталога успевал выставить `catalog_sync.running`,
+    полный рескан падал с «Синхронизация уже идёт», сбор сведений о переводах
+    писал «отложен», автоскачивание и его суточный повтор молча выходили,
+    увидев идущий скан библиотеки. «Отложен» на деле значило «пропущен до
+    завтра»: полный рескан и сбор переводов не запускались ни разу за две
+    недели, суточный повтор автоскачивания — тоже
+    ([D-212](../../claude/09-decisions.md)).
+
+    Сдвиги ниже подобраны так, чтобы суточные джобы не совпадали ни друг с
+    другом, ни с почасовыми: почасовые идут в `:00` и `:30` от старта, суточные
+    — в промежутках. Порядок тоже не случаен: сначала скан библиотеки, через
+    десять минут — дорожки к тому, что он расставил.
+    """
+    return IntervalTrigger(
+        hours=hours, start_date=datetime.now(UTC) + timedelta(minutes=offset_minutes)
+    )
+
+
 async def _incremental_job() -> None:
     try:
         await catalog_sync.incremental()
@@ -122,6 +146,7 @@ async def _autodownload_job() -> None:
     меняется, и решение «субтитров нет» принималось бы по половине данных.
     """
     if library_scanner.running:
+        log.info("Сканирование библиотеки идёт, автоскачивание отложено до следующего часа")
         return
     try:
         await autodownload.run_for_all(automatic=True)
@@ -137,6 +162,7 @@ async def _autodownload_retry_job() -> None:
     каждый час дороже, чем раз в сутки.
     """
     if library_scanner.running:
+        log.info("Сканирование библиотеки идёт, повтор автоскачивания отложен")
         return
     try:
         await autodownload.retry_misses()
@@ -202,7 +228,7 @@ def start_scheduler() -> AsyncIOScheduler:
 
     scheduler.add_job(
         _incremental_job,
-        IntervalTrigger(hours=settings.get_int("catalog_refresh_hours")),
+        _every(settings.get_int("catalog_refresh_hours"), 0),
         id="catalog_incremental",
         # Если предыдущий запуск ещё идёт, новый не плодим.
         max_instances=1,
@@ -210,7 +236,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         _full_job,
-        IntervalTrigger(hours=settings.get_int("catalog_full_refresh_hours")),
+        _every(settings.get_int("catalog_full_refresh_hours"), 5),
         id="catalog_full",
         max_instances=1,
         coalesce=True,
@@ -219,14 +245,14 @@ def start_scheduler() -> AsyncIOScheduler:
     # к этому моменту скан уже расставил файлы, и остаётся добрать дорожки.
     scheduler.add_job(
         _stream_probe_job,
-        IntervalTrigger(hours=settings.get_int("library_scan_hours")),
+        _every(settings.get_int("library_scan_hours"), 20),
         id="stream_probe",
         max_instances=1,
         coalesce=True,
     )
     scheduler.add_job(
         _library_job,
-        IntervalTrigger(hours=settings.get_int("library_scan_hours")),
+        _every(settings.get_int("library_scan_hours"), 10),
         id="library_scan",
         max_instances=1,
         coalesce=True,
@@ -237,7 +263,7 @@ def start_scheduler() -> AsyncIOScheduler:
     if scan_interval_hours() > 0:
         scheduler.add_job(
             _translation_job,
-            IntervalTrigger(hours=scan_interval_hours()),
+            _every(scan_interval_hours(), 15),
             id="translation_scan",
             max_instances=1,
             coalesce=True,
@@ -248,7 +274,7 @@ def start_scheduler() -> AsyncIOScheduler:
     if settings.get_int("autodownload_interval_hours") > 0:
         scheduler.add_job(
             _autodownload_job,
-            IntervalTrigger(hours=settings.get_int("autodownload_interval_hours")),
+            _every(settings.get_int("autodownload_interval_hours"), 30),
             id="autodownload",
             max_instances=1,
             coalesce=True,
@@ -257,7 +283,7 @@ def start_scheduler() -> AsyncIOScheduler:
     if settings.get_int("autodownload_retry_hours") > 0:
         scheduler.add_job(
             _autodownload_retry_job,
-            IntervalTrigger(hours=settings.get_int("autodownload_retry_hours")),
+            _every(settings.get_int("autodownload_retry_hours"), 40),
             id="autodownload_retry",
             max_instances=1,
             coalesce=True,

@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from pathlib import Path
 
@@ -172,6 +172,12 @@ class EpisodeScan:
     """
 
     missing: list[float] = field(default_factory=list)
+    #: Серии, у которых субтитры этого языка **есть** — отдельным файлом или
+    #: дорожкой внутри видео. Нужны не для отчёта: по ним снимается запись о
+    #: промахе, если серия когда-то числилась ненайденной. Иначе запись висит
+    #: вечно: Grand Blue S3 E10 «не найдена» с 07.09, хотя 13.09 файл заменили
+    #: на релиз со вшитой русской дорожкой ([D-212](../../claude/09-decisions.md)).
+    settled: list[float] = field(default_factory=list)
     #: Субтитры этого языка уже лежат отдельным файлом рядом с видео.
     skipped_sidecar: int = 0
     #: Дорожка этого языка есть внутри видеофайла (снимается галкой).
@@ -211,9 +217,11 @@ def scan_episodes(
             continue
         if resolved.lang in sidecars.get(episode, set()):
             scan.skipped_sidecar += 1
+            scan.settled.append(episode)
             continue
         if file_id is not None and resolved.lang in embedded.get(file_id, set()):
             scan.skipped_embedded += 1
+            scan.settled.append(episode)
             continue
         scan.missing.append(episode)
     return scan
@@ -309,8 +317,9 @@ def _read_subtitle_langs(file_id: int) -> tuple[bool, set[str]]:
 def _candidates(series_id: int, lang: str) -> dict[float, list[dict]]:
     """Субтитры этого языка, разложенные по номерам серий.
 
-    Берём из локального кэша переводов: он наполняется при открытии тайтла и
-    фоновым обходом, поэтому лишнего запроса к чужому API здесь нет.
+    Берём из локального кэша переводов. Наполняют его открытие страницы
+    тайтла и `_refresh_translations` из плана — суточный «сбор сведений о
+    переводах» сюда **не** пишет, он считает счётчики для каталога.
 
     ⚠️ **Ключ здесь обязан остаться номером**, в отличие от страницы тайтла
     ([D-170](../../claude/09-decisions.md)). Мы подбираем субтитры к **файлу на
@@ -475,11 +484,64 @@ async def _first_soft_subtitle(candidates: list[dict]) -> dict | None:
     return None
 
 
+def _cache_is_fresh(series_id: int) -> bool:
+    """Свежи ли переводы тайтла в кэше — по живым строкам.
+
+    ⚠️ Не `translations_are_fresh` из `title_service`: та берёт самую старую
+    строку **включая помеченные пропавшими**. Пометка не обновляет `synced_at`,
+    и тайтл с одним таким переводом (у Mushoku Tensei III их три — привязаны
+    к скачанным файлам) считался бы несвежим вечно, то есть ходил бы на сайт
+    каждый час. Пропавшее с сайта в кандидаты и так не попадает.
+    """
+    from app.services.title_service import TRANSLATIONS_TTL
+
+    with session_scope() as session:
+        oldest = session.execute(
+            select(func.min(Translation.synced_at)).where(
+                Translation.series_id == series_id,
+                Translation.missing_since.is_(None),
+            )
+        ).scalar()
+    return oldest is not None and oldest > datetime.utcnow() - TRANSLATIONS_TTL
+
+
+async def _refresh_translations(series_id: int) -> bool:
+    """Перечитывает список серий и переводов тайтла с сайта. True — удалось.
+
+    ⚠️ Без этого автоскачивание не работало для новых серий вовсе, и выглядело
+    это как «переводов нет». Кандидаты берутся из локального кэша, а кэш до сих
+    пор наполняли только два пути: открытие страницы тайтла и досбор по
+    идентификаторам из имён файлов. Суточный «сбор сведений о переводах»
+    кэш **не трогает** — он пишет одни счётчики для каталога. Значит серия,
+    приехавшая от Sonarr вечером, получала субтитры только если кто-то после
+    этого открыл её страницу: на сервере пользователя Grand Blue S3 E12
+    скачалась через семь минут после открытия страницы, а E10 числилась
+    ненайденной шесть суток ([D-212](../../claude/09-decisions.md)).
+
+    Зовётся только когда есть к чему качать и кэш не свежее
+    `TRANSLATIONS_TTL`: у тайтла с недостающей серией это один поход на сайт
+    в шесть часов, у остальных — ни одного. Отказ сети не роняет проход:
+    считаем по тому, что есть в кэше, как раньше.
+    """
+    from app.services.title_service import ensure_details, ensure_translations
+
+    try:
+        # Сначала серии, потом переводы: перевод привязан к серии по `episode_id`,
+        # и без строки серии в кэше он в кандидаты не попадёт.
+        await ensure_details(series_id, force=True)
+        await ensure_translations(series_id, force=True)
+    except Exception as exc:  # noqa: BLE001 — сеть, чужой сайт
+        log.warning("Автоскачивание: переводы тайтла %s не обновлены: %s", series_id, exc)
+        return False
+    return True
+
+
 async def plan_for_series(
     series_id: int,
     automatic: bool = False,
     only: set[tuple[float, str]] | None = None,
     skipped: dict[str, int] | None = None,
+    settled: set[tuple[float, str]] | None = None,
 ) -> tuple[list[Choice], list[tuple[float, str]]]:
     """Что скачать и к чему не нашлось. Ничего не ставит в очередь.
 
@@ -495,6 +557,11 @@ async def plan_for_series(
     Отдельным параметром, а не третьим значением в ответе: распаковка
     `plan, misses = …` живёт в десятке мест, и ломать её ради счётчиков,
     нужных одному вызывающему, не стоит.
+
+    `settled` — необязательное множество, куда складываются пары «серия, язык»,
+    у которых субтитры **есть** (рядом или внутри видео). По ним вызывающий
+    снимает устаревшие записи о промахах. Сюда попадает только то, что проход
+    действительно проверил: серии вне охвата и вне `only` не трогаются.
     """
     rules = resolve_for_series(series_id)
     if not rules:
@@ -502,6 +569,8 @@ async def plan_for_series(
 
     plan: list[Choice] = []
     misses: list[tuple[float, str]] = []
+    # Один поход на сайт за проход, и только если он понадобился.
+    refresh_checked = False
 
     # Один запрос на тайтл, а не на каждый язык: набор серий с видео от языка
     # не зависит, и три одинаковых обхода базы здесь были лишними.
@@ -523,20 +592,39 @@ async def plan_for_series(
             skipped["out_of_scope"] = (
                 skipped.get("out_of_scope", 0) + scan.skipped_out_of_scope
             )
-        missing = scan.missing
+        if settled is not None:
+            settled.update(
+                (episode, lang)
+                for episode in scan.settled
+                if only is None or (episode, lang) in only
+            )
+        # Выкинутое вручную не считается недостающим: ради него на сайт не
+        # ходим и кандидатов не перебираем.
+        missing = [
+            episode
+            for episode in scan.missing
+            if (only is None or (episode, lang) in only) and (episode, lang) not in dismissed
+        ]
         if not missing:
             continue
+        if not refresh_checked:
+            refresh_checked = True
+            # Есть к чему качать — убедимся, что кэш переводов не отстал от
+            # сайта. Свежий не трогаем: страница тайтла его только что
+            # обновила, а лишний запрос к чужому API ничего не добавит.
+            if not _cache_is_fresh(series_id):
+                await _refresh_translations(series_id)
         by_episode = _candidates(series_id, lang)
         for episode in missing:
-            if only is not None and (episode, lang) not in only:
-                continue
-            if (episode, lang) in dismissed:
-                continue
             # Последняя проверка — по диску, а не по индексу: файл могли
             # удалить, а субтитры положить руками уже после скана.
             file_id = videos.get(episode, (None, None))[0]
             has_video, on_disk = _subtitles_on_disk(file_id, disk)
-            if not has_video or lang in on_disk:
+            if not has_video:
+                continue
+            if lang in on_disk:
+                if settled is not None:
+                    settled.add((episode, lang))
                 continue
 
             ranked = rank_candidates(by_episode.get(episode, []), resolved)
@@ -579,8 +667,14 @@ async def run_for_series(
     from app.services.download_queue import QueueError, enqueue
 
     skipped: dict[str, int] = {}
-    plan, misses = await plan_for_series(series_id, automatic, only, skipped)
+    settled: set[tuple[float, str]] = set()
+    plan, misses = await plan_for_series(series_id, automatic, only, skipped, settled)
     remember_misses(series_id, misses)
+    # Серия перестала быть недостающей не через нас — файл заменили на релиз
+    # со вшитой дорожкой или положили субтитры руками. Запись о промахе
+    # больше не про неё, иначе список «не найдено» врёт, пока его не почистят
+    # вручную ([D-212](../../claude/09-decisions.md)).
+    clear_settled_misses(series_id, settled)
     queued = 0
     for choice in plan:
         try:
@@ -748,6 +842,28 @@ def clear_miss(series_id: int, episode: float, lang: str) -> None:
                 AutoDownloadMiss.lang == lang,
             )
         )
+
+
+def clear_settled_misses(series_id: int, settled: set[tuple[float, str]]) -> None:
+    """Снимает промахи с серий, у которых субтитры уже есть.
+
+    Только с **не** выкинутых вручную: «выкинул» — это «перестань этим
+    заниматься», и запись обязана остаться, чтобы следующий проход не завёл
+    её заново ([D-132](../../claude/09-decisions.md)). Той, что снята здесь,
+    вернуться не с чего: субтитры у серии есть.
+    """
+    if not settled:
+        return
+    with session_scope() as session:
+        for episode, lang in settled:
+            session.execute(
+                delete(AutoDownloadMiss).where(
+                    AutoDownloadMiss.series_id == series_id,
+                    AutoDownloadMiss.episode == episode,
+                    AutoDownloadMiss.lang == lang,
+                    AutoDownloadMiss.dismissed.is_(False),
+                )
+            )
 
 
 def pending_miss_targets() -> dict[int, set[tuple[float, str]]]:
