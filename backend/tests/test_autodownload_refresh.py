@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import asyncio
+import pathlib
+import time
 from datetime import datetime, timedelta
 
 import pytest
@@ -23,8 +25,10 @@ from sqlalchemy import select
 from app.core.db import session_scope
 from app.models.autodownload import AutoDownloadMiss, AutoDownloadRule
 from app.models.catalog import Translation
+from app.models.library import LibraryFile
+from app.services import autodownload
 from app.services.autodownload import plan_for_series, remember_misses, run_for_series
-from tests.test_autodownload_engine import SERIES, _sidecar, _translation, _video
+from tests.test_autodownload_engine import ROOT, SERIES, _sidecar, _translation, _video
 from tests.test_autodownload_engine import clean as _clean  # noqa: F401 — autouse
 
 
@@ -139,6 +143,83 @@ class TestCacheRefresh:
         monkeypatch.setattr("app.services.title_service.ensure_details", boom)
 
         assert asyncio.run(site_refresh.original(SERIES)) is False
+
+    def test_a_failed_trip_pauses_the_rest_of_the_pass(self, site_refresh, monkeypatch) -> None:
+        """Сайт лёг — остальные тайтлы прохода не должны платить тем же отказом."""
+        attempts: list[int] = []
+
+        async def boom(series_id: int, force: bool = False):
+            attempts.append(series_id)
+            raise RuntimeError("site is down")
+
+        monkeypatch.setattr("app.services.title_service.ensure_details", boom)
+
+        assert asyncio.run(site_refresh.original(SERIES)) is False
+        assert asyncio.run(site_refresh.original(SERIES + 1)) is False
+        assert attempts == [SERIES], "второй тайтл в паузу на сайт не ходит"
+
+    def test_the_pause_ends(self, site_refresh, monkeypatch) -> None:
+        attempts: list[int] = []
+
+        async def fine(series_id: int, force: bool = False):
+            attempts.append(series_id)
+            return []
+
+        monkeypatch.setattr("app.services.title_service.ensure_details", fine)
+        monkeypatch.setattr("app.services.title_service.ensure_translations", fine)
+        monkeypatch.setattr(
+            autodownload, "_refresh_paused_until", datetime.utcnow() - timedelta(seconds=1)
+        )
+
+        assert asyncio.run(site_refresh.original(SERIES)) is True
+        assert attempts == [SERIES, SERIES]
+        assert autodownload._refresh_paused_until is None, "успех снимает паузу"
+
+    def test_a_page_refresh_in_flight_is_not_doubled(self, site_refresh, monkeypatch) -> None:
+        """Страница тайтла уже обновляет кэш фоном — второй поход за тем же не нужен."""
+        attempts: list[int] = []
+
+        async def fine(series_id: int, force: bool = False):
+            attempts.append(series_id)
+
+        monkeypatch.setattr("app.services.title_service.ensure_details", fine)
+        monkeypatch.setattr("app.services.title_service.translations_pending", lambda sid: True)
+
+        assert asyncio.run(site_refresh.original(SERIES)) is False
+        assert attempts == []
+
+    def test_a_deleted_video_is_not_worth_the_trip(self, site_refresh) -> None:
+        """Индекс ещё помнит файл, диска уже нет — качать не к чему, идти незачем."""
+        _video(1)
+        pathlib.Path(ROOT, "Autodownload", "Show S01E01.mkv").unlink()
+        _rule_all()
+
+        asyncio.run(plan_for_series(SERIES))
+
+        assert site_refresh.calls == []
+
+    def test_subtitles_put_by_hand_are_not_worth_the_trip(self, site_refresh) -> None:
+        """Файл рядом уже лежит, просто скан его не видел."""
+        _video(1)
+        pathlib.Path(ROOT, "Autodownload", "Show S01E01.ru.ass").write_text("x", encoding="utf-8")
+        _rule_all()
+
+        asyncio.run(plan_for_series(SERIES))
+
+        assert site_refresh.calls == []
+
+    def test_a_dismissed_pair_alone_does_not_trigger_the_trip(self, site_refresh) -> None:
+        """Выкинутое вручную — не недостающее: автоматический проход мимо."""
+        file_id = _video(1)
+        with session_scope() as session:
+            # Появился час назад: отстоялся, в окне, правило без даты включения.
+            session.get(LibraryFile, file_id).mtime = time.time() - 3600
+        _miss(1.0, dismissed=True)
+        _rule_all()
+
+        asyncio.run(run_for_series(SERIES, automatic=True))
+
+        assert site_refresh.calls == []
 
 
 def _miss(episode: float = 1.0, *, dismissed: bool = False) -> None:
