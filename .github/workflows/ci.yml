@@ -176,6 +176,11 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: anime365-downloader:ci
+          # Без своего кэша: action кладёт базу уязвимостей (82 МБ) под ключ
+          # с датой, то есть новую каждый день, плюс бинарник — и они лежат до
+          # вытеснения. За неделю это больше, чем весь образ. Скачать базу
+          # заново — секунды.
+          cache: false
           severity: CRITICAL
           ignore-unfixed: true
           exit-code: '1'
