@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import delete, func, select
 
 from pathlib import Path
 
@@ -55,6 +55,10 @@ SUBTITLE_SUFFIXES = frozenset({".ass", ".ssa", ".srt", ".sub", ".vtt"})
 #: `title_service`, только пауза одна на всех: причина не в тайтле.
 REFRESH_PAUSE = timedelta(minutes=30)
 _refresh_paused_until: datetime | None = None
+
+#: Сколько идентификаторов в одном `DELETE … IN (…)`: с запасом от предела
+#: в 999 переменных у старых сборок SQLite.
+_DELETE_CHUNK = 500
 
 
 @dataclass(frozen=True)
@@ -893,19 +897,28 @@ def clear_settled_misses(series_id: int, settled: set[tuple[float, str]]) -> Non
     """
     if not settled:
         return
+    # Сверяем в Python по записям о промахах, а не отдаём `settled` в SQL:
+    # промахов у тайтла единицы, а закрытых серий — все, у кого субтитры
+    # есть. У сериала на тысячу серий с дорожками внутри это две тысячи пар,
+    # и `OR` из двух тысяч условий упирается в предел глубины выражения
+    # SQLite (1000), а `IN` по парам — в предел числа переменных (999 у
+    # старых сборок). Проход по такому тайтлу падал бы до постановки в
+    # очередь.
     with session_scope() as session:
-        session.execute(
-            delete(AutoDownloadMiss).where(
+        rows = session.execute(
+            select(AutoDownloadMiss.id, AutoDownloadMiss.episode, AutoDownloadMiss.lang).where(
                 AutoDownloadMiss.series_id == series_id,
                 AutoDownloadMiss.dismissed.is_(False),
-                or_(
-                    *(
-                        and_(AutoDownloadMiss.episode == episode, AutoDownloadMiss.lang == lang)
-                        for episode, lang in settled
-                    )
-                ),
             )
-        )
+        ).all()
+        stale = [row_id for row_id, episode, lang in rows if (float(episode), lang) in settled]
+        # Пачками — по той же причине, что и `_UPSERT_CHUNK` в `title_service`.
+        for start in range(0, len(stale), _DELETE_CHUNK):
+            session.execute(
+                delete(AutoDownloadMiss).where(
+                    AutoDownloadMiss.id.in_(stale[start : start + _DELETE_CHUNK])
+                )
+            )
 
 
 def pending_miss_targets() -> dict[int, set[tuple[float, str]]]:
