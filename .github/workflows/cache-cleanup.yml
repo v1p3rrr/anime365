@@ -1,0 +1,25 @@
+name: Уборка кэша закрытого пул-реквеста
+
+# Кэш Actions привязан к ветке. Прогон по пул-реквесту пишет свои слои образа
+# под `refs/pull/N/merge`, и после мержа они лежат до вытеснения — семь дней
+# без обращений, то есть всегда семь дней. При лимите хранилища 500 МБ в месяц
+# (D-213) каждая такая неделя стоит заметную долю квоты. Здесь они стираются
+# в момент закрытия, как советует документация actions/cache.
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    name: Стереть кэш ветки
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Удалить записи под refs/pull/N/merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: gh cache delete --all -R "$GITHUB_REPOSITORY" --ref "$REF" || echo "Записей под $REF нет"
