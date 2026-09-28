@@ -139,9 +139,23 @@ def _check_mirror_list(value: tuple[str, ...]) -> str | None:
 
 
 # Имя хоста без схемы, порта и пути; ведущая точка допустима и ничего не меняет.
-# Требуется хотя бы одна точка: запись `org` открыла бы целую доменную зону.
-_CDN_HOST_RE = re.compile(r"^\.?[a-z0-9-]+(\.[a-z0-9-]+)+$", re.IGNORECASE)
+# Метка — буквы и цифры, дефис только внутри. Требуется хотя бы одна точка:
+# запись `org` открыла бы целую доменную зону.
+_DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_CDN_HOST_RE = re.compile(rf"^\.?{_DNS_LABEL}(?:\.{_DNS_LABEL})+$", re.IGNORECASE)
 _IP_LITERAL_RE = re.compile(r"^\.?[0-9.]+$")
+
+# Общие хостинги: поддомен в них заводит кто угодно. Запись `cloudfront.net`
+# пустила бы любой чужой дистрибутив, поэтому здесь нужен полный хост из
+# ошибки (`d123.cloudfront.net`). Список не исчерпывающий — он ловит самое
+# вероятное: человек видит в ошибке длинное имя и укорачивает его «до домена».
+SHARED_HOSTING_DOMAINS = frozenset({
+    "akamaized.net", "amazonaws.com", "appspot.com", "azureedge.net", "azurefd.net",
+    "blob.core.windows.net", "cloudfront.net", "fastly.net", "firebaseapp.com",
+    "github.io", "githubusercontent.com", "googleusercontent.com", "herokuapp.com",
+    "netlify.app", "ngrok-free.app", "ngrok.io", "pages.dev", "r2.dev",
+    "vercel.app", "web.app", "workers.dev",
+})
 
 
 def _check_cdn_hosts(value: tuple[str, ...]) -> str | None:
@@ -152,6 +166,13 @@ def _check_cdn_hosts(value: tuple[str, ...]) -> str | None:
             # IP-адрес здесь — это ровно то, от чего список защищает: адрес
             # локальной сети вместо CDN.
             return f"{item!r}: IP-адрес не допускается, только имя хоста"
+        domain = item.lower().lstrip(".")
+        # Сам общий хостинг или его родитель (`windows.net` над `blob.core.windows.net`).
+        if any(f".{shared}".endswith(f".{domain}") for shared in SHARED_HOSTING_DOMAINS):
+            return (
+                f"{item!r}: это общий хостинг, в нём любой может завести поддомен — "
+                "укажите полное имя хоста из ошибки"
+            )
     return None
 
 

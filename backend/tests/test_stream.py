@@ -94,6 +94,66 @@ class TestProxyIsNotOpen:
     def test_userinfo_does_not_disguise_the_host(self, url: str) -> None:
         assert is_allowed_target(url) is False
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            # `urlsplit` видит хост `evil.com\x.b-cdn.net`, браузер — `evil.com`.
+            "https://evil.com\\x.b-cdn.net/",
+            "https://evil.com\\.b-cdn.net/",
+            "https://evil.com%5Cx.b-cdn.net/",
+            # Битый адрес: `urlsplit` на нём падает, а не отвечает.
+            "http://[moon-q1.b-cdn.net/",
+            "http://[::1]/",
+        ],
+    )
+    def test_hosts_other_parsers_read_differently_are_rejected(self, url: str) -> None:
+        from app.services.downloader import REJECT_SUSPICIOUS, classify_target
+
+        assert classify_target(url) == REJECT_SUSPICIOUS
+
+    @pytest.mark.parametrize(
+        ("url", "reason"),
+        [
+            ("https://bcdn.melon-soda.org/route/?m=1", None),
+            ("https://bcdn.new-cdn.example/route/?m=1", "unknown"),
+            ("https://user@bcdn.melon-soda.org/route/?m=1", "suspicious"),
+            ("http://192.168.1.1/", "suspicious"),
+        ],
+    )
+    def test_reason_tells_a_new_cdn_from_a_forged_link(self, url: str, reason) -> None:
+        """Подсказка про настройку нужна только первому: второе ею не лечится."""
+        from app.services.downloader import UnknownHostError, classify_target
+
+        assert classify_target(url) == reason
+        if reason is not None:
+            error = UnknownHostError(url)
+            assert error.fixable is (reason == "unknown")
+            assert ("A365_EXTRA_CDN_HOSTS" in str(error)) is error.fixable
+
+    def test_redirect_errors_carry_the_host_not_the_link(self) -> None:
+        """В начале ссылки на скачивание стоит токен — в текст ошибки она не идёт."""
+        import asyncio
+
+        import httpx
+
+        from app.services.anime365 import Anime365Error
+        from app.services.downloader import open_checked
+
+        link = "https://smotret-anime.app/translations/mp4/1?access_token=SECRET"
+
+        def no_location(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(302, request=request)
+
+        async def run() -> None:
+            transport = httpx.MockTransport(no_location)
+            async with httpx.AsyncClient(transport=transport, follow_redirects=False) as client:
+                await open_checked(client, link, {}, stream=False)
+
+        with pytest.raises(Anime365Error) as exc:
+            asyncio.run(run())
+        assert "SECRET" not in str(exc.value)
+        assert "smotret-anime.app" in str(exc.value)
+
 
 class TestExtraCdnHosts:
     """`A365_EXTRA_CDN_HOSTS` — чтобы переезд сайта на новый CDN не ждал релиза."""
@@ -134,6 +194,59 @@ class TestExtraCdnHosts:
 
         assert is_allowed_target("https://bcdn.melon-soda.org/route/?m=1") is True
 
+    def test_duplicate_of_a_builtin_domain_changes_nothing(self, extra, caplog) -> None:
+        """Дубль встроенного домена не ломает проверку, но подсказывает, что он лишний."""
+        import logging
+
+        from app.services.downloader import _allowed
+
+        _allowed.cache_clear()
+        extra("melon-soda.org", "bcdn.melon-soda.org", ".MELON-SODA.org")
+        with caplog.at_level(logging.INFO, logger="app.services.downloader"):
+            assert is_allowed_target("https://bcdn.melon-soda.org/route/?m=1") is True
+            assert is_allowed_target("https://evilmelon-soda.org/x") is False
+            # Второй вызов — из кэша: строка в логе одна на конфигурацию, а не на ссылку.
+            assert is_allowed_target("https://bcdn.melon-soda.org/route/?m=2") is True
+
+        notes = [r.getMessage() for r in caplog.records if "уже покрыт" in r.getMessage()]
+        assert len(notes) == 3
+
+    def test_entries_may_overlap_each_other(self, extra) -> None:
+        extra("new-cdn.example", "bcdn.new-cdn.example", "new-cdn.example")
+
+        assert is_allowed_target("https://bcdn.new-cdn.example/x") is True
+        assert is_allowed_target("https://other.new-cdn.example/x") is True
+
+    def test_entry_inside_a_builtin_does_not_narrow_it(self, extra) -> None:
+        """Запись уже встроенного поддомена не сужает встроенный домен до себя."""
+        extra("cdn.melon-soda.org")
+
+        assert is_allowed_target("https://bcdn.melon-soda.org/x") is True
+        assert is_allowed_target("https://a.cdn.melon-soda.org/x") is True
+
+    def test_builtin_domains_are_matched_like_entries(self) -> None:
+        """Встроенный список и настройка идут через один матчер — и апекс тоже."""
+        assert is_allowed_target("https://melon-soda.org/route/?m=1") is True
+        assert is_allowed_target("https://evilmelon-soda.org/route/?m=1") is False
+
+    def test_messy_env_value_is_normalised(self, extra) -> None:
+        """Пробелы, пустые элементы и хвостовая запятая из `.env` не мешают."""
+        from app.core.settings_registry import get
+
+        setting = get("extra_cdn_hosts")
+        value = setting.validate(setting.parse(" new-cdn.example , ,.Other.example,"))
+        extra(*value)
+
+        assert value == ("new-cdn.example", ".Other.example")
+        assert is_allowed_target("https://x.other.example/") is True
+
+    def test_empty_env_value_means_not_set(self) -> None:
+        """На сервере переменная стоит пустой — это «не задано», а не ошибка."""
+        from app.core.settings_registry import get
+
+        setting = get("extra_cdn_hosts")
+        assert setting.validate(setting.parse("")) == ()
+
     def test_setting_is_server_only(self) -> None:
         from app.core.settings_registry import get
 
@@ -148,6 +261,12 @@ class TestExtraCdnHosts:
             "org",
             "192.168.1.1",
             "*.new-cdn.example",
+            "-.-",
+            "new-.example",
+            # Общий хостинг: поддомен в нём заводит кто угодно.
+            "cloudfront.net",
+            "windows.net",
+            ".github.io",
         ],
     )
     def test_malformed_entries_are_rejected(self, raw: str) -> None:
@@ -161,9 +280,12 @@ class TestExtraCdnHosts:
         from app.core.settings_registry import get
 
         setting = get("extra_cdn_hosts")
-        value = setting.validate(setting.parse("new-cdn.example, .other.example"))
+        value = setting.validate(
+            setting.parse("new-cdn.example, .other.example, d123.cloudfront.net")
+        )
 
-        assert value == ("new-cdn.example", ".other.example")
+        # Полное имя в общем хостинге — можно: оно одно, а не целая зона.
+        assert value == ("new-cdn.example", ".other.example", "d123.cloudfront.net")
 
 
 class TestStreamEndpointIsProtected:

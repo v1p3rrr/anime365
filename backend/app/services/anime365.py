@@ -568,7 +568,7 @@ class Anime365Client:
         Импорт локальный: `downloader` тянет этот модуль сверху, и обычный
         импорт замкнул бы кольцо.
         """
-        from app.services.downloader import open_checked
+        from app.services.downloader import UnknownHostError, open_checked
 
         for method, headers, pick in (
             ("HEAD", {}, self._length_from_headers),
@@ -578,6 +578,12 @@ class Anime365Client:
                 response = await open_checked(
                     self._client, url, headers, stream=False, method=method, timeout=20
                 )
+            except UnknownHostError as exc:
+                # Второй метод уйдёт по той же цепочке и упрётся в тот же хост.
+                # В лог — потому что это первый признак переезда сайта на новый
+                # CDN: проба веса идёт раньше, чем кто-то нажмёт «скачать».
+                log.warning("Вес файла не выяснен: %s", exc)
+                return None
             except (Anime365Error, httpx.HTTPError):
                 # Неизвестный хост или сеть: вес не выясним, но и не роняем
                 # выдачу — сводка качества просто останется без цифры.

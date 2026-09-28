@@ -407,7 +407,7 @@ authorsSummary, title, url, embedUrl, isActive, priority, addedDateTime, updated
   `https://bcdn.melon-soda.org/route/?m=…&r=…` → сразу `200 video/mp4`, с
   `content-disposition` и размером. Токена в ссылке нет, шаг один — как у прежнего
   `moon-*.b-cdn.net/route/`.
-- До добавления `.melon-soda.org` в `ALLOWED_CDN_SUFFIXES` отказывало всё: очередь,
+- До добавления `melon-soda.org` во встроенный список CDN отказывало всё: очередь,
   плеер, «скачать себе» — `502 upstream_unavailable` «увёл ссылку на неизвестный хост».
 - Выбрать CDN по-прежнему нельзя (см. выше): переезд делает сайт, и узнаём мы о нём
   по отказу. Поэтому имя отвергнутого хоста есть и в ошибке, и в логе, а пустить

@@ -1096,6 +1096,7 @@ export const en: Dictionary = {
     setting_unknown: 'Unknown setting: {key}',
     no_playable_links: 'This translation has no playable links.',
     unknown_host: 'The link points to an unknown host {host}. If this is a new Anime365 CDN, an administrator can allow it with A365_EXTRA_CDN_HOSTS on the server.',
+    unsafe_link: 'The link to {host} arrived in a suspicious form and was rejected — this is not a new CDN, and no setting will fix it.',
     stream_open_failed: 'Could not open the stream: {reason}',
     cdn_error: 'The CDN replied with error {status}.',
     subtitles_hardsub: 'The subtitles are burned into the video — there is no separate file.',

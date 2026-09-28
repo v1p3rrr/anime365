@@ -17,6 +17,7 @@ import re
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import AsyncIterator, Callable
 from urllib.parse import urlsplit
@@ -30,15 +31,30 @@ log = logging.getLogger(__name__)
 
 CHUNK_SIZE = 1 << 20  # 1 МБ
 
-# Хосты CDN, на которые допустимо уходить по редиректу. Проверка нужна,
-# чтобы подменённый ответ не увёл загрузку на посторонний сервер.
+# Домены CDN, на которые допустимо уходить по редиректу: сам домен и все его
+# поддомены. Проверка нужна, чтобы подменённый ответ не увёл загрузку на
+# посторонний сервер.
 #
 # ⚠️ Сайт меняет CDN без предупреждения, и тогда отказывает всё разом: очередь,
 # плеер и «скачать себе». С 2026-09-27 вместо `*.b-cdn.net` приходит
 # `bcdn.melon-soda.org/route/?m=…&r=…` — тот же одношаговый маршрут с подписью,
-# сразу `200 video/mp4`. Чтобы следующий переезд не ждал релиза, новый хост
-# дописывается в `A365_EXTRA_CDN_HOSTS` — он дополняет этот список (D-214).
-ALLOWED_CDN_SUFFIXES = (".quantum-phantom-moon.ru", ".b-cdn.net", ".melon-soda.org")
+# сразу `200 video/mp4`. Чтобы следующий переезд не ждал релиза, новый домен
+# дописывается в `A365_EXTRA_CDN_HOSTS` — он дополняет этот список, и записи
+# обоих проходят через один и тот же `_in_domain` (D-214).
+BUILTIN_CDN_DOMAINS = ("quantum-phantom-moon.ru", "b-cdn.net", "melon-soda.org")
+
+# Имя хоста, которое браузер и httpx понимают одинаково. Всё прочее — повод
+# отказать, а не угадывать: `https://evil.com\x.b-cdn.net/` для `urlsplit`
+# оканчивается на `.b-cdn.net`, а браузер читает `\` как `/` и уходит на evil.com.
+_PLAIN_HOSTNAME_RE = re.compile(r"[a-z0-9.-]+")
+# IP вместо имени: CDN так не отвечает, а настройка IP не примет.
+_IP_LIKE_RE = re.compile(r"[0-9.]+")
+
+#: Ссылка ведёт на хост вне списка — возможно, новый CDN сайта.
+REJECT_UNKNOWN = "unknown"
+#: Ссылка разобрана не так, как её поймёт получатель: логин в адресе,
+#: посторонние знаки в имени хоста, битый адрес. Настройкой это не лечится.
+REJECT_SUSPICIOUS = "suspicious"
 
 
 class DownloadCancelled(Exception):
@@ -46,15 +62,33 @@ class DownloadCancelled(Exception):
 
 
 class UnknownHostError(Anime365Error):
-    """Ссылка ведёт на хост вне allowlist.
+    """Ссылка ведёт на хост вне allowlist или пришла в подозрительном виде.
 
     Имя хоста вынесено отдельно: его показывают человеку и пишут в лог, чтобы
     смену CDN на сайте можно было отличить от подмены и починить настройкой.
+    Подсказка про настройку — в самом тексте: его без изменений показывают и
+    очередь, и ответ «скачать себе», который браузер открывает как есть.
     """
 
     def __init__(self, url: str) -> None:
-        self.host = urlsplit(url).hostname or "?"
-        super().__init__(f"Ссылка ведёт на неизвестный хост: {self.host}")
+        self.reason = classify_target(url) or REJECT_UNKNOWN
+        self.host = _hostname(url) or "?"
+        if self.reason == REJECT_SUSPICIOUS:
+            message = (
+                f"Ссылка на {self.host} пришла в подозрительном виде (логин в адресе или "
+                "посторонние знаки в имени хоста) и отклонена"
+            )
+        else:
+            message = (
+                f"Ссылка ведёт на неизвестный хост {self.host}. Если это новый CDN "
+                "Anime365, его можно разрешить переменной A365_EXTRA_CDN_HOSTS на сервере"
+            )
+        super().__init__(message)
+
+    @property
+    def fixable(self) -> bool:
+        """Поможет ли дописать хост в `A365_EXTRA_CDN_HOSTS`."""
+        return self.reason == REJECT_UNKNOWN
 
 
 @dataclass
@@ -67,8 +101,49 @@ class Progress:
 ProgressCallback = Callable[[Progress], None]
 
 
-def is_allowed_target(url: str) -> bool:
-    """Проверяет, что ссылка ведёт на известный хост.
+def _hostname(url: str) -> str | None:
+    try:
+        return urlsplit(url).hostname
+    except ValueError:
+        return None
+
+
+def _in_domain(host: str, domain: str) -> bool:
+    """`melon-soda.org` пускает сам домен и поддомены, но не `evilmelon-soda.org`."""
+    return host == domain or host.endswith("." + domain)
+
+
+@lru_cache(maxsize=8)
+def _allowed(
+    mirrors: tuple[str, ...], extra: tuple[str, ...]
+) -> tuple[frozenset[str], tuple[str, ...]]:
+    """Хосты зеркал и домены CDN, собранные из настроек.
+
+    Кэш по самим значениям настроек: они меняются раз в жизнь контейнера, а
+    проверка идёт на каждом шаге каждого редиректа. Заодно лог о дублях
+    пишется один раз, а не на каждую ссылку.
+    """
+    mirror_hosts = frozenset((_hostname(o) or "").lower() for o in mirrors)
+    builtin = set(BUILTIN_CDN_DOMAINS)
+    domains = list(BUILTIN_CDN_DOMAINS)
+    for entry in extra:
+        domain = entry.strip().strip(".").lower()
+        covered = next((d for d in domains if _in_domain(domain, d)), None)
+        if covered is None:
+            domains.append(domain)
+        elif covered in builtin:
+            # Дубль ничего не ломает, но после обновления, где домен встроили,
+            # строка в конфиге только сбивает с толку.
+            log.info(
+                "A365_EXTRA_CDN_HOSTS: %s уже покрыт встроенным %s — запись можно удалить",
+                domain,
+                covered,
+            )
+    return mirror_hosts, tuple(domains)
+
+
+def classify_target(url: str) -> str | None:
+    """None, если по ссылке можно идти; иначе причина отказа.
 
     Зеркала и CDN известны заранее; всё остальное отвергаем, чтобы подменённый
     ответ не заставил приложение качать с постороннего сервера.
@@ -78,22 +153,29 @@ def is_allowed_target(url: str) -> bool:
     двоеточия стоит «свой» CDN, а соединение httpx открывает с `192.168.1.1`.
     Ссылки с логином в адресе CDN не выдаёт, поэтому они отвергаются целиком.
     """
-    parts = urlsplit(url)
-    host = (parts.hostname or "").lower()
-    if not host or parts.username is not None or parts.password is not None:
-        return False
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        has_userinfo = parts.username is not None or parts.password is not None
+    except ValueError:
+        # Битый адрес вроде `http://[x` — `urlsplit` падает, а не отвечает.
+        return REJECT_SUSPICIOUS
+    if not host:
+        return REJECT_UNKNOWN
+    if has_userinfo or not _PLAIN_HOSTNAME_RE.fullmatch(host) or _IP_LIKE_RE.fullmatch(host):
+        return REJECT_SUSPICIOUS
 
-    known_hosts = {(urlsplit(o).hostname or "").lower() for o in settings.allowed_origins()}
-    if host in known_hosts:
-        return True
-    if any(host.endswith(suffix) for suffix in ALLOWED_CDN_SUFFIXES):
-        return True
-    # Запись `melon-soda.org` пускает сам домен и поддомены, но не `evilmelon-soda.org`.
-    for entry in settings.get_list("extra_cdn_hosts"):
-        extra = entry.lower().lstrip(".")
-        if host == extra or host.endswith("." + extra):
-            return True
-    return False
+    mirror_hosts, domains = _allowed(
+        settings.allowed_origins(), settings.get_list("extra_cdn_hosts")
+    )
+    if host in mirror_hosts or any(_in_domain(host, d) for d in domains):
+        return None
+    return REJECT_UNKNOWN
+
+
+def is_allowed_target(url: str) -> bool:
+    """Можно ли идти по ссылке — см. `classify_target`."""
+    return classify_target(url) is None
 
 
 #: Сколько редиректов проходим, прежде чем сдаться.
@@ -163,10 +245,10 @@ async def open_checked(
         location = response.headers.get("location")
         await response.aclose()
         if not location:
-            raise Anime365Error(f"Редирект без Location при обращении к {current[:80]}")
+            raise Anime365Error(f"Редирект без Location при обращении к {_hostname(current)}")
         current = next_hop(current, location)
 
-    raise Anime365Error(f"Слишком длинная цепочка редиректов от {url[:80]}")
+    raise Anime365Error(f"Слишком длинная цепочка редиректов от {_hostname(url)}")
 
 
 @asynccontextmanager

@@ -22,7 +22,7 @@ from app.core.db import session_scope
 from app.models.catalog import Series
 from app.models.downloads import DownloadTask, TaskStatus
 from app.services.anime365 import Anime365Client, Anime365Error
-from app.services.downloader import Downloader
+from app.services.downloader import Downloader, UnknownHostError
 
 INTERNAL = "http://192.168.1.1/admin"
 ALLOWED = "https://smotret-anime.org/translations/mp4/1"
@@ -66,7 +66,9 @@ class TestDownloadPathChecksRedirects:
         with pytest.raises(Anime365Error) as exc:
             self._download(handler, tmp_path)
 
-        assert "неизвестный хост" in str(exc.value)
+        # Внутренний адрес — не «новый CDN»: отказ есть, подсказки про настройку нет.
+        assert isinstance(exc.value, UnknownHostError)
+        assert exc.value.fixable is False
         assert INTERNAL not in visited, "запрос на внутренний адрес не должен уходить вовсе"
 
     def test_nothing_is_written_to_disk(self, tmp_path) -> None:

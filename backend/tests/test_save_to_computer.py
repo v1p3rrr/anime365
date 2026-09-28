@@ -136,6 +136,9 @@ class TestDirectDownload:
             settings.set_db_override("access_token", None)
 
         assert exc.value.status_code == 502
+        # Не `upstream_unavailable`: сайт ответил, просто ссылку отдавать нельзя.
+        assert exc.value.detail["code"] == "unsafe_link"
+        assert self.TOKEN not in str(exc.value.detail)
 
     def test_foreign_host_in_the_location_is_refused(self, monkeypatch, _embed) -> None:
         """Подменённый ответ не должен уводить человека на чужой сервер."""
@@ -167,6 +170,65 @@ class TestDirectDownload:
         assert detail["code"] == errors.UNKNOWN_HOST
         assert detail["params"] == {"host": "bcdn.new-cdn.example"}
         assert "A365_EXTRA_CDN_HOSTS" in detail["message"]
+
+    @pytest.mark.parametrize(
+        "location",
+        [
+            # Для `urlsplit` хост оканчивается на `.b-cdn.net`, а браузер читает
+            # `\` как `/` и уходит на evil.com: отдать такой редирект — открытый
+            # редирект с нашего домена.
+            "https://evil.com\\x.b-cdn.net/payload",
+            "https://user@moon-q1.b-cdn.net/route/?m=1",
+            "http://192.168.1.1/",
+        ],
+    )
+    def test_suspicious_location_is_not_advertised_as_new_cdn(
+        self, monkeypatch, _embed, location: str
+    ) -> None:
+        """Подсказка «допишите хост в настройку» здесь не поможет — её и нет."""
+        from app.api.stream import download_video
+        from app.core import errors
+        from app.core.errors import ApiError
+
+        self._respond(monkeypatch, 302, {"location": location})
+        with pytest.raises(ApiError) as exc:
+            asyncio.run(download_video(1))
+
+        assert exc.value.detail["code"] == errors.UNSAFE_LINK
+        assert "A365_EXTRA_CDN_HOSTS" not in exc.value.detail["message"]
+
+    def _player_fails_with(self, monkeypatch, error: Exception):
+        from app.api.stream import stream_video
+        from app.core.errors import ApiError
+
+        async def refuse(*args, **kwargs):
+            raise error
+
+        monkeypatch.setattr("app.api.stream.open_checked", refuse)
+        with pytest.raises(ApiError) as exc:
+            asyncio.run(stream_video(1))
+        return exc.value.detail
+
+    def test_player_names_the_unknown_host(self, monkeypatch, _embed) -> None:
+        """Без `host` словарь интерфейса показал бы буквальное `{host}`."""
+        from app.services.downloader import UnknownHostError
+
+        detail = self._player_fails_with(
+            monkeypatch, UnknownHostError("https://bcdn.new-cdn.example/route/?m=1")
+        )
+
+        assert detail["code"] == "unknown_host"
+        assert detail["params"] == {"host": "bcdn.new-cdn.example"}
+
+    def test_player_does_not_call_a_broken_chain_an_unknown_host(self, monkeypatch, _embed) -> None:
+        from app.services.anime365 import Anime365Error
+
+        detail = self._player_fails_with(
+            monkeypatch, Anime365Error("Слишком длинная цепочка редиректов от moon-q1.b-cdn.net")
+        )
+
+        assert detail["code"] == "stream_open_failed"
+        assert "moon-q1.b-cdn.net" in detail["params"]["reason"]
 
     def test_host_from_the_setting_is_let_through(self, monkeypatch, _embed) -> None:
         """Тот же хост, дописанный в `extra_cdn_hosts`, отдаётся без релиза."""

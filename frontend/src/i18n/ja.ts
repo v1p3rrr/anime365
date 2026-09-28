@@ -1096,6 +1096,7 @@ export const ja: Dictionary = {
     setting_unknown: '不明な設定：{key}',
     no_playable_links: 'この翻訳には再生可能なリンクがありません。',
     unknown_host: 'リンクが不明なホスト {host} を指しています。Anime365 の新しい CDN であれば、管理者がサーバーの A365_EXTRA_CDN_HOSTS で許可できます。',
+    unsafe_link: '{host} へのリンクが不審な形式で届いたため拒否しました — 新しい CDN ではなく、設定では解決できません。',
     stream_open_failed: 'ストリームを開けませんでした：{reason}',
     cdn_error: 'CDN がエラー {status} を返しました。',
     subtitles_hardsub: '字幕は動画に焼き込まれており、個別のファイルはありません。',

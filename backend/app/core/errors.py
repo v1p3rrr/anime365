@@ -90,6 +90,7 @@ SETTING_UNKNOWN = "setting_unknown"
 # --- Просмотр ----------------------------------------------------------------
 NO_PLAYABLE_LINKS = "no_playable_links"
 UNKNOWN_HOST = "unknown_host"
+UNSAFE_LINK = "unsafe_link"
 STREAM_OPEN_FAILED = "stream_open_failed"
 CDN_ERROR = "cdn_error"
 SUBTITLES_HARDSUB = "subtitles_hardsub"
@@ -136,3 +137,19 @@ def upstream_unavailable(exc: Exception) -> ApiError:
         return ApiError(403, SUBSCRIPTION_REQUIRED, str(exc), reason=str(exc))
 
     return ApiError(502, UPSTREAM_UNAVAILABLE, f"Anime365 недоступен: {exc}", reason=str(exc))
+
+def rejected_link(exc: Exception) -> ApiError:
+    """Отказ по ссылке, которую не пропустил allowlist хостов (`UnknownHostError`).
+
+    Один помощник на все эндпоинты: раньше плеер, «скачать себе» и субтитры
+    отвечали на один и тот же случай тремя разными кодами, и подсказка про
+    настройку была не везде. Тип не импортируется — `downloader` сам зависит от
+    этого модуля; достаточно атрибутов `host` и `fixable`.
+
+    `unknown_host` — хост вне списка, лечится `A365_EXTRA_CDN_HOSTS`.
+    `unsafe_link` — ссылка разобрана не так, как её поймёт получатель (логин в
+    адресе, посторонние знаки, IP), настройкой это не лечится.
+    """
+    host = getattr(exc, "host", "?")
+    code = UNKNOWN_HOST if getattr(exc, "fixable", False) else UNSAFE_LINK
+    return ApiError(502, code, str(exc), host=host)
