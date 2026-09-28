@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from typing import Annotated, Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 from pathlib import Path
@@ -245,6 +245,8 @@ async def download_video(
 
     if not is_allowed_target(location):
         # Подменённый ответ не должен уводить человека на посторонний хост.
+        # Имя хоста в лог — без него смену CDN на сайте не отличить от подмены.
+        log.error("Скачивание отклонено, посторонний хост: %s", urlsplit(location).netloc)
         raise ApiError(502, errors.UPSTREAM_UNAVAILABLE, "Anime365 увёл ссылку на неизвестный хост")
 
     token = settings.get_str("access_token")

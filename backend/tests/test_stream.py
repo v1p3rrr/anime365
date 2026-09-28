@@ -60,6 +60,8 @@ class TestProxyIsNotOpen:
             "http://127.0.0.1:8080/api/settings",
             "http://192.168.1.1/",
             "https://quantum-phantom-moon.ru.evil.com/x",
+            "https://evilmelon-soda.org/route/?m=1",
+            "https://bcdn.melon-soda.org.evil.com/route/?m=1",
         ],
     )
     def test_foreign_hosts_rejected(self, url: str) -> None:
@@ -70,6 +72,8 @@ class TestProxyIsNotOpen:
         [
             "https://ru-549959.quantum-phantom-moon.ru/s/q1/route/?m=1",
             "https://moon-q1561620.b-cdn.net/route/?m=1",
+            # CDN с 2026-09-27: без него «скачать себе» и очередь отдавали 502.
+            "https://bcdn.melon-soda.org/route/?m=28609221&r=60ec1f26",
             "https://smotret-anime.app/translations/mp4/1",
         ],
     )

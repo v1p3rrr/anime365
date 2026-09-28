@@ -40,7 +40,8 @@ DEFAULT_GLOBS = ("*.md", "claude/*.md", "docs/*.md")
 
 # Кому оглавление не положено. `CLAUDE.md` целиком уезжает в контекст ассистента
 # при каждом запуске — оглавление там было бы лишним весом, а не навигацией.
-NO_TOC = {"CLAUDE.md"}
+# `LICENSE.md` — юридический текст, его не читают кусками и не правят.
+NO_TOC = {"CLAUDE.md", "LICENSE.md"}
 
 OPEN_RE = re.compile(r"^<!--\s*TOC\b(?P<attrs>[^>]*?)-->\s*$")
 CLOSE_RE = re.compile(r"^<!--\s*/TOC\s*-->\s*$")
