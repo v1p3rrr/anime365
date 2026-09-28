@@ -154,6 +154,7 @@ def looks_like_ipv4(host: str) -> bool:
     """Хост, который браузер и `getaddrinfo` поймут как IPv4-адрес, а не имя."""
     return bool(_NUMERIC_LABEL_RE.fullmatch(host.rstrip(".").rsplit(".", 1)[-1]))
 
+
 # Общие хостинги: поддомен в них заводит кто угодно. Запись `cloudfront.net`
 # пустила бы любой чужой дистрибутив, поэтому здесь нужен полный хост из
 # ошибки (`d123.cloudfront.net`). Список не исчерпывающий — он ловит самое

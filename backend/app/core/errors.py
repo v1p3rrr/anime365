@@ -151,8 +151,9 @@ def rejected_link(exc: UnknownHostError) -> ApiError:
     `upstream_unavailable`: errors нужен всем и должен оставаться лёгким.
 
     `unknown_host` — хост вне списка, лечится `A365_EXTRA_CDN_HOSTS`.
-    `unsafe_link` — ссылка разобрана не так, как её поймёт получатель (логин в
-    адресе, посторонние знаки, IP), настройкой это не лечится.
+    `unsafe_link` — ссылка разобрана не так, как её поймёт получатель: логин в
+    адресе, IP или посторонние знаки вместо имени хоста, пустой хост, схема не
+    http(s). Настройкой это не лечится — полный список в `classify_target`.
     """
     code = UNKNOWN_HOST if exc.fixable else UNSAFE_LINK
     return ApiError(502, code, str(exc), host=exc.host)

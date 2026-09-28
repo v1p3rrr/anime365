@@ -91,6 +91,18 @@ class UnknownHostError(Anime365Error):
         """Поможет ли дописать хост в `A365_EXTRA_CDN_HOSTS`."""
         return self.reason == REJECT_UNKNOWN
 
+    def __reduce__(self):
+        # `copy` и `pickle` пересобирают исключение вызовом класса с `args`, а
+        # там только текст — `UnknownHostError(message)` падал бы на недостающем
+        # `reason`. Ссылку для пересборки не храним: в ней бывает токен.
+        return (_rebuild_unknown_host, (self.args,), self.__dict__)
+
+
+def _rebuild_unknown_host(args: tuple) -> UnknownHostError:
+    error = Exception.__new__(UnknownHostError)
+    error.args = args
+    return error
+
 
 @dataclass
 class Progress:

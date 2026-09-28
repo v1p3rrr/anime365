@@ -151,6 +151,25 @@ class TestProxyIsNotOpen:
         assert exc.value.fixable is (reason == "unknown")
         assert ("A365_EXTRA_CDN_HOSTS" in str(exc.value)) is exc.value.fixable
 
+    def test_error_survives_copy_and_pickle(self) -> None:
+        """Исключение пересобирается из `args`, а там только текст — без токена."""
+        import copy
+        import pickle
+
+        from app.services.downloader import UnknownHostError
+
+        error = UnknownHostError("https://bcdn.new-cdn.example/x?access_token=SECRET", "unknown")
+        blob = pickle.dumps(error)
+
+        assert b"SECRET" not in blob
+        for clone in (copy.copy(error), pickle.loads(blob)):
+            assert str(clone) == str(error)
+            assert (clone.host, clone.reason, clone.fixable) == (
+                "bcdn.new-cdn.example",
+                "unknown",
+                True,
+            )
+
     def test_ip_mirror_still_works(self, monkeypatch) -> None:
         """Список зеркал допускает `https://10.0.0.5` — такое зеркало работало до D-214.
 
@@ -324,6 +343,94 @@ class TestExtraCdnHosts:
 
         # Полное имя в общем хостинге — можно: оно одно, а не целая зона.
         assert value == ("new-cdn.example", ".other.example", "d123.cloudfront.net")
+
+
+class TestSubtitlesNameTheHost:
+    """Субтитры отказывают по хосту так же, как плеер и «скачать себе».
+
+    До D-214 первая ссылка вне списка давала безымянный 404
+    `subtitles_unavailable`, а редирект на чужой хост — 502 без имени хоста.
+    """
+
+    @pytest.fixture
+    def subtitles_at(self, monkeypatch):
+        from app.services.anime365 import EmbedInfo
+
+        def _set(url: str | None) -> None:
+            async def fake_get_embed(translation_id: int) -> dict:
+                return {"has_subtitles": True}
+
+            class FakeClient:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *exc):
+                    return False
+
+                async def embed(self, translation_id: int) -> EmbedInfo:
+                    return EmbedInfo(
+                        translation_id=translation_id,
+                        download=[],
+                        stream=[],
+                        subtitles_url=url,
+                        embed_url=None,
+                    )
+
+            monkeypatch.setattr("app.api.stream.get_embed", fake_get_embed)
+            monkeypatch.setattr("app.api.stream.Anime365Client", FakeClient)
+
+        return _set
+
+    @staticmethod
+    def _refusal() -> dict:
+        import asyncio
+
+        from app.api.stream import stream_subtitles
+        from app.core.errors import ApiError
+
+        with pytest.raises(ApiError) as exc:
+            asyncio.run(stream_subtitles(1))
+        return exc.value.detail
+
+    def test_foreign_first_link_is_named(self, subtitles_at) -> None:
+        subtitles_at("https://subs.new-cdn.example/1.ass")
+
+        detail = self._refusal()
+
+        assert detail["code"] == "unknown_host"
+        assert detail["params"] == {"host": "subs.new-cdn.example"}
+
+    def test_redirect_to_a_foreign_host_is_named(self, monkeypatch, subtitles_at) -> None:
+        import httpx
+
+        real_client = httpx.AsyncClient
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(302, headers={"location": "https://bcdn.new-cdn.example/1.ass"})
+
+        subtitles_at("https://smotret-anime.app/translations/ass/1")
+        monkeypatch.setattr(
+            "app.api.stream.httpx.AsyncClient",
+            lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw),
+        )
+
+        detail = self._refusal()
+
+        assert detail["code"] == "unknown_host"
+        assert detail["params"] == {"host": "bcdn.new-cdn.example"}
+
+    def test_suspicious_link_gets_no_setting_hint(self, subtitles_at) -> None:
+        subtitles_at("http://0x7f.1/1.ass")
+
+        detail = self._refusal()
+
+        assert detail["code"] == "unsafe_link"
+        assert "A365_EXTRA_CDN_HOSTS" not in detail["message"]
+
+    def test_missing_link_is_still_a_404(self, subtitles_at) -> None:
+        subtitles_at(None)
+
+        assert self._refusal()["code"] == "subtitles_unavailable"
 
 
 class TestStreamEndpointIsProtected:
