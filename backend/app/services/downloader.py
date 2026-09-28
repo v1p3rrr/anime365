@@ -31,7 +31,12 @@ CHUNK_SIZE = 1 << 20  # 1 МБ
 
 # Хосты CDN, на которые допустимо уходить по редиректу. Проверка нужна,
 # чтобы подменённый ответ не увёл загрузку на посторонний сервер.
-ALLOWED_CDN_SUFFIXES = (".quantum-phantom-moon.ru", ".b-cdn.net")
+#
+# ⚠️ Сайт меняет CDN без предупреждения, и тогда отказывает всё разом: очередь,
+# плеер и «скачать себе». С 2026-09-27 вместо `*.b-cdn.net` приходит
+# `bcdn.melon-soda.org/route/?m=…&r=…` — тот же одношаговый маршрут с подписью,
+# сразу `200 video/mp4`. Отказ виден в логе строкой «неизвестный хост» с именем.
+ALLOWED_CDN_SUFFIXES = (".quantum-phantom-moon.ru", ".b-cdn.net", ".melon-soda.org")
 
 
 class DownloadCancelled(Exception):
