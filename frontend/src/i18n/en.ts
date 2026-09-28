@@ -613,6 +613,7 @@ export const en: Dictionary = {
     track: 'Track',
     subtitles: 'Subtitles',
     noSubtitles: 'no subtitles',
+    playbackFailed: 'The video does not play, yet the server delivers the stream without an error. Most likely the browser could not handle the file — try another quality or track.',
   },
 
   downloadButton: {

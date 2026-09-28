@@ -74,35 +74,48 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    let detail = response.statusText
-    let code: string | undefined
-    let params: Record<string, string | number> | undefined
-    try {
-      const body = await response.json()
-      // detail бывает строкой (валидация FastAPI и сторонние ответы) или
-      // объектом { code, message, params } — так отвечает наш ApiError.
-      // Сообщение в нём русское и служит запасным вариантом: показываем его,
-      // когда код клиенту незнаком, чтобы новый код на сервере не оставлял
-      // пользователя с пустым местом вместо объяснения.
-      if (body.detail && typeof body.detail === 'object' && !Array.isArray(body.detail)) {
-        detail = body.detail.message ?? detail
-        code = body.detail.code
-        params = body.detail.params
-      } else if (typeof body.detail === 'string') {
-        detail = body.detail
-      }
-    } catch {
-      // Тело может быть не JSON — тогда довольствуемся статусом.
-    }
-    if (response.status === 401) {
-      // Сессия истекла посреди работы. Без этого сигнала пользователь увидел бы
-      // «Требуется вход» в каждой карточке вместо формы пароля.
-      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
-    }
-    throw new ApiError(response.status, detail, code, params)
+    throw await errorFromResponse(response)
   }
 
   return response.json() as Promise<T>
+}
+
+/**
+ * Отказ сервера, разобранный в `ApiError`.
+ *
+ * Единственный разбор ответа с ошибкой на всё приложение. Нужен не только
+ * `request`: плеер отдаёт адрес потока `<video>` напрямую, и тот тело отказа
+ * прочесть не может — чтобы объяснить, почему видео не играет, плеер
+ * переспрашивает тот же адрес сам и разбирает ответ здесь. Своей копией
+ * разбора не обзаводиться: одна такая уже разошлась с оригиналом (см. ниже).
+ */
+export async function errorFromResponse(response: Response): Promise<ApiError> {
+  let detail = response.statusText
+  let code: string | undefined
+  let params: Record<string, string | number> | undefined
+  try {
+    const body = await response.json()
+    // detail бывает строкой (валидация FastAPI и сторонние ответы) или
+    // объектом { code, message, params } — так отвечает наш ApiError.
+    // Сообщение в нём русское и служит запасным вариантом: показываем его,
+    // когда код клиенту незнаком, чтобы новый код на сервере не оставлял
+    // пользователя с пустым местом вместо объяснения.
+    if (body.detail && typeof body.detail === 'object' && !Array.isArray(body.detail)) {
+      detail = body.detail.message ?? detail
+      code = body.detail.code
+      params = body.detail.params
+    } else if (typeof body.detail === 'string') {
+      detail = body.detail
+    }
+  } catch {
+    // Тело может быть не JSON — тогда довольствуемся статусом.
+  }
+  if (response.status === 401) {
+    // Сессия истекла посреди работы. Без этого сигнала пользователь увидел бы
+    // «Требуется вход» в каждой карточке вместо формы пароля.
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
+  }
+  return new ApiError(response.status, detail, code, params)
 }
 
 // Текстового варианта запроса здесь нет намеренно. Он был — «для субтитров»,

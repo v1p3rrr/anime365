@@ -612,6 +612,7 @@ export const ja: Dictionary = {
     track: 'トラック',
     subtitles: '字幕',
     noSubtitles: '字幕なし',
+    playbackFailed: '動画を再生できませんが、サーバーはエラーなくストリームを返しています。ブラウザがファイルを扱えなかった可能性が高いので、別の画質またはトラックをお試しください。',
   },
 
   downloadButton: {
