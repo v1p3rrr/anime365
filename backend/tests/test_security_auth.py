@@ -218,6 +218,16 @@ class TestServerOnlySettings:
         assert response.status_code == 400
         assert settings.get_list("mirrors") == get("mirrors").default
 
+    def test_cdn_list_cannot_be_extended_from_ui(self, client) -> None:
+        # Тот же allowlist, только для редиректов на CDN: дописанный из браузера
+        # хост пустил бы загрузку и плеер куда угодно.
+        response = client.put(
+            "/api/settings",
+            json={"updates": [{"key": "extra_cdn_hosts", "value": "evil.example.com"}]},
+        )
+        assert response.status_code == 400
+        assert settings.get_list("extra_cdn_hosts") == ()
+
     def test_jellyfin_urls_marked_server_only(self) -> None:
         # Оба адреса — с сервера, но по разным причинам.
         assert get("jellyfin_url").server_only is True

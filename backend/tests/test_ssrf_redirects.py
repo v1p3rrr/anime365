@@ -21,6 +21,7 @@ import pytest
 from app.services.anime365 import Anime365Error
 from app.services.downloader import (
     MAX_REDIRECT_HOPS,
+    UnknownHostError,
     is_allowed_target,
     next_hop,
     open_checked,
@@ -57,7 +58,9 @@ class TestRedirectIsChecked:
         with pytest.raises(Anime365Error) as exc:
             asyncio.run(_run(_redirect_to(INTERNAL)))
 
-        assert "неизвестный хост" in str(exc.value)
+        # Внутренний адрес — не «новый CDN»: отказ есть, подсказки про настройку нет.
+        assert isinstance(exc.value, UnknownHostError)
+        assert exc.value.fixable is False
 
     def test_redirect_to_a_stranger_is_refused(self) -> None:
         with pytest.raises(Anime365Error):

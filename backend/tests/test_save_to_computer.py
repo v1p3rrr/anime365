@@ -136,6 +136,9 @@ class TestDirectDownload:
             settings.set_db_override("access_token", None)
 
         assert exc.value.status_code == 502
+        # Не `upstream_unavailable`: сайт ответил, просто ссылку отдавать нельзя.
+        assert exc.value.detail["code"] == "unsafe_link"
+        assert self.TOKEN not in str(exc.value.detail)
 
     def test_foreign_host_in_the_location_is_refused(self, monkeypatch, _embed) -> None:
         """Подменённый ответ не должен уводить человека на чужой сервер."""
@@ -147,6 +150,136 @@ class TestDirectDownload:
             asyncio.run(download_video(1))
 
         assert exc.value.status_code == 502
+
+    def test_foreign_host_is_named_in_the_error(self, monkeypatch, _embed) -> None:
+        """Смену CDN на сайте чинят настройкой, но для этого нужно знать хост.
+
+        Раньше отказ приходил как `upstream_unavailable` без имени — и интерфейс
+        советовал сменить зеркало, что тут не помогает. Ссылка «скачать себе»
+        открывается браузером напрямую, поэтому подсказка нужна в `message`.
+        """
+        from app.api.stream import download_video
+        from app.core import errors
+        from app.core.errors import ApiError
+
+        self._respond(monkeypatch, 302, {"location": "https://bcdn.new-cdn.example/route/?m=1"})
+        with pytest.raises(ApiError) as exc:
+            asyncio.run(download_video(1))
+
+        detail = exc.value.detail
+        assert detail["code"] == errors.UNKNOWN_HOST
+        assert detail["params"] == {"host": "bcdn.new-cdn.example"}
+        assert "A365_EXTRA_CDN_HOSTS" in detail["message"]
+
+    def test_foreign_first_hop_is_named_too(self, monkeypatch, _embed) -> None:
+        """Ссылка из embed вне списка — тот же `unknown_host` с хостом, а не безымянный 404.
+
+        Иначе переезд, который начинается с первой ссылки, а не с редиректа,
+        снова выглядел бы как «ссылка недоступна» без единой зацепки.
+        """
+        from app.api.stream import download_video
+        from app.core import errors
+        from app.core.config import settings
+        from app.core.errors import ApiError
+
+        visited: list[str] = []
+
+        class FakeHttp:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get(self, url, **kwargs):
+                visited.append(url)
+                return httpx.Response(500, request=httpx.Request("GET", url))
+
+        monkeypatch.setitem(settings._env, "mirrors", ("https://anime365.ru",))
+        monkeypatch.setattr("app.api.stream.httpx.AsyncClient", lambda **kw: FakeHttp())
+        with pytest.raises(ApiError) as exc:
+            asyncio.run(download_video(1))
+
+        detail = exc.value.detail
+        assert detail["code"] == errors.UNKNOWN_HOST
+        assert detail["params"] == {"host": "smotret-anime.app"}
+        assert self.TOKEN not in str(detail)
+        assert visited == [], "по ссылке с токеном не должно уйти ни одного запроса"
+
+    @pytest.mark.parametrize(
+        "location",
+        [
+            # Для `urlsplit` хост оканчивается на `.b-cdn.net`, а браузер читает
+            # `\` как `/` и уходит на evil.com: отдать такой редирект — открытый
+            # редирект с нашего домена.
+            "https://evil.com\\x.b-cdn.net/payload",
+            "https://user@moon-q1.b-cdn.net/route/?m=1",
+            "http://192.168.1.1/",
+            # IPv4 в записи, которую понимают браузер и glibc: это 127.0.0.1.
+            "http://0x7f.1/",
+            # Хост «свой», но браузер получил бы редирект вовсе не на файл.
+            "javascript://moon-q1.b-cdn.net/%0aalert(1)",
+        ],
+    )
+    def test_suspicious_location_is_not_advertised_as_new_cdn(
+        self, monkeypatch, _embed, location: str
+    ) -> None:
+        """Подсказка «допишите хост в настройку» здесь не поможет — её и нет."""
+        from app.api.stream import download_video
+        from app.core import errors
+        from app.core.errors import ApiError
+
+        self._respond(monkeypatch, 302, {"location": location})
+        with pytest.raises(ApiError) as exc:
+            asyncio.run(download_video(1))
+
+        assert exc.value.detail["code"] == errors.UNSAFE_LINK
+        assert "A365_EXTRA_CDN_HOSTS" not in exc.value.detail["message"]
+
+    def _player_fails_with(self, monkeypatch, error: Exception):
+        from app.api.stream import stream_video
+        from app.core.errors import ApiError
+
+        async def refuse(*args, **kwargs):
+            raise error
+
+        monkeypatch.setattr("app.api.stream.open_checked", refuse)
+        with pytest.raises(ApiError) as exc:
+            asyncio.run(stream_video(1))
+        return exc.value.detail
+
+    def test_player_names_the_unknown_host(self, monkeypatch, _embed) -> None:
+        """Без `host` словарь интерфейса показал бы буквальное `{host}`."""
+        from app.services.downloader import UnknownHostError
+
+        detail = self._player_fails_with(
+            monkeypatch, UnknownHostError("https://bcdn.new-cdn.example/route/?m=1", "unknown")
+        )
+
+        assert detail["code"] == "unknown_host"
+        assert detail["params"] == {"host": "bcdn.new-cdn.example"}
+
+    def test_player_does_not_call_a_broken_chain_an_unknown_host(self, monkeypatch, _embed) -> None:
+        from app.services.anime365 import Anime365Error
+
+        detail = self._player_fails_with(
+            monkeypatch, Anime365Error("Слишком длинная цепочка редиректов от moon-q1.b-cdn.net")
+        )
+
+        assert detail["code"] == "stream_open_failed"
+        assert "moon-q1.b-cdn.net" in detail["params"]["reason"]
+
+    def test_host_from_the_setting_is_let_through(self, monkeypatch, _embed) -> None:
+        """Тот же хост, дописанный в `extra_cdn_hosts`, отдаётся без релиза."""
+        from app.api.stream import download_video
+        from app.core.config import settings
+
+        location = "https://bcdn.new-cdn.example/route/?m=1"
+        monkeypatch.setitem(settings._env, "extra_cdn_hosts", ("new-cdn.example",))
+        self._respond(monkeypatch, 302, {"location": location})
+        response = asyncio.run(download_video(1))
+
+        assert response.headers["location"] == location
 
     def test_answer_without_redirect_is_refused(self, monkeypatch, _embed) -> None:
         """Без редиректа отдавать нечего: сама ссылка несёт токен.

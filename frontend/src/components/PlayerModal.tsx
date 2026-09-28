@@ -3,8 +3,10 @@ import { IconAlertTriangle } from '@tabler/icons-react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 
+import { errorFromResponse } from '../api/client'
 import { LANG_COLORS, titleApi, type EpisodeTranslation } from '../api/title'
 import { useT } from '../i18n'
+import { useApiError } from '../i18n/apiError'
 import { useKindLabel } from '../i18n/kind'
 // Подписи вариантов в Select — строки, флаг-компонент туда не вставить.
 import { langCode } from '../i18n/flags'
@@ -56,12 +58,40 @@ interface Props {
 const LIBASS_WORKER = '/libass/subtitles-octopus-worker.js'
 const LIBASS_LEGACY_WORKER = '/libass/subtitles-octopus-worker-legacy.js'
 
+/**
+ * Почему поток не играет — по ответу сервера, а не по `<video>`.
+ *
+ * Адрес потока плеер отдаёт `<video>` напрямую, и отказ сервера (502 с
+ * `unknown_host`, `unsafe_link`, `subscription_required`…) тот прочесть не
+ * может: человек видел бесконечное «Connecting» — так было при переезде
+ * Anime365 на новый CDN 2026-09-27. Поэтому при ошибке переспрашиваем тот же
+ * адрес сами, одним байтом, и разбираем тело отказа.
+ *
+ * `null` — сервер поток отдаёт (или не ответил вовсе): дело в самом
+ * воспроизведении, объяснить его точнее нечем.
+ */
+async function explainStreamFailure(url: string): Promise<Error | null> {
+  try {
+    const response = await fetch(url, {
+      headers: { Range: 'bytes=0-0' },
+      credentials: 'same-origin',
+    })
+    if (!response.ok) return await errorFromResponse(response)
+    await response.body?.cancel()
+  } catch {
+    // Сеть: общий текст ниже ничем не хуже.
+  }
+  return null
+}
+
 export function PlayerModal({ opened, onClose, translations, episodeLabel }: Props) {
   const { t } = useT()
+  const apiError = useApiError()
   const kindLabel = useKindLabel()
   const containerRef = useRef<HTMLDivElement>(null)
   const artRef = useRef<{ destroy: (removeHtml?: boolean) => void } | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  // Ошибка, а не готовый текст: переводится при показе, по коду сервера.
+  const [error, setError] = useState<Error | null>(null)
 
   // Перевод с субтитрами — это полноценное видео с японской дорожкой, а не
   // отдельный файл субтитров. Исключать его из источников видео было ошибкой:
@@ -203,6 +233,13 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
 
         artRef.current = art as unknown as { destroy: (removeHtml?: boolean) => void }
 
+        // `art.url`, а не исходный адрес: после смены качества поток другой.
+        art.on('error', () => {
+          void explainStreamFailure(art.url).then((reason) => {
+            if (!cancelled) setError(reason ?? new Error(t('player.playbackFailed')))
+          })
+        })
+
         // Кнопка показа и скрытия субтитров.
         //
         // ⚠️ Переключаем состояние САМОГО Artplayer (`art.subtitle.show`), а не
@@ -228,7 +265,7 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
           })
         }
       } catch (err) {
-        if (!cancelled) setError((err as Error).message)
+        if (!cancelled) setError(err as Error)
       }
     }
 
@@ -299,7 +336,7 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
               }}
             />
 
-            {error && <Alert color="red">{error}</Alert>}
+            {error && <Alert color="red">{apiError(error)}</Alert>}
 
             {/* На 375px два селектора рядом сжимаются до «RU · StudioBand · 10»,
                 и выбранное не прочитать. Раскладываем их в столбик. */}
