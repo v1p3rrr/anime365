@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.core.config import settings
+from app.core.settings_registry import looks_like_ipv4
 from app.services.anime365 import Anime365Client, Anime365Error, SubscriptionRequired
 
 log = logging.getLogger(__name__)
@@ -43,17 +44,17 @@ CHUNK_SIZE = 1 << 20  # 1 МБ
 # обоих проходят через один и тот же `_in_domain` (D-214).
 BUILTIN_CDN_DOMAINS = ("quantum-phantom-moon.ru", "b-cdn.net", "melon-soda.org")
 
-# Имя хоста, которое браузер и httpx понимают одинаково. Всё прочее — повод
-# отказать, а не угадывать: `https://evil.com\x.b-cdn.net/` для `urlsplit`
-# оканчивается на `.b-cdn.net`, а браузер читает `\` как `/` и уходит на evil.com.
-_PLAIN_HOSTNAME_RE = re.compile(r"[a-z0-9.-]+")
-# IP вместо имени: CDN так не отвечает, а настройка IP не примет.
-_IP_LIKE_RE = re.compile(r"[0-9.]+")
+# Имя хоста, которое браузер и httpx понимают одинаково: метки из `[a-z0-9-]`
+# через одну точку, без точки в начале и в конце. Всё прочее — повод отказать,
+# а не угадывать: `https://evil.com\x.b-cdn.net/` для `urlsplit` оканчивается на
+# `.b-cdn.net`, а браузер читает `\` как `/` и уходит на evil.com.
+_PLAIN_HOSTNAME_RE = re.compile(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*")
 
 #: Ссылка ведёт на хост вне списка — возможно, новый CDN сайта.
 REJECT_UNKNOWN = "unknown"
-#: Ссылка разобрана не так, как её поймёт получатель: логин в адресе,
-#: посторонние знаки в имени хоста, битый адрес. Настройкой это не лечится.
+#: Ссылка разобрана не так, как её поймёт получатель: логин в адресе, IP или
+#: посторонние знаки вместо имени хоста, схема не http(s), битый адрес.
+#: Настройкой это не лечится.
 REJECT_SUSPICIOUS = "suspicious"
 
 
@@ -70,13 +71,13 @@ class UnknownHostError(Anime365Error):
     очередь, и ответ «скачать себе», который браузер открывает как есть.
     """
 
-    def __init__(self, url: str) -> None:
-        self.reason = classify_target(url) or REJECT_UNKNOWN
-        self.host = _hostname(url) or "?"
+    def __init__(self, url: str, reason: str) -> None:
+        self.reason = reason
+        self.host = hostname_of(url) or "?"
         if self.reason == REJECT_SUSPICIOUS:
             message = (
-                f"Ссылка на {self.host} пришла в подозрительном виде (логин в адресе или "
-                "посторонние знаки в имени хоста) и отклонена"
+                f"Ссылка на {self.host} пришла в подозрительном виде (логин в адресе, "
+                "IP или посторонние знаки вместо имени хоста, схема не http) и отклонена"
             )
         else:
             message = (
@@ -101,7 +102,8 @@ class Progress:
 ProgressCallback = Callable[[Progress], None]
 
 
-def _hostname(url: str) -> str | None:
+def hostname_of(url: str) -> str | None:
+    """Имя хоста для текста ошибки и лога; на битом адресе — None, а не исключение."""
     try:
         return urlsplit(url).hostname
     except ValueError:
@@ -123,7 +125,7 @@ def _allowed(
     проверка идёт на каждом шаге каждого редиректа. Заодно лог о дублях
     пишется один раз, а не на каждую ссылку.
     """
-    mirror_hosts = frozenset((_hostname(o) or "").lower() for o in mirrors)
+    mirror_hosts = frozenset((hostname_of(o) or "").lower() for o in mirrors)
     builtin = set(BUILTIN_CDN_DOMAINS)
     domains = list(BUILTIN_CDN_DOMAINS)
     for entry in extra:
@@ -152,6 +154,9 @@ def classify_target(url: str) -> str | None:
     и логин с паролем: у `http://x.b-cdn.net:80@192.168.1.1/` до первого
     двоеточия стоит «свой» CDN, а соединение httpx открывает с `192.168.1.1`.
     Ссылки с логином в адресе CDN не выдаёт, поэтому они отвергаются целиком.
+
+    Зеркало сверяется раньше проверки на IP: список зеркал допускает
+    `https://10.0.0.5`, и такое зеркало обязано работать, как до D-214.
     """
     try:
         parts = urlsplit(url)
@@ -160,15 +165,22 @@ def classify_target(url: str) -> str | None:
     except ValueError:
         # Битый адрес вроде `http://[x` — `urlsplit` падает, а не отвечает.
         return REJECT_SUSPICIOUS
-    if not host:
-        return REJECT_UNKNOWN
-    if has_userinfo or not _PLAIN_HOSTNAME_RE.fullmatch(host) or _IP_LIKE_RE.fullmatch(host):
+    # `javascript://x.b-cdn.net/%0a…` — хост «свой», но «скачать себе» отдал бы
+    # браузеру редирект вовсе не на файл.
+    if parts.scheme not in ("http", "https") or not host or has_userinfo:
+        return REJECT_SUSPICIOUS
+    if not _PLAIN_HOSTNAME_RE.fullmatch(host):
         return REJECT_SUSPICIOUS
 
     mirror_hosts, domains = _allowed(
         settings.allowed_origins(), settings.get_list("extra_cdn_hosts")
     )
-    if host in mirror_hosts or any(_in_domain(host, d) for d in domains):
+    if host in mirror_hosts:
+        return None
+    if looks_like_ipv4(host):
+        # CDN так не отвечает, а настройка IP не примет — в том числе `0x7f.1`.
+        return REJECT_SUSPICIOUS
+    if any(_in_domain(host, d) for d in domains):
         return None
     return REJECT_UNKNOWN
 
@@ -176,6 +188,13 @@ def classify_target(url: str) -> str | None:
 def is_allowed_target(url: str) -> bool:
     """Можно ли идти по ссылке — см. `classify_target`."""
     return classify_target(url) is None
+
+
+def ensure_allowed_target(url: str) -> None:
+    """То же, что `is_allowed_target`, но отказ — исключением с причиной и хостом."""
+    reason = classify_target(url)
+    if reason is not None:
+        raise UnknownHostError(url, reason)
 
 
 #: Сколько редиректов проходим, прежде чем сдаться.
@@ -225,8 +244,7 @@ async def open_checked(
     """
     current = url
     for _ in range(MAX_REDIRECT_HOPS):
-        if not is_allowed_target(current):
-            raise UnknownHostError(current)
+        ensure_allowed_target(current)
 
         build: dict[str, object] = {"headers": headers}
         if timeout is not None:
@@ -245,10 +263,10 @@ async def open_checked(
         location = response.headers.get("location")
         await response.aclose()
         if not location:
-            raise Anime365Error(f"Редирект без Location при обращении к {_hostname(current)}")
+            raise Anime365Error(f"Редирект без Location при обращении к {hostname_of(current)}")
         current = next_hop(current, location)
 
-    raise Anime365Error(f"Слишком длинная цепочка редиректов от {_hostname(url)}")
+    raise Anime365Error(f"Слишком длинная цепочка редиректов от {hostname_of(url)}")
 
 
 @asynccontextmanager
@@ -405,8 +423,7 @@ class Downloader:
         """Одна попытка загрузки по конкретной ссылке."""
         assert self._client is not None, "используйте загрузчик через async with"
 
-        if not is_allowed_target(url):
-            raise UnknownHostError(url)
+        ensure_allowed_target(url)
 
         part = destination.with_suffix(destination.suffix + ".part")
         part.parent.mkdir(parents=True, exist_ok=True)

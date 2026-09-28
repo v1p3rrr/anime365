@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from typing import Annotated, Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 import httpx
 from pathlib import Path
@@ -33,7 +33,8 @@ from app.core.permissions import Permission, require, require_save_or_watch
 from app.services.anime365 import Anime365Client, Anime365Error, SubscriptionRequired
 from app.services.downloader import (
     UnknownHostError,
-    is_allowed_target,
+    ensure_allowed_target,
+    hostname_of,
     next_hop,
     open_checked,
     pick_download_url,
@@ -102,6 +103,20 @@ def _pick_stream_url(embed_stream: list[dict[str, Any]], height: int | None) -> 
 
     suitable = [h for h in by_height if h <= height]
     return by_height[max(suitable) if suitable else min(by_height)]
+
+
+def _refuse_foreign_link(url: str, what: str) -> None:
+    """Отказ с именем хоста, если по ссылке идти нельзя.
+
+    Для эндпоинтов, которые ходят по ссылке сами, в обход `open_checked`:
+    отказ обязан выглядеть так же, как у плеера, — `unknown_host` или
+    `unsafe_link` с хостом, а не безымянный 404.
+    """
+    try:
+        ensure_allowed_target(url)
+    except UnknownHostError as exc:
+        log.error("%s отклонено: %s", what, exc)
+        raise errors.rejected_link(exc) from exc
 
 
 @router.get(
@@ -231,8 +246,9 @@ async def download_video(
         raise errors.upstream_unavailable(exc) from exc
 
     url, _resolved = pick_download_url({"download": info.download}, height or 1080)
-    if not url or not is_allowed_target(url):
+    if not url:
         raise ApiError(404, errors.FILE_NOT_FOUND, "Ссылка на скачивание недоступна")
+    _refuse_foreign_link(url, "Скачивание")
 
     async with httpx.AsyncClient(follow_redirects=False, timeout=30.0) as http:
         try:
@@ -257,12 +273,9 @@ async def download_video(
     # отвергла бы законный редирект. Склеиваем с адресом, по которому пришли.
     location = next_hop(url, location)
 
-    if not is_allowed_target(location):
-        # Подменённый ответ не должен уводить человека на посторонний хост.
-        # Имя хоста в лог — без него смену CDN на сайте не отличить от подмены.
-        rejected = UnknownHostError(location)
-        log.error("Скачивание отклонено: %s", rejected)
-        raise errors.rejected_link(rejected)
+    # Подменённый ответ не должен уводить человека на посторонний хост.
+    # Имя хоста в лог — без него смену CDN на сайте не отличить от подмены.
+    _refuse_foreign_link(location, "Скачивание")
 
     token = settings.get_str("access_token")
     if token and token in location:
@@ -273,7 +286,7 @@ async def download_video(
             502,
             errors.UNSAFE_LINK,
             "Ссылка на файл пришла в небезопасном виде",
-            host=urlsplit(location).hostname or "?",
+            host=hostname_of(location) or "?",
         )
 
     return RedirectResponse(location, status_code=302)
@@ -320,12 +333,13 @@ async def stream_subtitles(
         info = await client.embed(translation_id)
 
     url = info.subtitles_url
-    if not url or not is_allowed_target(url):
+    if not url:
         raise ApiError(404, errors.SUBTITLES_UNAVAILABLE, "Ссылка на субтитры недоступна")
 
     # Тот же порядок, что у видео: хост сверяется на каждом шаге редиректа,
-    # поэтому клиент идёт с `follow_redirects=False`, а цепочку проходит
-    # `open_checked`. Субтитры весят десятки килобайт, читаем их целиком.
+    # начиная с первого, поэтому клиент идёт с `follow_redirects=False`, а
+    # цепочку проходит `open_checked`. Отказ по хосту — `rejected_link` ниже.
+    # Субтитры весят десятки килобайт, читаем их целиком.
     async with httpx.AsyncClient(follow_redirects=False, timeout=30.0) as client_http:
         try:
             response = await open_checked(

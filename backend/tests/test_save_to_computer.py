@@ -171,6 +171,41 @@ class TestDirectDownload:
         assert detail["params"] == {"host": "bcdn.new-cdn.example"}
         assert "A365_EXTRA_CDN_HOSTS" in detail["message"]
 
+    def test_foreign_first_hop_is_named_too(self, monkeypatch, _embed) -> None:
+        """Ссылка из embed вне списка — тот же `unknown_host` с хостом, а не безымянный 404.
+
+        Иначе переезд, который начинается с первой ссылки, а не с редиректа,
+        снова выглядел бы как «ссылка недоступна» без единой зацепки.
+        """
+        from app.api.stream import download_video
+        from app.core import errors
+        from app.core.config import settings
+        from app.core.errors import ApiError
+
+        visited: list[str] = []
+
+        class FakeHttp:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get(self, url, **kwargs):
+                visited.append(url)
+                return httpx.Response(500, request=httpx.Request("GET", url))
+
+        monkeypatch.setitem(settings._env, "mirrors", ("https://anime365.ru",))
+        monkeypatch.setattr("app.api.stream.httpx.AsyncClient", lambda **kw: FakeHttp())
+        with pytest.raises(ApiError) as exc:
+            asyncio.run(download_video(1))
+
+        detail = exc.value.detail
+        assert detail["code"] == errors.UNKNOWN_HOST
+        assert detail["params"] == {"host": "smotret-anime.app"}
+        assert self.TOKEN not in str(detail)
+        assert visited == [], "по ссылке с токеном не должно уйти ни одного запроса"
+
     @pytest.mark.parametrize(
         "location",
         [
@@ -180,6 +215,10 @@ class TestDirectDownload:
             "https://evil.com\\x.b-cdn.net/payload",
             "https://user@moon-q1.b-cdn.net/route/?m=1",
             "http://192.168.1.1/",
+            # IPv4 в записи, которую понимают браузер и glibc: это 127.0.0.1.
+            "http://0x7f.1/",
+            # Хост «свой», но браузер получил бы редирект вовсе не на файл.
+            "javascript://moon-q1.b-cdn.net/%0aalert(1)",
         ],
     )
     def test_suspicious_location_is_not_advertised_as_new_cdn(
@@ -214,7 +253,7 @@ class TestDirectDownload:
         from app.services.downloader import UnknownHostError
 
         detail = self._player_fails_with(
-            monkeypatch, UnknownHostError("https://bcdn.new-cdn.example/route/?m=1")
+            monkeypatch, UnknownHostError("https://bcdn.new-cdn.example/route/?m=1", "unknown")
         )
 
         assert detail["code"] == "unknown_host"

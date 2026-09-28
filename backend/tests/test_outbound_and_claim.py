@@ -106,15 +106,47 @@ class TestSizeProbeChecksHost:
     на своих доменах, — поэтому проверять хост надо в самой пробе.
     """
 
-    def _probe(self, handler, url: str):
+    def _sizes(self, handler, *urls: str) -> dict[str, int]:
+        """Через `download_sizes`: отказ по хосту `_probe_size` пробрасывает ей."""
+        from types import SimpleNamespace
+
+        info = SimpleNamespace(
+            download=[{"height": 1080 - 360 * i, "url": url} for i, url in enumerate(urls)]
+        )
+
         async def run():
             client = _transport(handler)
             try:
-                return await Anime365Client(client)._probe_size(url)
+                return await Anime365Client(client).download_sizes(info)
             finally:
                 await client.aclose()
 
         return asyncio.run(run())
+
+    def _probe(self, handler, url: str):
+        return self._sizes(handler, url).get("1080")
+
+    def test_unknown_cdn_is_probed_once_for_all_heights(self, caplog) -> None:
+        """После переезда сайта на новый CDN отказывают все ступени разом.
+
+        Проба каждой — лишний запрос к зеркалу и лишняя строка в логе на каждое
+        открытие выпадашки качества: пустой вес не кэшируется.
+        """
+        import logging
+
+        visited: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            visited.append(request.method)
+            return httpx.Response(302, headers={"location": "https://bcdn.new-cdn.example/x"})
+
+        with caplog.at_level(logging.WARNING, logger="app.services.anime365"):
+            assert self._sizes(handler, ALLOWED, ALLOWED, ALLOWED) == {}
+
+        assert visited == ["HEAD"]
+        warnings = [r for r in caplog.records if "Вес файла не выяснен" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "bcdn.new-cdn.example" in warnings[0].getMessage()
 
     def test_a_foreign_host_is_not_probed(self) -> None:
         visited: list[str] = []

@@ -104,6 +104,19 @@ class TestProxyIsNotOpen:
             # Битый адрес: `urlsplit` на нём падает, а не отвечает.
             "http://[moon-q1.b-cdn.net/",
             "http://[::1]/",
+            # IPv4 в записи, которую браузер (WHATWG) и glibc читают как адрес:
+            # `0x7f.1` в контейнере резолвится в 127.0.0.1.
+            "http://0x7f.1/",
+            "http://0x7f000001/",
+            "http://127.1/",
+            # Хост «свой», но схема не http: «скачать себе» отдал бы такой редирект.
+            "javascript://moon-q1.b-cdn.net/%0aalert(1)",
+            "ftp://moon-q1.b-cdn.net/a",
+            # Без хоста и с пустыми метками — не имя, которое можно дописать в настройку.
+            "https:///route/?m=1",
+            "https://moon-q1.b-cdn.net./route/?m=1",
+            "https://.b-cdn.net/",
+            "https://a..b-cdn.net/",
         ],
     )
     def test_hosts_other_parsers_read_differently_are_rejected(self, url: str) -> None:
@@ -118,17 +131,38 @@ class TestProxyIsNotOpen:
             ("https://bcdn.new-cdn.example/route/?m=1", "unknown"),
             ("https://user@bcdn.melon-soda.org/route/?m=1", "suspicious"),
             ("http://192.168.1.1/", "suspicious"),
+            ("http://0x7f.1/", "suspicious"),
         ],
     )
     def test_reason_tells_a_new_cdn_from_a_forged_link(self, url: str, reason) -> None:
         """Подсказка про настройку нужна только первому: второе ею не лечится."""
-        from app.services.downloader import UnknownHostError, classify_target
+        from app.services.downloader import (
+            UnknownHostError,
+            classify_target,
+            ensure_allowed_target,
+        )
 
         assert classify_target(url) == reason
-        if reason is not None:
-            error = UnknownHostError(url)
-            assert error.fixable is (reason == "unknown")
-            assert ("A365_EXTRA_CDN_HOSTS" in str(error)) is error.fixable
+        if reason is None:
+            ensure_allowed_target(url)
+            return
+        with pytest.raises(UnknownHostError) as exc:
+            ensure_allowed_target(url)
+        assert exc.value.fixable is (reason == "unknown")
+        assert ("A365_EXTRA_CDN_HOSTS" in str(exc.value)) is exc.value.fixable
+
+    def test_ip_mirror_still_works(self, monkeypatch) -> None:
+        """Список зеркал допускает `https://10.0.0.5` — такое зеркало работало до D-214.
+
+        Проверка на IP стоит после сверки с зеркалами: иначе она отрезала бы
+        зеркало, которое администратор вписал сам.
+        """
+        from app.core.config import settings
+
+        monkeypatch.setitem(settings._env, "mirrors", ("https://10.0.0.5",))
+
+        assert is_allowed_target("https://10.0.0.5/translations/mp4/1") is True
+        assert is_allowed_target("https://10.0.0.6/translations/mp4/1") is False
 
     def test_redirect_errors_carry_the_host_not_the_link(self) -> None:
         """В начале ссылки на скачивание стоит токен — в текст ошибки она не идёт."""
@@ -260,6 +294,10 @@ class TestExtraCdnHosts:
             "new-cdn.example/route",
             "org",
             "192.168.1.1",
+            # Тоже IPv4: браузер и glibc читают `0x7f.1` как 127.0.0.1.
+            "0x7f.1",
+            "0x7f000001.0x1",
+            "cdn.example.017",
             "*.new-cdn.example",
             "-.-",
             "new-.example",
