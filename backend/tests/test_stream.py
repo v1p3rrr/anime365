@@ -80,6 +80,91 @@ class TestProxyIsNotOpen:
     def test_known_hosts_allowed(self, url: str) -> None:
         assert is_allowed_target(url) is True
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            # До двоеточия стоит «свой» CDN, но это логин: httpx идёт на 192.168.1.1.
+            "http://x.b-cdn.net:80@192.168.1.1/",
+            "https://a.b-cdn.net:x@evil.com/",
+            "https://moon.b-cdn.net@127.0.0.1:8080/api/settings",
+            # Логин на своём хосте CDN не выдаёт — такую ссылку тоже не берём.
+            "https://user@moon-q1.b-cdn.net/route/?m=1",
+        ],
+    )
+    def test_userinfo_does_not_disguise_the_host(self, url: str) -> None:
+        assert is_allowed_target(url) is False
+
+
+class TestExtraCdnHosts:
+    """`A365_EXTRA_CDN_HOSTS` — чтобы переезд сайта на новый CDN не ждал релиза."""
+
+    @pytest.fixture
+    def extra(self, monkeypatch):
+        from app.core.config import settings
+
+        def _set(*hosts: str) -> None:
+            monkeypatch.setitem(settings._env, "extra_cdn_hosts", hosts)
+
+        return _set
+
+    def test_unknown_cdn_is_refused_by_default(self) -> None:
+        assert is_allowed_target("https://bcdn.new-cdn.example/route/?m=1") is False
+
+    def test_entry_lets_the_domain_and_its_subdomains_through(self, extra) -> None:
+        extra("new-cdn.example")
+
+        assert is_allowed_target("https://new-cdn.example/route/?m=1") is True
+        assert is_allowed_target("https://bcdn.new-cdn.example/route/?m=1") is True
+
+    def test_entry_is_not_a_bare_suffix(self, extra) -> None:
+        """`new-cdn.example` не должен пускать `evilnew-cdn.example`."""
+        extra("new-cdn.example")
+
+        assert is_allowed_target("https://evilnew-cdn.example/x") is False
+        assert is_allowed_target("https://new-cdn.example.evil.com/x") is False
+
+    def test_leading_dot_and_case_do_not_matter(self, extra) -> None:
+        extra(".New-CDN.example")
+
+        assert is_allowed_target("https://bcdn.new-cdn.example/x") is True
+
+    def test_builtin_list_still_works_with_the_setting(self, extra) -> None:
+        """Дополняет, а не заменяет: иначе переопределение спрятало бы новый встроенный CDN."""
+        extra("new-cdn.example")
+
+        assert is_allowed_target("https://bcdn.melon-soda.org/route/?m=1") is True
+
+    def test_setting_is_server_only(self) -> None:
+        from app.core.settings_registry import get
+
+        assert get("extra_cdn_hosts").server_only is True
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "https://new-cdn.example",
+            "new-cdn.example:443",
+            "new-cdn.example/route",
+            "org",
+            "192.168.1.1",
+            "*.new-cdn.example",
+        ],
+    )
+    def test_malformed_entries_are_rejected(self, raw: str) -> None:
+        from app.core.settings_registry import ValidationError, get
+
+        setting = get("extra_cdn_hosts")
+        with pytest.raises(ValidationError):
+            setting.validate(setting.parse(raw))
+
+    def test_valid_list_is_accepted(self) -> None:
+        from app.core.settings_registry import get
+
+        setting = get("extra_cdn_hosts")
+        value = setting.validate(setting.parse("new-cdn.example, .other.example"))
+
+        assert value == ("new-cdn.example", ".other.example")
+
 
 class TestStreamEndpointIsProtected:
     def test_requires_login_when_password_set(self, client, with_password) -> None:

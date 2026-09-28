@@ -31,10 +31,31 @@ from app.api.deps import rate_limit
 from app.core.config import settings
 from app.core.permissions import Permission, require, require_save_or_watch
 from app.services.anime365 import Anime365Client, Anime365Error, SubscriptionRequired
-from app.services.downloader import is_allowed_target, next_hop, open_checked, pick_download_url
+from app.services.downloader import (
+    UnknownHostError,
+    is_allowed_target,
+    next_hop,
+    open_checked,
+    pick_download_url,
+)
 from app.services.title_service import get_embed
 
 log = logging.getLogger(__name__)
+
+
+def _unknown_host(host: str) -> ApiError:
+    """Отказ по хосту вне allowlist — с именем хоста и подсказкой, как его пустить.
+
+    «Скачать себе» — обычная ссылка, и при отказе браузер показывает ответ как
+    есть, без словаря интерфейса. Поэтому подсказка стоит в самом `message`.
+    """
+    return ApiError(
+        502,
+        errors.UNKNOWN_HOST,
+        f"Ссылка ведёт на неизвестный хост {host}. Если это новый CDN Anime365, "
+        "администратор может разрешить его переменной A365_EXTRA_CDN_HOSTS на сервере",
+        host=host,
+    )
 
 router = APIRouter(
     prefix="/stream",
@@ -144,10 +165,21 @@ async def stream_video(
     client = httpx.AsyncClient(follow_redirects=False, timeout=httpx.Timeout(30.0, read=None))
     try:
         upstream = await open_checked(client, url, headers, stream=True)
-    except Anime365Error as exc:
+    except UnknownHostError as exc:
         await client.aclose()
-        log.error("Отклонён посторонний хост при воспроизведении: %s", exc)
-        raise ApiError(502, errors.UNKNOWN_HOST, "Ссылка ведёт на неизвестный хост") from exc
+        log.error("Отклонён посторонний хост при воспроизведении: %s", exc.host)
+        raise _unknown_host(exc.host) from exc
+    except Anime365Error as exc:
+        # Оборванная или бесконечная цепочка редиректов. Текст исключения
+        # наружу не отдаём: в нём начало исходной ссылки, а там бывает токен.
+        await client.aclose()
+        log.error("Не удалось пройти редиректы при воспроизведении: %s", exc)
+        raise ApiError(
+            502,
+            errors.STREAM_OPEN_FAILED,
+            "Не удалось открыть поток: сломана цепочка редиректов",
+            reason="цепочка редиректов",
+        ) from exc
     except httpx.HTTPError as exc:
         await client.aclose()
         detail = str(exc) or type(exc).__name__
@@ -246,8 +278,9 @@ async def download_video(
     if not is_allowed_target(location):
         # Подменённый ответ не должен уводить человека на посторонний хост.
         # Имя хоста в лог — без него смену CDN на сайте не отличить от подмены.
-        log.error("Скачивание отклонено, посторонний хост: %s", urlsplit(location).netloc)
-        raise ApiError(502, errors.UPSTREAM_UNAVAILABLE, "Anime365 увёл ссылку на неизвестный хост")
+        host = urlsplit(location).hostname or "?"
+        log.error("Скачивание отклонено, посторонний хост: %s", host)
+        raise _unknown_host(host)
 
     token = settings.get_str("access_token")
     if token and token in location:

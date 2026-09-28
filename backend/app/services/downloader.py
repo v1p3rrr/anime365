@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import AsyncIterator, Callable
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -35,12 +36,25 @@ CHUNK_SIZE = 1 << 20  # 1 МБ
 # ⚠️ Сайт меняет CDN без предупреждения, и тогда отказывает всё разом: очередь,
 # плеер и «скачать себе». С 2026-09-27 вместо `*.b-cdn.net` приходит
 # `bcdn.melon-soda.org/route/?m=…&r=…` — тот же одношаговый маршрут с подписью,
-# сразу `200 video/mp4`. Отказ виден в логе строкой «неизвестный хост» с именем.
+# сразу `200 video/mp4`. Чтобы следующий переезд не ждал релиза, новый хост
+# дописывается в `A365_EXTRA_CDN_HOSTS` — он дополняет этот список (D-214).
 ALLOWED_CDN_SUFFIXES = (".quantum-phantom-moon.ru", ".b-cdn.net", ".melon-soda.org")
 
 
 class DownloadCancelled(Exception):
     """Задачу отменили или поставили на паузу — это не ошибка."""
+
+
+class UnknownHostError(Anime365Error):
+    """Ссылка ведёт на хост вне allowlist.
+
+    Имя хоста вынесено отдельно: его показывают человеку и пишут в лог, чтобы
+    смену CDN на сайте можно было отличить от подмены и починить настройкой.
+    """
+
+    def __init__(self, url: str) -> None:
+        self.host = urlsplit(url).hostname or "?"
+        super().__init__(f"Ссылка ведёт на неизвестный хост: {self.host}")
 
 
 @dataclass
@@ -58,17 +72,28 @@ def is_allowed_target(url: str) -> bool:
 
     Зеркала и CDN известны заранее; всё остальное отвергаем, чтобы подменённый
     ответ не заставил приложение качать с постороннего сервера.
-    """
-    from urllib.parse import urlsplit
 
-    host = urlsplit(url).netloc.split(":")[0].lower()
-    if not host:
+    ⚠️ Хост берётся из `hostname`, а не нарезкой `netloc`. В `netloc` сидит ещё
+    и логин с паролем: у `http://x.b-cdn.net:80@192.168.1.1/` до первого
+    двоеточия стоит «свой» CDN, а соединение httpx открывает с `192.168.1.1`.
+    Ссылки с логином в адресе CDN не выдаёт, поэтому они отвергаются целиком.
+    """
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if not host or parts.username is not None or parts.password is not None:
         return False
 
-    known_hosts = {urlsplit(o).netloc.lower() for o in settings.allowed_origins()}
+    known_hosts = {(urlsplit(o).hostname or "").lower() for o in settings.allowed_origins()}
     if host in known_hosts:
         return True
-    return any(host.endswith(suffix) for suffix in ALLOWED_CDN_SUFFIXES)
+    if any(host.endswith(suffix) for suffix in ALLOWED_CDN_SUFFIXES):
+        return True
+    # Запись `melon-soda.org` пускает сам домен и поддомены, но не `evilmelon-soda.org`.
+    for entry in settings.get_list("extra_cdn_hosts"):
+        extra = entry.lower().lstrip(".")
+        if host == extra or host.endswith("." + extra):
+            return True
+    return False
 
 
 #: Сколько редиректов проходим, прежде чем сдаться.
@@ -119,7 +144,7 @@ async def open_checked(
     current = url
     for _ in range(MAX_REDIRECT_HOPS):
         if not is_allowed_target(current):
-            raise Anime365Error(f"Ссылка ведёт на неизвестный хост: {current[:80]}")
+            raise UnknownHostError(current)
 
         build: dict[str, object] = {"headers": headers}
         if timeout is not None:
@@ -299,7 +324,7 @@ class Downloader:
         assert self._client is not None, "используйте загрузчик через async with"
 
         if not is_allowed_target(url):
-            raise Anime365Error(f"Ссылка ведёт на неизвестный хост: {url[:80]}")
+            raise UnknownHostError(url)
 
         part = destination.with_suffix(destination.suffix + ".part")
         part.parent.mkdir(parents=True, exist_ok=True)

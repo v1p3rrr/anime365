@@ -138,6 +138,23 @@ def _check_mirror_list(value: tuple[str, ...]) -> str | None:
     return None
 
 
+# Имя хоста без схемы, порта и пути; ведущая точка допустима и ничего не меняет.
+# Требуется хотя бы одна точка: запись `org` открыла бы целую доменную зону.
+_CDN_HOST_RE = re.compile(r"^\.?[a-z0-9-]+(\.[a-z0-9-]+)+$", re.IGNORECASE)
+_IP_LITERAL_RE = re.compile(r"^\.?[0-9.]+$")
+
+
+def _check_cdn_hosts(value: tuple[str, ...]) -> str | None:
+    for item in value:
+        if not _CDN_HOST_RE.match(item):
+            return f"{item!r}: ожидалось имя хоста без схемы, порта и пути, например melon-soda.org"
+        if _IP_LITERAL_RE.match(item):
+            # IP-адрес здесь — это ровно то, от чего список защищает: адрес
+            # локальной сети вместо CDN.
+            return f"{item!r}: IP-адрес не допускается, только имя хоста"
+    return None
+
+
 def _non_negative(value: int) -> str | None:
     return None if value >= 0 else "не может быть отрицательным"
 
@@ -183,6 +200,22 @@ SETTINGS: tuple[Setting, ...] = (
         help_ru="Через запятую. Задаётся только на сервере: из UI не меняется — это защита от SSRF.",
         server_only=True,
         check=_check_mirror_list,
+    ),
+    Setting(
+        key="extra_cdn_hosts",
+        type=SettingType.STR_LIST,
+        default=(),
+        group=SettingGroup.API,
+        label_ru="Дополнительные хосты CDN",
+        help_ru=(
+            "Через запятую, имена без https://, например melon-soda.org — запись пускает "
+            "сам хост и все его поддомены. Дополняет встроенный список, а не заменяет его. "
+            "Нужна, когда Anime365 переехал на новый CDN и скачивание с просмотром отвечают "
+            "«неизвестный хост» (имя хоста — в ошибке и в логе). Задаётся только на "
+            "сервере: это защита от SSRF."
+        ),
+        server_only=True,
+        check=_check_cdn_hosts,
     ),
     Setting(
         key="access_token",

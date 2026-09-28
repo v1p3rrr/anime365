@@ -148,6 +148,38 @@ class TestDirectDownload:
 
         assert exc.value.status_code == 502
 
+    def test_foreign_host_is_named_in_the_error(self, monkeypatch, _embed) -> None:
+        """Смену CDN на сайте чинят настройкой, но для этого нужно знать хост.
+
+        Раньше отказ приходил как `upstream_unavailable` без имени — и интерфейс
+        советовал сменить зеркало, что тут не помогает. Ссылка «скачать себе»
+        открывается браузером напрямую, поэтому подсказка нужна в `message`.
+        """
+        from app.api.stream import download_video
+        from app.core import errors
+        from app.core.errors import ApiError
+
+        self._respond(monkeypatch, 302, {"location": "https://bcdn.new-cdn.example/route/?m=1"})
+        with pytest.raises(ApiError) as exc:
+            asyncio.run(download_video(1))
+
+        detail = exc.value.detail
+        assert detail["code"] == errors.UNKNOWN_HOST
+        assert detail["params"] == {"host": "bcdn.new-cdn.example"}
+        assert "A365_EXTRA_CDN_HOSTS" in detail["message"]
+
+    def test_host_from_the_setting_is_let_through(self, monkeypatch, _embed) -> None:
+        """Тот же хост, дописанный в `extra_cdn_hosts`, отдаётся без релиза."""
+        from app.api.stream import download_video
+        from app.core.config import settings
+
+        location = "https://bcdn.new-cdn.example/route/?m=1"
+        monkeypatch.setitem(settings._env, "extra_cdn_hosts", ("new-cdn.example",))
+        self._respond(monkeypatch, 302, {"location": location})
+        response = asyncio.run(download_video(1))
+
+        assert response.headers["location"] == location
+
     def test_answer_without_redirect_is_refused(self, monkeypatch, _embed) -> None:
         """Без редиректа отдавать нечего: сама ссылка несёт токен.
 
