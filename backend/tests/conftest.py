@@ -70,6 +70,32 @@ def with_password():
 
 
 @pytest.fixture(autouse=True)
+def scheduler_paused(monkeypatch):
+    """Планировщик в тестах заводится, но на паузе: джобы есть, запусков нет.
+
+    ⚠️ Фикстура `client` поднимает приложение целиком, а с ним и планировщик.
+    Инкремент каталога стоит со сдвигом ноль — то есть срабатывает сразу
+    при старте и идёт на живой сайт. За полный прогон в общую тестовую базу
+    набегало около шести тысяч настоящих тайтлов, среди них «Mekaku City
+    Actors» (3225), чьи названия совпадают с тестовой папкой «Kagerou Days», и
+    `test_mapping_matrix` падал через раз — смотря по тому, успевала ли
+    синхронизация до него. Заодно это был поход в сеть из тестов.
+
+    Пауза, а не пустой `start_scheduler`: расписание собирается как в проде, и
+    тест может его осмотреть; не срабатывает только сам запуск джоб.
+    """
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+    from app.workers import scheduler as jobs
+
+    class PausedScheduler(AsyncIOScheduler):
+        def start(self, paused: bool = False) -> None:
+            super().start(paused=True)
+
+    monkeypatch.setattr(jobs, "AsyncIOScheduler", PausedScheduler)
+
+
+@pytest.fixture(autouse=True)
 def site_refresh(monkeypatch):
     """Автоскачивание не ходит на сайт за переводами: поход подменён.
 

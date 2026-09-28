@@ -79,3 +79,17 @@ class TestRetrySoon:
         monkeypatch.setattr(jobs, "_scheduler", None)
 
         jobs._retry_soon("stream_probe", "определение дорожек")
+
+
+class TestSuiteDoesNotSyncTheLiveCatalog:
+    def test_app_under_tests_starts_the_scheduler_paused(self, client) -> None:
+        """Без паузы инкремент каталога шёл на живой сайт при каждом старте `client`.
+
+        Шесть тысяч настоящих тайтлов в общей тестовой базе роняли
+        `test_mapping_matrix` через раз — см. фикстуру `scheduler_paused`.
+        """
+        from apscheduler.schedulers.base import STATE_PAUSED
+
+        assert jobs._scheduler is not None
+        assert jobs._scheduler.state == STATE_PAUSED
+        assert jobs._scheduler.get_job("catalog_incremental") is not None
