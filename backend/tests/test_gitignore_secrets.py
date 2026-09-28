@@ -27,6 +27,10 @@ GITIGNORE = REPO / ".gitignore"
 #: Что обязано быть закрыто. Каждый — секрет или личные данные пользователя.
 MUST_BE_IGNORED = (
     ".env",
+    # Сюда README велит скопировать шаблон и вписать токен — файл из env_file:
+    # в docker-compose.yml. Долго не был закрыт вовсе: .env и .env.local были,
+    # а его не было.
+    ".env.app",
     "config/settings.yaml",
     "config/session_secret",
     "data/",
