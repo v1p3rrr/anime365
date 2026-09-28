@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from typing import Annotated, Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 import httpx
 from pathlib import Path
@@ -31,7 +31,14 @@ from app.api.deps import rate_limit
 from app.core.config import settings
 from app.core.permissions import Permission, require, require_save_or_watch
 from app.services.anime365 import Anime365Client, Anime365Error, SubscriptionRequired
-from app.services.downloader import is_allowed_target, next_hop, open_checked, pick_download_url
+from app.services.downloader import (
+    UnknownHostError,
+    ensure_allowed_target,
+    hostname_of,
+    next_hop,
+    open_checked,
+    pick_download_url,
+)
 from app.services.title_service import get_embed
 
 log = logging.getLogger(__name__)
@@ -98,6 +105,20 @@ def _pick_stream_url(embed_stream: list[dict[str, Any]], height: int | None) -> 
     return by_height[max(suitable) if suitable else min(by_height)]
 
 
+def _refuse_foreign_link(url: str, what: str) -> None:
+    """Отказ с именем хоста, если по ссылке идти нельзя.
+
+    Для эндпоинтов, которые ходят по ссылке сами, в обход `open_checked`:
+    отказ обязан выглядеть так же, как у плеера, — `unknown_host` или
+    `unsafe_link` с хостом, а не безымянный 404.
+    """
+    try:
+        ensure_allowed_target(url)
+    except UnknownHostError as exc:
+        log.error("%s отклонено: %s", what, exc)
+        raise errors.rejected_link(exc) from exc
+
+
 @router.get(
     "/{translation_id}/video",
     # Плеер открывает поток один раз и потом тянет диапазоны по тому же URL,
@@ -144,10 +165,18 @@ async def stream_video(
     client = httpx.AsyncClient(follow_redirects=False, timeout=httpx.Timeout(30.0, read=None))
     try:
         upstream = await open_checked(client, url, headers, stream=True)
-    except Anime365Error as exc:
+    except UnknownHostError as exc:
         await client.aclose()
-        log.error("Отклонён посторонний хост при воспроизведении: %s", exc)
-        raise ApiError(502, errors.UNKNOWN_HOST, "Ссылка ведёт на неизвестный хост") from exc
+        log.error("Отклонена ссылка при воспроизведении: %s", exc)
+        raise errors.rejected_link(exc) from exc
+    except Anime365Error as exc:
+        # Оборванная или бесконечная цепочка редиректов. В тексте только имя
+        # хоста — начало ссылки, где бывает токен, туда не попадает.
+        await client.aclose()
+        log.error("Не удалось пройти редиректы при воспроизведении: %s", exc)
+        raise ApiError(
+            502, errors.STREAM_OPEN_FAILED, f"Не удалось открыть поток: {exc}", reason=str(exc)
+        ) from exc
     except httpx.HTTPError as exc:
         await client.aclose()
         detail = str(exc) or type(exc).__name__
@@ -217,8 +246,9 @@ async def download_video(
         raise errors.upstream_unavailable(exc) from exc
 
     url, _resolved = pick_download_url({"download": info.download}, height or 1080)
-    if not url or not is_allowed_target(url):
+    if not url:
         raise ApiError(404, errors.FILE_NOT_FOUND, "Ссылка на скачивание недоступна")
+    _refuse_foreign_link(url, "Скачивание")
 
     async with httpx.AsyncClient(follow_redirects=False, timeout=30.0) as http:
         try:
@@ -243,18 +273,21 @@ async def download_video(
     # отвергла бы законный редирект. Склеиваем с адресом, по которому пришли.
     location = next_hop(url, location)
 
-    if not is_allowed_target(location):
-        # Подменённый ответ не должен уводить человека на посторонний хост.
-        # Имя хоста в лог — без него смену CDN на сайте не отличить от подмены.
-        log.error("Скачивание отклонено, посторонний хост: %s", urlsplit(location).netloc)
-        raise ApiError(502, errors.UPSTREAM_UNAVAILABLE, "Anime365 увёл ссылку на неизвестный хост")
+    # Подменённый ответ не должен уводить человека на посторонний хост.
+    # Имя хоста в лог — без него смену CDN на сайте не отличить от подмены.
+    _refuse_foreign_link(location, "Скачивание")
 
     token = settings.get_str("access_token")
     if token and token in location:
         # Страховка на случай, если сайт однажды начнёт прокидывать токен
         # дальше: лучше отказать, чем показать его браузеру.
         log.error("В ссылке CDN оказался токен — редирект не отдан")
-        raise ApiError(502, errors.UPSTREAM_UNAVAILABLE, "Ссылка на файл пришла в небезопасном виде")
+        raise ApiError(
+            502,
+            errors.UNSAFE_LINK,
+            "Ссылка на файл пришла в небезопасном виде",
+            host=hostname_of(location) or "?",
+        )
 
     return RedirectResponse(location, status_code=302)
 
@@ -300,12 +333,13 @@ async def stream_subtitles(
         info = await client.embed(translation_id)
 
     url = info.subtitles_url
-    if not url or not is_allowed_target(url):
+    if not url:
         raise ApiError(404, errors.SUBTITLES_UNAVAILABLE, "Ссылка на субтитры недоступна")
 
     # Тот же порядок, что у видео: хост сверяется на каждом шаге редиректа,
-    # поэтому клиент идёт с `follow_redirects=False`, а цепочку проходит
-    # `open_checked`. Субтитры весят десятки килобайт, читаем их целиком.
+    # начиная с первого, поэтому клиент идёт с `follow_redirects=False`, а
+    # цепочку проходит `open_checked`. Отказ по хосту — `rejected_link` ниже.
+    # Субтитры весят десятки килобайт, читаем их целиком.
     async with httpx.AsyncClient(follow_redirects=False, timeout=30.0) as client_http:
         try:
             response = await open_checked(
@@ -314,10 +348,13 @@ async def stream_subtitles(
                 {"User-Agent": settings.get_str("user_agent")},
                 stream=False,
             )
+        except UnknownHostError as exc:
+            log.error("Отклонена ссылка на субтитры: %s", exc)
+            raise errors.rejected_link(exc) from exc
         except Anime365Error as exc:
-            log.error("Отклонён посторонний хост при выдаче субтитров: %s", exc)
+            log.error("Не удалось пройти редиректы при выдаче субтитров: %s", exc)
             raise ApiError(
-                502, errors.SUBTITLES_FETCH_FAILED, "Ссылка на субтитры ведёт на неизвестный хост",
+                502, errors.SUBTITLES_FETCH_FAILED, f"Не удалось получить субтитры: {exc}",
                 reason=str(exc),
             ) from exc
         except httpx.HTTPError as exc:

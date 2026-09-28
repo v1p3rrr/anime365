@@ -544,6 +544,8 @@ class Anime365Client:
         ломать выпадашку выбора качества. Не узнали — просто не показали.
         """
         assert self._client is not None, "используйте клиент через async with"
+        # Локальный импорт — по той же причине, что в `_probe_size`.
+        from app.services.downloader import UnknownHostError
 
         sizes: dict[str, int] = {}
         for item in info.download:
@@ -551,7 +553,16 @@ class Anime365Client:
             url = item.get("url")
             if not height or not url:
                 continue
-            size = await self._probe_size(url)
+            try:
+                size = await self._probe_size(url)
+            except UnknownHostError as exc:
+                # Все ступени лежат на одном CDN: первый отказ отвечает за
+                # остальные, а проба каждой — лишний запрос к зеркалу и лишняя
+                # строка в логе на каждое открытие выпадашки. В лог — потому что
+                # это первый признак переезда сайта на новый CDN: проба веса
+                # идёт раньше, чем кто-то нажмёт «скачать».
+                log.warning("Вес файла не выяснен: %s", exc)
+                break
             if size is not None:
                 sizes[str(int(height))] = size
         return sizes
@@ -565,10 +576,15 @@ class Anime365Client:
         его надо здесь, иначе проба уходит по любому адресу, который вернул
         чужой API, — включая внутреннюю сеть ([D-174](../../../claude/09-decisions.md)).
 
+        Сеть и оборванные редиректы глотаются — вес справочный. Наружу выходит
+        одно исключение, `UnknownHostError`: отказ по хосту общий для всех
+        ступеней, и решать, пробовать ли остальные, должен вызывающий
+        (`download_sizes`), а не каждая проба сама по себе.
+
         Импорт локальный: `downloader` тянет этот модуль сверху, и обычный
         импорт замкнул бы кольцо.
         """
-        from app.services.downloader import open_checked
+        from app.services.downloader import UnknownHostError, open_checked
 
         for method, headers, pick in (
             ("HEAD", {}, self._length_from_headers),
@@ -578,9 +594,13 @@ class Anime365Client:
                 response = await open_checked(
                     self._client, url, headers, stream=False, method=method, timeout=20
                 )
+            except UnknownHostError:
+                # Второй метод уйдёт по той же цепочке и упрётся в тот же хост,
+                # а остальные ступени лежат на том же CDN — решает `download_sizes`.
+                raise
             except (Anime365Error, httpx.HTTPError):
-                # Неизвестный хост или сеть: вес не выясним, но и не роняем
-                # выдачу — сводка качества просто останется без цифры.
+                # Сеть или оборванная цепочка редиректов: вес не выясним, но и не
+                # роняем выдачу — сводка качества просто останется без цифры.
                 continue
             try:
                 size = pick(response)

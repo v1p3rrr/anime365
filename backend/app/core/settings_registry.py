@@ -138,6 +138,54 @@ def _check_mirror_list(value: tuple[str, ...]) -> str | None:
     return None
 
 
+# Имя хоста без схемы, порта и пути; ведущая точка допустима и ничего не меняет.
+# Метка — буквы и цифры, дефис только внутри. Требуется хотя бы одна точка:
+# запись `org` открыла бы целую доменную зону.
+_DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_CDN_HOST_RE = re.compile(rf"^\.?{_DNS_LABEL}(?:\.{_DNS_LABEL})+$", re.IGNORECASE)
+
+# Последняя метка — число: `1`, `017`, `0x7f`. Такой хост браузер по правилу
+# WHATWG разбирает как IPv4, и glibc `getaddrinfo` поступает так же — `0x7f.1`
+# в контейнере резолвится в 127.0.0.1 (замерено). Доменных зон из цифр не бывает.
+_NUMERIC_LABEL_RE = re.compile(r"[0-9]+|0x[0-9a-f]*", re.IGNORECASE)
+
+
+def looks_like_ipv4(host: str) -> bool:
+    """Хост, который браузер и `getaddrinfo` поймут как IPv4-адрес, а не имя."""
+    return bool(_NUMERIC_LABEL_RE.fullmatch(host.rstrip(".").rsplit(".", 1)[-1]))
+
+
+# Общие хостинги: поддомен в них заводит кто угодно. Запись `cloudfront.net`
+# пустила бы любой чужой дистрибутив, поэтому здесь нужен полный хост из
+# ошибки (`d123.cloudfront.net`). Список не исчерпывающий — он ловит самое
+# вероятное: человек видит в ошибке длинное имя и укорачивает его «до домена».
+SHARED_HOSTING_DOMAINS = frozenset({
+    "akamaized.net", "amazonaws.com", "appspot.com", "azureedge.net", "azurefd.net",
+    "blob.core.windows.net", "cloudfront.net", "fastly.net", "firebaseapp.com",
+    "github.io", "githubusercontent.com", "googleusercontent.com", "herokuapp.com",
+    "netlify.app", "ngrok-free.app", "ngrok.io", "pages.dev", "r2.dev",
+    "vercel.app", "web.app", "workers.dev",
+})
+
+
+def _check_cdn_hosts(value: tuple[str, ...]) -> str | None:
+    for item in value:
+        if not _CDN_HOST_RE.match(item):
+            return f"{item!r}: ожидалось имя хоста без схемы, порта и пути, например melon-soda.org"
+        if looks_like_ipv4(item):
+            # IP-адрес здесь — это ровно то, от чего список защищает: адрес
+            # локальной сети вместо CDN. В том числе в записи `0x7f.1`.
+            return f"{item!r}: IP-адрес не допускается, только имя хоста"
+        domain = item.lower().lstrip(".")
+        # Сам общий хостинг или его родитель (`windows.net` над `blob.core.windows.net`).
+        if any(f".{shared}".endswith(f".{domain}") for shared in SHARED_HOSTING_DOMAINS):
+            return (
+                f"{item!r}: это общий хостинг, в нём любой может завести поддомен — "
+                "укажите полное имя хоста из ошибки"
+            )
+    return None
+
+
 def _non_negative(value: int) -> str | None:
     return None if value >= 0 else "не может быть отрицательным"
 
@@ -183,6 +231,22 @@ SETTINGS: tuple[Setting, ...] = (
         help_ru="Через запятую. Задаётся только на сервере: из UI не меняется — это защита от SSRF.",
         server_only=True,
         check=_check_mirror_list,
+    ),
+    Setting(
+        key="extra_cdn_hosts",
+        type=SettingType.STR_LIST,
+        default=(),
+        group=SettingGroup.API,
+        label_ru="Дополнительные хосты CDN",
+        help_ru=(
+            "Через запятую, имена без https://, например melon-soda.org — запись пускает "
+            "сам хост и все его поддомены. Дополняет встроенный список, а не заменяет его. "
+            "Нужна, когда Anime365 переехал на новый CDN и скачивание с просмотром отвечают "
+            "«неизвестный хост» (имя хоста — в ошибке и в логе). Задаётся только на "
+            "сервере: это защита от SSRF."
+        ),
+        server_only=True,
+        check=_check_cdn_hosts,
     ),
     Setting(
         key="access_token",
