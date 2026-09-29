@@ -72,3 +72,17 @@ class TestSecretsAreCovered:
         missing = [path for path in MUST_BE_IGNORED if path not in patterns]
 
         assert missing == [], f"не закрыто в .gitignore: {missing}"
+
+    def test_any_env_file_is_covered_but_the_template(self) -> None:
+        """`env_file:` в compose предлагает своё имя файла или несколько файлов.
+
+        Под точное `.env.app` попадал только файл по умолчанию: `.env.prod` с
+        тем же токеном уехал бы в историю. Шаблон при этом обязан остаться в
+        репозитории — он и есть список настроек.
+        """
+        patterns = [line.strip() for line in _pattern_lines()]
+
+        assert ".env.*" in patterns
+        assert "!.env.example" in patterns
+        # Порядок важен: исключение действует, только если стоит после шаблона.
+        assert patterns.index("!.env.example") > patterns.index(".env.*")

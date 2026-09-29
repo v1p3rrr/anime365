@@ -128,13 +128,29 @@ class TestServerSideEnforcement:
         assert response.status_code == 403, response.text
         assert response.json()["detail"]["code"] == "permission_denied"
 
-    def test_viewer_keeps_what_was_granted(self, viewer_client: TestClient):
-        # Право на просмотр выдано, поэтому отказ должен быть не про права.
-        # Что запрос упрётся в отсутствие токена — нормально и ожидаемо.
+    def test_viewer_keeps_what_was_granted(self, viewer_client: TestClient, monkeypatch):
+        # Право на просмотр выдано, поэтому запрос доходит до самого просмотра
+        # и упирается уже в перевод без ссылок. Сайт подменён: раньше тест
+        # звал настоящий embed на всех четырёх зеркалах.
+        from app.services.anime365 import EmbedInfo
+
+        class NoLinks:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def embed(self, translation_id: int) -> EmbedInfo:
+                return EmbedInfo(
+                    translation_id=translation_id, download=[], stream=[],
+                    subtitles_url=None, embed_url=None,
+                )
+
+        monkeypatch.setattr("app.api.stream.Anime365Client", NoLinks)
         response = viewer_client.get("/api/stream/1/video")
-        assert response.status_code != 403 or (
-            response.json().get("detail", {}).get("code") != "permission_denied"
-        )
+        assert response.status_code == 404, response.text
+        assert response.json()["detail"]["code"] == "no_playable_links"
 
     def test_reading_stays_open(self, viewer_client: TestClient):
         # Каталог и состояние библиотеки читаются по праву CATALOG, без права
