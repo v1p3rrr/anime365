@@ -54,23 +54,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       credentials: 'same-origin',
     })
   } catch (cause) {
-    // fetch бросает голое «Failed to fetch» на любой сетевой проблеме и не
-    // говорит ни какой запрос упал, ни почему. Для домашнего сервиса причина
-    // почти всегда одна и та же — сервер не отвечает, — и её стоит назвать.
-    //
-    // ⚠️ Русский текст здесь — запасной вариант ровно в том же смысле, что и
-    // сообщение сервера ([D-48](../../../claude/09-decisions.md)): показывается,
-    // если словарь почему-то не дал строки. Перевод берётся по коду, иначе
-    // англоязычный интерфейс объяснялся бы по-русски — и объяснялся, пока эту
-    // строку не связали с уже написанным `apiErrors.network`.
-    const reason = (cause as Error).message
-    throw new ApiError(
-      0,
-      `Сервер не ответил на запрос ${path}. Проверьте, что контейнер запущен ` +
-        `и доступен по этому адресу. Причина: ${reason}`,
-      NETWORK_ERROR_CODE,
-      { path, reason },
-    )
+    throw networkError(path, cause)
   }
 
   if (!response.ok) {
@@ -78,6 +62,31 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return response.json() as Promise<T>
+}
+
+/**
+ * Запрос до сервера не дошёл.
+ *
+ * fetch бросает голое «Failed to fetch» на любой сетевой проблеме и не
+ * говорит ни какой запрос упал, ни почему. Для домашнего сервиса причина
+ * почти всегда одна и та же — сервер не отвечает, — и её стоит назвать.
+ * Нужна не только `request`: плеер переспрашивает адрес потока сам.
+ *
+ * ⚠️ Русский текст здесь — запасной вариант ровно в том же смысле, что и
+ * сообщение сервера ([D-48](../../../claude/09-decisions.md)): показывается,
+ * если словарь почему-то не дал строки. Перевод берётся по коду, иначе
+ * англоязычный интерфейс объяснялся бы по-русски — и объяснялся, пока эту
+ * строку не связали с уже написанным `apiErrors.network`.
+ */
+export function networkError(path: string, cause: unknown): ApiError {
+  const reason = cause instanceof Error ? cause.message : String(cause)
+  return new ApiError(
+    0,
+    `Сервер не ответил на запрос ${path}. Проверьте, что контейнер запущен ` +
+      `и доступен по этому адресу. Причина: ${reason}`,
+    NETWORK_ERROR_CODE,
+    { path, reason },
+  )
 }
 
 /**
@@ -90,7 +99,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
  * разбора не обзаводиться: одна такая уже разошлась с оригиналом (см. ниже).
  */
 export async function errorFromResponse(response: Response): Promise<ApiError> {
-  let detail = response.statusText
+  // По HTTP/2 `statusText` всегда пуст — а за обратным прокси (mTLS) он и
+  // есть, и его страница 502 на месте упавшего контейнера — не JSON. Без
+  // запасного текста человек видел бы пустую красную плашку.
+  let detail = response.statusText || `HTTP ${response.status}`
   let code: string | undefined
   let params: Record<string, string | number> | undefined
   try {

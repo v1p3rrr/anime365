@@ -269,6 +269,33 @@ class TestDirectDownload:
         assert detail["code"] == "stream_open_failed"
         assert "moon-q1.b-cdn.net" in detail["params"]["reason"]
 
+    @staticmethod
+    def _player_gets(monkeypatch, content_type: str):
+        from app.api.stream import stream_video
+
+        async def answer(client, url, headers, **kwargs):
+            return httpx.Response(
+                200, headers={"content-type": content_type}, content=b"x",
+                request=httpx.Request("GET", url),
+            )
+
+        monkeypatch.setattr("app.api.stream.open_checked", answer)
+        return asyncio.run(stream_video(1))
+
+    def test_player_does_not_pass_an_html_page_for_video(self, monkeypatch, _embed) -> None:
+        """Страница вместо видео — отказ с причиной, а не «браузер не справился»."""
+        from app.core.errors import ApiError
+
+        with pytest.raises(ApiError) as exc:
+            self._player_gets(monkeypatch, "text/html; charset=utf-8")
+
+        assert exc.value.detail["code"] == "stream_not_video"
+
+    def test_player_passes_video(self, monkeypatch, _embed) -> None:
+        response = self._player_gets(monkeypatch, "video/mp4")
+
+        assert response.status_code == 200
+
     def test_host_from_the_setting_is_let_through(self, monkeypatch, _embed) -> None:
         """Тот же хост, дописанный в `extra_cdn_hosts`, отдаётся без релиза."""
         from app.api.stream import download_video

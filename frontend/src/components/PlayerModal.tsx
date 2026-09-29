@@ -3,7 +3,7 @@ import { IconAlertTriangle } from '@tabler/icons-react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 
-import { errorFromResponse } from '../api/client'
+import { errorFromResponse, networkError } from '../api/client'
 import { LANG_COLORS, titleApi, type EpisodeTranslation } from '../api/title'
 import { useT } from '../i18n'
 import { useApiError } from '../i18n/apiError'
@@ -59,30 +59,33 @@ const LIBASS_WORKER = '/libass/subtitles-octopus-worker.js'
 const LIBASS_LEGACY_WORKER = '/libass/subtitles-octopus-worker-legacy.js'
 
 /**
- * Почему поток не играет — по ответу сервера, а не по `<video>`.
+ * Почему поток или субтитры не пришли — по ответу сервера, а не по плееру.
  *
- * Адрес потока плеер отдаёт `<video>` напрямую, и отказ сервера (502 с
- * `unknown_host`, `unsafe_link`, `subscription_required`…) тот прочесть не
- * может: человек видел бесконечное «Connecting» — так было при переезде
+ * Адреса плеер отдаёт `<video>` и плагину субтитров напрямую, и отказ сервера
+ * (502 с `unknown_host`, `unsafe_link`, `subscription_required`…) те прочесть
+ * не могут: человек видел бесконечное «Connecting» — так было при переезде
  * Anime365 на новый CDN 2026-09-27. Поэтому при ошибке переспрашиваем тот же
  * адрес сами, одним байтом, и разбираем тело отказа.
  *
- * `null` — сервер поток отдаёт (или не ответил вовсе): дело в самом
- * воспроизведении, объяснить его точнее нечем.
+ * `null` — сервер файл отдаёт, дело в самом воспроизведении; или опрос
+ * отменён, потому что плеер закрыли. Сеть — не `null`: «сервер отдаёт поток
+ * без ошибки» в этом случае было бы ровно неправдой.
  */
-async function explainStreamFailure(url: string): Promise<Error | null> {
+async function explainFailure(url: string, signal: AbortSignal): Promise<Error | null> {
+  let response: Response
   try {
-    const response = await fetch(url, {
-      headers: { Range: 'bytes=0-0' },
-      credentials: 'same-origin',
-    })
-    if (!response.ok) return await errorFromResponse(response)
-    await response.body?.cancel()
-  } catch {
-    // Сеть: общий текст ниже ничем не хуже.
+    response = await fetch(url, { headers: { Range: 'bytes=0-0' }, signal })
+  } catch (cause) {
+    return signal.aborted ? null : networkError(new URL(url, window.location.href).pathname, cause)
   }
+  if (!response.ok) return errorFromResponse(response)
+  // Тело не нужно: закрываем, чтобы сервер не тянул поток с CDN впустую.
+  await response.body?.cancel().catch(() => undefined)
   return null
 }
+
+/** В VTT, собранном из ASS, нет ни одной реплики — файл пустой или не ASS. */
+const hasNoCues = (vtt: string) => !vtt.includes('-->')
 
 export function PlayerModal({ opened, onClose, translations, episodeLabel }: Props) {
   const { t } = useT()
@@ -92,6 +95,9 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
   const artRef = useRef<{ destroy: (removeHtml?: boolean) => void } | null>(null)
   // Ошибка, а не готовый текст: переводится при показе, по коду сервера.
   const [error, setError] = useState<Error | null>(null)
+  // Отдельно от видео: поток может пойти, а субтитры — нет, и снимать их
+  // отказ вместе с видеоошибкой, когда поток заиграл, было бы неверно.
+  const [subtitlesError, setSubtitlesError] = useState<Error | null>(null)
 
   // Перевод с субтитрами — это полноценное видео с японской дорожкой, а не
   // отдельный файл субтитров. Исключать его из источников видео было ошибкой:
@@ -142,11 +148,14 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
   // и слушателей на документе, и брошенный экземпляр продолжал бы работать.
   useEffect(() => {
     let cancelled = false
+    // Опросы сервера о причине отказа — снимаются вместе с плеером.
+    const probes = new AbortController()
 
     async function mount() {
       artRef.current?.destroy(true)
       artRef.current = null
       setError(null)
+      setSubtitlesError(null)
 
       if (!opened || !videoId || !containerRef.current) return
 
@@ -212,8 +221,28 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
           // `subtitle: undefined` Artplayer не принимает и падает с
           // «'option.subtitle' require 'object' type, but got 'undefined'» —
           // то есть при просмотре без субтитров плеер вообще не запускался.
+          //
+          // Отказ сервера по субтитрам плагин проглатывает молча. Artplayer
+          // тот же адрес забирает и сам, но статус не смотрит — тело отказа
+          // уходит в разбор ASS и даёт VTT без единой реплики. По этому
+          // признаку и переспрашиваем сервер: лишний запрос — только когда
+          // субтитров и так нет.
           ...(subId
-            ? { subtitle: { url: `/api/stream/${subId}/subtitles.ass`, type: 'ass' } }
+            ? {
+                subtitle: {
+                  url: `/api/stream/${subId}/subtitles.ass`,
+                  type: 'ass',
+                  onVttLoad: (vtt: string) => {
+                    if (hasNoCues(vtt)) {
+                      const url = `/api/stream/${subId}/subtitles.ass`
+                      void explainFailure(url, probes.signal).then((reason) => {
+                        if (!cancelled && reason) setSubtitlesError(reason)
+                      })
+                    }
+                    return vtt
+                  },
+                },
+              }
             : {}),
           volume: 1,
           autoplay: true,
@@ -233,11 +262,29 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
 
         artRef.current = art as unknown as { destroy: (removeHtml?: boolean) => void }
 
+        // ⚠️ `error` у Artplayer — не «видео не играет», а «иду на очередную
+        // попытку переподключения»: он приходит на каждой из пяти, начиная с
+        // первой, а последняя неудача не присылает его вовсе. Поэтому опрос
+        // сервера — один на адрес, а не на событие, и плашка снимается, как
+        // только поток всё же пошёл: переподключение удалось или сменили
+        // качество. Иначе разовый сбой сети оставлял бы надпись «не
+        // воспроизводится» поверх играющего видео.
+        //
         // `art.url`, а не исходный адрес: после смены качества поток другой.
+        let probedUrl: string | null = null
         art.on('error', () => {
-          void explainStreamFailure(art.url).then((reason) => {
-            if (!cancelled) setError(reason ?? new Error(t('player.playbackFailed')))
+          const url = art.url
+          if (url === probedUrl) return
+          probedUrl = url
+          void explainFailure(url, probes.signal).then((reason) => {
+            // Поток успел заиграть, пока шёл опрос, — ответ уже не к месту.
+            if (cancelled || probedUrl !== url) return
+            setError(reason ?? new Error(t('player.playbackFailed')))
           })
+        })
+        art.on('video:canplay', () => {
+          probedUrl = null
+          setError(null)
         })
 
         // Кнопка показа и скрытия субтитров.
@@ -272,6 +319,7 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
     void mount()
     return () => {
       cancelled = true
+      probes.abort()
       artRef.current?.destroy(true)
       artRef.current = null
     }
@@ -337,6 +385,11 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
             />
 
             {error && <Alert color="red">{apiError(error)}</Alert>}
+            {subtitlesError && (
+              <Alert color="orange">
+                {t('player.subtitlesFailed', { reason: apiError(subtitlesError) })}
+              </Alert>
+            )}
 
             {/* На 375px два селектора рядом сжимаются до «RU · StudioBand · 10»,
                 и выбранное не прочитать. Раскладываем их в столбик. */}

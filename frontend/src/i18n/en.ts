@@ -613,6 +613,7 @@ export const en: Dictionary = {
     track: 'Track',
     subtitles: 'Subtitles',
     noSubtitles: 'no subtitles',
+    subtitlesFailed: 'Subtitles did not load: {reason}',
     playbackFailed: 'The video does not play, yet the server delivers the stream without an error. Most likely the browser could not handle the file — try another quality or track.',
   },
 
@@ -1100,6 +1101,7 @@ export const en: Dictionary = {
     unsafe_link: 'The link to {host} arrived in a suspicious form and was rejected — this is not a new CDN, and no setting will fix it.',
     stream_open_failed: 'Could not open the stream: {reason}',
     cdn_error: 'The CDN replied with error {status}.',
+    stream_not_video: 'An HTML page arrived instead of the video. This usually means the access_token is missing or the subscription is inactive.',
     subtitles_hardsub: 'The subtitles are burned into the video — there is no separate file.',
     subtitles_unavailable: 'The subtitle link is unavailable.',
     subtitles_fetch_failed: 'Could not fetch the subtitles: {reason}',
