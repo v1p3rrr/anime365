@@ -612,6 +612,7 @@ export const ja: Dictionary = {
     track: 'トラック',
     subtitles: '字幕',
     noSubtitles: '字幕なし',
+    subtitlesFailed: '字幕を読み込めませんでした：{reason}',
     playbackFailed: '動画を再生できませんが、サーバーはエラーなくストリームを返しています。ブラウザがファイルを扱えなかった可能性が高いので、別の画質またはトラックをお試しください。',
   },
 
@@ -1100,6 +1101,7 @@ export const ja: Dictionary = {
     unsafe_link: '{host} へのリンクが不審な形式で届いたため拒否しました — 新しい CDN ではなく、設定では解決できません。',
     stream_open_failed: 'ストリームを開けませんでした：{reason}',
     cdn_error: 'CDN がエラー {status} を返しました。',
+    stream_not_video: '動画の代わりに HTML ページが届きました。通常は access_token が未設定か、購読が無効になっていることを意味します。',
     subtitles_hardsub: '字幕は動画に焼き込まれており、個別のファイルはありません。',
     subtitles_unavailable: '字幕のリンクを取得できません。',
     subtitles_fetch_failed: '字幕を取得できませんでした：{reason}',

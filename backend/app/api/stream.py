@@ -188,6 +188,23 @@ async def stream_video(
         await client.aclose()
         raise ApiError(502, errors.CDN_ERROR, f"CDN ответил {status}", status=status)
 
+    # Сайт умеет отвечать HTML-страницей со статусом 200 вместо файла — у
+    # загрузок это сторожит `_ensure_expected_content`. Здесь проверяем только
+    # HTML: полный список типов загрузчика для потока строже, чем нужно, а
+    # отдать страницу в `<video>` значит получить невнятный отказ браузера, и
+    # плеер свалил бы вину на браузер, хотя сервер ответил вовсе не видео.
+    content_type = upstream.headers.get("content-type", "").lower()
+    if content_type.startswith("text/html"):
+        await upstream.aclose()
+        await client.aclose()
+        log.error("Вместо видео CDN отдал HTML-страницу (перевод %s)", translation_id)
+        raise ApiError(
+            502,
+            errors.STREAM_NOT_VIDEO,
+            "Вместо видео пришла HTML-страница. Обычно это значит, что ссылка "
+            "требует access_token или подписка неактивна",
+        )
+
     async def body():
         try:
             async for chunk in upstream.aiter_bytes(CHUNK_SIZE):
