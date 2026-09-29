@@ -3,7 +3,7 @@ import { IconAlertTriangle } from '@tabler/icons-react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 
-import { errorFromResponse, networkError } from '../api/client'
+import { ApiError, errorFromResponse, networkError } from '../api/client'
 import { LANG_COLORS, titleApi, type EpisodeTranslation } from '../api/title'
 import { useT } from '../i18n'
 import { useApiError } from '../i18n/apiError'
@@ -83,6 +83,9 @@ async function explainFailure(url: string, signal: AbortSignal): Promise<Error |
   await response.body?.cancel().catch(() => undefined)
   return null
 }
+
+/** Код сервера «субтитры вшиты в видео, отдельного файла нет» (`core/errors.py`). */
+const SUBTITLES_HARDSUB = 'subtitles_hardsub'
 
 /** В VTT, собранном из ASS, нет ни одной реплики — файл пустой или не ASS. */
 const hasNoCues = (vtt: string) => !vtt.includes('-->')
@@ -210,7 +213,14 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
                       const height = parseInt(item.html, 10)
                       // switchQuality сохраняет текущее время и состояние
                       // воспроизведения, в отличие от switchUrl.
-                      art.switchQuality(`/api/stream/${videoId}/video?height=${height}`)
+                      //
+                      // Отказ нового потока промис отклоняет, но объяснять его
+                      // здесь не нужно: тот же сбой приходит событием `error`,
+                      // и его разбирает обработчик ниже. Без `catch` он всплыл
+                      // бы необработанным отклонением в консоль.
+                      art
+                        .switchQuality(`/api/stream/${videoId}/video?height=${height}`)
+                        .catch(() => undefined)
                       return item.html
                     },
                   },
@@ -236,7 +246,13 @@ export function PlayerModal({ opened, onClose, translations, episodeLabel }: Pro
                     if (hasNoCues(vtt)) {
                       const url = `/api/stream/${subId}/subtitles.ass`
                       void explainFailure(url, probes.signal).then((reason) => {
-                        if (!cancelled && reason) setSubtitlesError(reason)
+                        // Вшитые субтитры — не отказ: они в самом видео. А
+                        // выбираются такие переводы сами (эффект выше
+                        // подставляет субтитры к видео с `kind === 'sub'`),
+                        // так что плашка висела бы на каждом из них.
+                        const hardsub =
+                          reason instanceof ApiError && reason.code === SUBTITLES_HARDSUB
+                        if (!cancelled && reason && !hardsub) setSubtitlesError(reason)
                       })
                     }
                     return vtt

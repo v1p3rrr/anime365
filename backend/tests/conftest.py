@@ -95,6 +95,47 @@ def scheduler_paused(monkeypatch):
     monkeypatch.setattr(jobs, "AsyncIOScheduler", PausedScheduler)
 
 
+#: Походы в настоящую сеть за прогон — для отчёта в конце (см. `no_real_network`).
+_NETWORK_ATTEMPTS: list[str] = []
+
+
+@pytest.fixture(autouse=True)
+def no_real_network(monkeypatch, request):
+    """Тесты не ходят в настоящую сеть: сетевой транспорт httpx заглушён.
+
+    ⚠️ Прежде каждый такой поход закрывали точечно — автоскачивание
+    (`site_refresh`), планировщик (`scheduler_paused`), — и каждый находили по
+    уже случившейся беде: таймауту на чистой машине или шести тысячам живых
+    тайтлов в тестовой базе. Здесь закрыт сам транспорт: `MockTransport` и
+    транспорт `TestClient` работают как прежде, а запрос наружу получает
+    `ConnectError` — тот же отказ, что без сети, — и роняет тест, который его
+    сделал. Нужен настоящий сайт — это отдельный интеграционный тест, а не
+    модульный.
+
+    Петля (`127.0.0.1:1` и т. п.) тоже получает отказ, но тест не роняет: так
+    нарочно изображают «сервер не отвечает», и отказ — ровно то, чего тест
+    ждёт. Замер при заведении фикстуры: наружу ходил один тест — права на
+    просмотр звали настоящий embed на всех четырёх зеркалах.
+    """
+    import httpx
+
+    def refuse(transport, req: httpx.Request):
+        where = f"{req.method} {req.url.host} ← {request.node.nodeid}"
+        if req.url.host not in ("127.0.0.1", "localhost", "::1"):
+            _NETWORK_ATTEMPTS.append(where)
+        raise httpx.ConnectError(f"тест пошёл в сеть: {where}", request=req)
+
+    async def refuse_async(transport, req: httpx.Request):
+        refuse(transport, req)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", refuse)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", refuse_async)
+    before = len(_NETWORK_ATTEMPTS)
+    yield
+    attempts = _NETWORK_ATTEMPTS[before:]
+    assert not attempts, "тест пошёл в настоящую сеть:\n" + "\n".join(attempts)
+
+
 @pytest.fixture(autouse=True)
 def site_refresh(monkeypatch):
     """Автоскачивание не ходит на сайт за переводами: поход подменён.

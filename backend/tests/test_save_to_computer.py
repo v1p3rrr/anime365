@@ -280,7 +280,16 @@ class TestDirectDownload:
             )
 
         monkeypatch.setattr("app.api.stream.open_checked", answer)
-        return asyncio.run(stream_video(1))
+
+        async def run():
+            response = await stream_video(1)
+            # Тело дочитываем в том же цикле: его генератор и закрывает
+            # клиент httpx, иначе тот остался бы открытым после теста.
+            async for _ in response.body_iterator:
+                pass
+            return response
+
+        return asyncio.run(run())
 
     def test_player_does_not_pass_an_html_page_for_video(self, monkeypatch, _embed) -> None:
         """Страница вместо видео — отказ с причиной, а не «браузер не справился»."""
