@@ -5,20 +5,20 @@ description = "Каталог Anime365, загрузка видео и субт�
 requires-python = ">=3.12"
 
 dependencies = [
-    "fastapi==0.141.1",
+    "fastapi==0.163.2",
     # Явный пин транзитивной зависимости FastAPI: в 0.41.x шесть CVE, из них
     # одна high — лимиты `request.form()` молча не применялись к urlencoded.
     # FastAPI верхнюю границу не ставит (`starlette>=0.46.0`), поэтому берём
     # исправленную версию сами, а не ждём, пока подтянется старая.
-    "starlette==1.6.0",
-    "uvicorn[standard]==0.52.4",
-    "sqlalchemy==2.0.52",
+    "starlette==1.10.0",
+    "uvicorn[standard]==0.54.0",
+    "sqlalchemy==2.1.9",
     # socks нужен для SOCKS5-прокси: без него httpx понимает только HTTP(S)_PROXY,
     # а ALL_PROXY=socks5://… падает с «Using SOCKS proxy, but the socksio package is not installed».
     "httpx[http2,socks]==0.28.1",
     "apscheduler==3.11.3",
     "pyyaml==6.0.3",
-    "rapidfuzz==3.14.5",          # fuzzy-матчинг названий папок с каталогом
+    "rapidfuzz==3.14.6",          # fuzzy-матчинг названий папок с каталогом
     "watchdog==6.0.0",            # слежение за файловой системой вместо опроса по расписанию
     "argon2-cffi==23.1.0",        # хеш пароля на вход в UI
     # Языки дорожек к двухбуквенным кодам. Ручной словарь не годится: у языка
@@ -29,13 +29,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest==9.1.1",   # 8.3.4 — GHSA-6w46-j5rx-g56g, небезопасная работа с tmpdir
+    "pytest==9.2.0",   # 8.3.4 — GHSA-6w46-j5rx-g56g, небезопасная работа с tmpdir
     # pytest-asyncio отсюда убран: он требует pytest<9, то есть с пином выше
     # не устанавливался в принципе. Локально это было незаметно — плагина в
     # окружении просто нет, — а CI на чистой машине сразу упал на разрешении
     # зависимостей. Проекту он и не нужен: async-тестов ноль, корутины в тестах
     # запускаются через asyncio.run (см. tests/test_stream_probe.py).
-    "ruff==0.16.5",
+    "ruff==0.17.5",
     "mypy==1.20.2",
     "pip-audit==2.10.1",
 ]
